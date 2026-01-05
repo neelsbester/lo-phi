@@ -4,11 +4,14 @@ use anyhow::Result;
 use polars::prelude::*;
 
 /// Analyze missing values in the dataset using Polars expressions
-pub fn analyze_missing_values(lf: &LazyFrame) -> Result<Vec<(String, f64)>> {
-    let df = lf.clone().collect()?;
+/// 
+/// # Arguments
+/// * `df` - Reference to the DataFrame (avoids re-collecting from LazyFrame)
+pub fn analyze_missing_values(df: &DataFrame) -> Result<Vec<(String, f64)>> {
     let row_count = df.height() as f64;
 
     // Use Polars to compute null counts for all columns at once
+    // No need to clone - we use a reference and create a new lazy frame
     let null_counts = df
         .clone()
         .lazy()
@@ -44,18 +47,4 @@ pub fn get_features_above_threshold(
         .filter(|(name, ratio)| *ratio > threshold && name != target_column)
         .map(|(name, _)| name.clone())
         .collect()
-}
-
-/// Drop features with high missing values from the dataset
-pub fn drop_high_missing_features(lf: LazyFrame, features_to_drop: &[String]) -> LazyFrame {
-    if features_to_drop.is_empty() {
-        return lf;
-    }
-
-    let drop_exprs: Vec<Expr> = features_to_drop
-        .iter()
-        .map(|name| col(name.as_str()))
-        .collect();
-
-    lf.drop(drop_exprs)
 }

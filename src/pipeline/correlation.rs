@@ -17,8 +17,11 @@ pub struct CorrelatedPair {
 
 /// Calculate correlations between numeric columns and find highly correlated pairs
 /// Uses Polars' optimized pearson correlation with parallel processing via Rayon
-pub fn find_correlated_pairs(lf: &LazyFrame, threshold: f64) -> Result<Vec<CorrelatedPair>> {
-    let df = lf.clone().collect()?;
+///
+/// # Arguments
+/// * `df` - Reference to the DataFrame (avoids re-collecting from LazyFrame)
+/// * `threshold` - Correlation threshold above which pairs are considered highly correlated
+pub fn find_correlated_pairs(df: &DataFrame, threshold: f64) -> Result<Vec<CorrelatedPair>> {
 
     // Get numeric columns only - cast all to Float64 for correlation calculation
     let numeric_cols: Vec<String> = df
@@ -205,16 +208,3 @@ pub fn select_features_to_drop(pairs: &[CorrelatedPair], target_column: &str) ->
     to_drop
 }
 
-/// Drop correlated features from the dataset
-pub fn drop_correlated_features(lf: LazyFrame, features_to_drop: &[String]) -> LazyFrame {
-    if features_to_drop.is_empty() {
-        return lf;
-    }
-
-    let drop_exprs: Vec<Expr> = features_to_drop
-        .iter()
-        .map(|name| col(name.as_str()))
-        .collect();
-
-    lf.drop(drop_exprs)
-}

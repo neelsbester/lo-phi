@@ -21,6 +21,7 @@ const SMOOTHING: f64 = 0.5;
 
 /// A single bin with WoE statistics
 #[derive(Debug, Clone)]
+#[allow(dead_code)]  // Fields may be used for reporting/debugging
 pub struct WoeBin {
     /// Lower bound (inclusive)
     pub lower_bound: f64,
@@ -36,15 +37,9 @@ pub struct WoeBin {
     pub iv_contribution: f64,
 }
 
-impl WoeBin {
-    /// Total count of observations in this bin
-    pub fn total(&self) -> usize {
-        self.events + self.non_events
-    }
-}
-
 /// Complete IV analysis results for a single feature
 #[derive(Debug, Clone)]
+#[allow(dead_code)]  // Fields may be used for reporting/debugging
 pub struct IvAnalysis {
     /// Name of the analyzed feature
     pub feature_name: String,
@@ -59,18 +54,17 @@ pub struct IvAnalysis {
 /// Analyze all numeric features and calculate their IV
 ///
 /// # Arguments
-/// * `lf` - LazyFrame containing the dataset
+/// * `df` - Reference to the DataFrame (avoids re-collecting from LazyFrame)
 /// * `target` - Name of the binary target column (must contain 0 and 1)
 /// * `num_bins` - Target number of bins after merging
 ///
 /// # Returns
 /// Vector of IvAnalysis for each numeric feature, sorted by IV descending
 pub fn analyze_features_iv(
-    lf: &LazyFrame,
+    df: &DataFrame,
     target: &str,
     num_bins: usize,
 ) -> Result<Vec<IvAnalysis>> {
-    let df = lf.clone().collect()?;
 
     // Validate target column
     validate_binary_target(&df, target)?;
@@ -144,6 +138,7 @@ pub fn analyze_features_iv(
 
 /// Validate that the target column is binary (contains only 0 and 1)
 fn validate_binary_target(df: &DataFrame, target: &str) -> Result<()> {
+    // NOTE: df is already borrowed, no collection needed
     let target_col = df
         .column(target)
         .with_context(|| format!("Target column '{}' not found", target))?;
@@ -432,15 +427,6 @@ fn calculate_auc(sorted_pairs: &[(f64, i32)]) -> f64 {
     u / (n_pos as f64 * n_neg as f64)
 }
 
-/// Get list of features with IV below the threshold
-pub fn get_low_iv_features(analyses: &[IvAnalysis], threshold: f64) -> Vec<String> {
-    analyses
-        .iter()
-        .filter(|a| a.iv < threshold)
-        .map(|a| a.feature_name.clone())
-        .collect()
-}
-
 /// Get list of features with Gini below the threshold
 pub fn get_low_gini_features(analyses: &[IvAnalysis], threshold: f64) -> Vec<String> {
     analyses
@@ -448,20 +434,6 @@ pub fn get_low_gini_features(analyses: &[IvAnalysis], threshold: f64) -> Vec<Str
         .filter(|a| a.gini.abs() < threshold)
         .map(|a| a.feature_name.clone())
         .collect()
-}
-
-/// Drop low Gini features from the dataset
-pub fn drop_low_gini_features(lf: LazyFrame, features_to_drop: &[String]) -> LazyFrame {
-    if features_to_drop.is_empty() {
-        return lf;
-    }
-
-    let drop_exprs: Vec<Expr> = features_to_drop
-        .iter()
-        .map(|name| col(name.as_str()))
-        .collect();
-
-    lf.drop(drop_exprs)
 }
 
 #[cfg(test)]

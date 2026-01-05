@@ -13,13 +13,11 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::Parser;
 use console::style;
-use polars::prelude::IntoLazy;
 
 use cli::{run_config_menu, Cli, Commands, Config, ConfigResult};
 use pipeline::{
-    analyze_features_iv, analyze_missing_values, drop_correlated_features,
-    drop_high_missing_features, drop_low_gini_features, find_correlated_pairs, get_column_names,
-    get_features_above_threshold, get_low_gini_features, load_and_collect, load_dataset,
+    analyze_features_iv, analyze_missing_values, find_correlated_pairs, get_column_names,
+    get_features_above_threshold, get_low_gini_features, load_dataset_with_progress,
     select_features_to_drop,
 };
 use report::ReductionSummary;
@@ -99,12 +97,11 @@ fn main() -> Result<()> {
         correlation_threshold,
     );
 
-    // Step 1: Load dataset
+    // Step 1: Load dataset (with progress bar for CSV files)
     let step_start = Instant::now();
-    let spinner = create_spinner("Loading dataset...");
-    let lf = load_dataset(input, cli.infer_schema_length)?;
-    let (df, rows, cols, memory_mb) = load_and_collect(lf)?;
-    finish_with_success(&spinner, "Dataset loaded");
+    println!();  // Blank line before progress bar
+    let (mut df, rows, cols, memory_mb) = load_dataset_with_progress(input, cli.infer_schema_length)?;
+    print_success("Dataset loaded");
 
     // Display statistics (instant since data is already collected)
     println!("\n    {} Dataset Statistics:", style("✧").cyan());
@@ -112,28 +109,27 @@ fn main() -> Result<()> {
     println!("      Columns: {}", cols);
     println!("      Estimated memory: {:.2} MB", memory_mb);
 
-    // Convert back to LazyFrame for pipeline operations
-    let mut lf = df.lazy();
     let initial_features = cols;
     let mut summary = ReductionSummary::new(initial_features);
     summary.set_load_time(step_start.elapsed());
 
     // Verify target column exists
-    let schema = lf.collect_schema()?;
-    if !schema.contains(&target) {
+    let column_names: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
+    if !column_names.contains(&target) {
         anyhow::bail!(
             "Target column '{}' not found in dataset. Available columns: {:?}",
             target,
-            schema.iter_names().collect::<Vec<_>>()
+            column_names
         );
     }
 
     // Step 2: Missing value analysis
+    // NOTE: All analysis functions now take &DataFrame to avoid repeated collection
     print_step_header(1, "Missing Value Analysis");
 
     let step_start = Instant::now();
     let spinner = create_spinner("Analyzing missing values...");
-    let missing_ratios = analyze_missing_values(&lf)?;
+    let missing_ratios = analyze_missing_values(&df)?;
     let features_to_drop_missing = get_features_above_threshold(
         &missing_ratios,
         missing_threshold,
@@ -150,7 +146,8 @@ fn main() -> Result<()> {
             Some(&format!("(>{:.1}%)", missing_threshold * 100.0)),
         );
 
-        lf = drop_high_missing_features(lf, &features_to_drop_missing);
+        // Drop columns directly from DataFrame
+        df = df.drop_many(&features_to_drop_missing);
         summary.add_missing_drops(features_to_drop_missing);
         print_success("Dropped features with high missing values");
     }
@@ -160,7 +157,7 @@ fn main() -> Result<()> {
     print_step_header(2, "Univariate Gini Analysis");
 
     let step_start = Instant::now();
-    let gini_analyses = analyze_features_iv(&lf, &target, gini_bins)?;
+    let gini_analyses = analyze_features_iv(&df, &target, gini_bins)?;
     let features_to_drop_gini = get_low_gini_features(&gini_analyses, gini_threshold);
 
     if features_to_drop_gini.is_empty() {
@@ -172,7 +169,8 @@ fn main() -> Result<()> {
             Some(&format!("(<{:.2})", gini_threshold)),
         );
 
-        lf = drop_low_gini_features(lf, &features_to_drop_gini);
+        // Drop columns directly from DataFrame
+        df = df.drop_many(&features_to_drop_gini);
         summary.add_gini_drops(features_to_drop_gini);
         print_success("Dropped low Gini features");
     }
@@ -183,7 +181,7 @@ fn main() -> Result<()> {
 
     let step_start = Instant::now();
     let spinner = create_spinner("Calculating correlations...");
-    let correlated_pairs = find_correlated_pairs(&lf, correlation_threshold)?;
+    let correlated_pairs = find_correlated_pairs(&df, correlation_threshold)?;
     let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &target);
     finish_with_success(&spinner, "Correlation analysis complete");
 
@@ -200,7 +198,8 @@ fn main() -> Result<()> {
             style(features_to_drop_corr.len()).yellow().bold()
         );
 
-        lf = drop_correlated_features(lf, &features_to_drop_corr);
+        // Drop columns directly from DataFrame
+        df = df.drop_many(&features_to_drop_corr);
         summary.add_correlation_drops(features_to_drop_corr);
         print_success("Dropped highly correlated features");
     }
@@ -211,7 +210,7 @@ fn main() -> Result<()> {
 
     let step_start = Instant::now();
     let spinner = create_spinner("Writing output file...");
-    save_dataset(&lf, &output_path)?;
+    save_dataset(&mut df, &output_path)?;
     finish_with_success(
         &spinner,
         &format!("Saved to {}", output_path.display()),
@@ -228,11 +227,9 @@ fn main() -> Result<()> {
 }
 
 /// Save dataset to file (CSV or Parquet based on extension)
-fn save_dataset(lf: &polars::prelude::LazyFrame, path: &std::path::Path) -> Result<()> {
+fn save_dataset(df: &mut polars::prelude::DataFrame, path: &std::path::Path) -> Result<()> {
     use anyhow::Context;
     use polars::prelude::*;
-
-    let mut df = lf.clone().collect()?;
 
     let extension = path
         .extension()
@@ -245,14 +242,14 @@ fn save_dataset(lf: &polars::prelude::LazyFrame, path: &std::path::Path) -> Resu
             let mut file = std::fs::File::create(path)
                 .with_context(|| format!("Failed to create output file: {}", path.display()))?;
             CsvWriter::new(&mut file)
-                .finish(&mut df)
+                .finish(df)
                 .with_context(|| format!("Failed to write CSV file: {}", path.display()))?;
         }
         "parquet" => {
             let file = std::fs::File::create(path)
                 .with_context(|| format!("Failed to create output file: {}", path.display()))?;
             ParquetWriter::new(file)
-                .finish(&mut df)
+                .finish(df)
                 .with_context(|| format!("Failed to write Parquet file: {}", path.display()))?;
         }
         _ => anyhow::bail!(
