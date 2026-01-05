@@ -39,8 +39,7 @@ pub fn get_column_names(path: &Path) -> Result<Vec<String>> {
 }
 
 /// Load a CSV file with a progress bar showing bytes read
-/// Note: schema_length is not used with CsvReader (eager), schema inference uses default
-fn load_csv_with_progress(path: &Path, _schema_length: Option<usize>) -> Result<DataFrame> {
+fn load_csv_with_progress(path: &Path, schema_length: Option<usize>) -> Result<DataFrame> {
     let file = File::open(path)
         .with_context(|| format!("Failed to open CSV file: {}", path.display()))?;
     let file_size = file
@@ -75,12 +74,25 @@ fn load_csv_with_progress(path: &Path, _schema_length: Option<usize>) -> Result<
 
     pb.finish_and_clear();
 
-    // Parse the buffered data
+    // Show spinner during parsing phase
+    let parse_spinner = ProgressBar::new_spinner();
+    parse_spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("   {spinner:.cyan} Converting and calculating summary statistics...")
+            .unwrap(),
+    );
+    parse_spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    // Parse the buffered data using CsvReadOptions for proper schema inference
     let cursor = Cursor::new(buffer);
-    let df = CsvReader::new(cursor)
-        .set_rechunk(true) // Consolidate chunks for better downstream performance
+    let df = CsvReadOptions::default()
+        .with_infer_schema_length(schema_length) // Use user's schema inference setting (None = full scan)
+        .with_rechunk(true) // Consolidate chunks for better downstream performance
+        .into_reader_with_file_handle(cursor)
         .finish()
         .with_context(|| format!("Failed to parse CSV file: {}", path.display()))?;
+
+    parse_spinner.finish_and_clear();
 
     Ok(df)
 }
