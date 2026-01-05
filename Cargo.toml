@@ -1,13 +1,17 @@
 [package]
 name = "lophi"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "Lo-phi: A CLI tool for feature reduction using missing value and correlation analysis"
 authors = ["Neels Bester"]
 
 [[bin]]
 name = "lophi"
 path = "src/main.rs"
+
+[lib]
+name = "lophi"
+path = "src/lib.rs"
 
 [dependencies]
 # Data processing - memory-efficient large dataset handling
@@ -42,3 +46,14 @@ crossterm = "0.28"
 # JSON serialization - export analysis results
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+[dev-dependencies]
+# Temporary files for testing
+tempfile = "3.10"
+
+# Random data generation for test fixtures
+rand = "0.8"
+
+# CLI testing utilities
+assert_cmd = "2.0"
+predicates = "3.1"

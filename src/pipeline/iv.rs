@@ -458,10 +458,23 @@ mod tests {
         let auc = calculate_auc(&perfect);
         assert!((auc - 1.0).abs() < 0.01, "Perfect separation should give AUC ≈ 1.0");
 
-        // Random: mixed values
-        let random = vec![(1.0, 0), (2.0, 1), (3.0, 0), (4.0, 1)];
-        let auc = calculate_auc(&random);
-        assert!(auc > 0.4 && auc < 0.6, "Random should give AUC ≈ 0.5");
+        // No discrimination: 0s and 1s have same values (ties)
+        let no_disc = vec![(1.0, 0), (1.0, 1), (2.0, 0), (2.0, 1)];
+        let auc = calculate_auc(&no_disc);
+        assert!(
+            (auc - 0.5).abs() < 0.01, 
+            "No discrimination should give AUC ≈ 0.5, got {}", 
+            auc
+        );
+        
+        // Partial discrimination: alternating pattern
+        let partial = vec![(1.0, 0), (2.0, 1), (3.0, 0), (4.0, 1)];
+        let auc = calculate_auc(&partial);
+        assert!(
+            auc > 0.5 && auc < 1.0, 
+            "Partial discrimination should give AUC between 0.5 and 1.0, got {}", 
+            auc
+        );
     }
 }
 

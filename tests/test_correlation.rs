@@ -1,0 +1,225 @@
+//! Unit tests for correlation analysis
+
+use lophi::pipeline::{find_correlated_pairs, select_features_to_drop, CorrelatedPair};
+use polars::prelude::*;
+
+#[path = "common/mod.rs"]
+mod common;
+
+#[test]
+fn test_find_perfectly_correlated_pair() {
+    let df = common::create_correlation_test_dataframe();
+    
+    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
+    
+    // Should find a-b correlation (perfect positive)
+    let ab_pair = pairs.iter().find(|p| 
+        (p.feature1 == "a" && p.feature2 == "b") ||
+        (p.feature1 == "b" && p.feature2 == "a")
+    );
+    
+    assert!(ab_pair.is_some(), "Should find correlation between a and b");
+    assert!(
+        ab_pair.unwrap().correlation.abs() > 0.99,
+        "Correlation between a and b should be > 0.99, got {}",
+        ab_pair.unwrap().correlation
+    );
+}
+
+#[test]
+fn test_find_negative_correlation() {
+    let df = common::create_correlation_test_dataframe();
+    
+    // Use lower threshold to catch negative correlation
+    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
+    
+    // Should find a-c correlation (perfect negative)
+    let ac_pair = pairs.iter().find(|p| 
+        (p.feature1 == "a" && p.feature2 == "c") ||
+        (p.feature1 == "c" && p.feature2 == "a")
+    );
+    
+    assert!(ac_pair.is_some(), "Should find negative correlation between a and c");
+    assert!(
+        ac_pair.unwrap().correlation < -0.9,
+        "Correlation between a and c should be strongly negative, got {}",
+        ac_pair.unwrap().correlation
+    );
+}
+
+#[test]
+fn test_no_correlation_found_high_threshold() {
+    let df = df! {
+        "a" => [1.0f64, 5.0, 2.0, 8.0, 3.0, 7.0, 4.0, 6.0, 9.0, 0.0],
+        "b" => [9.0f64, 2.0, 7.0, 1.0, 6.0, 3.0, 8.0, 4.0, 0.0, 5.0],
+    }.unwrap();
+    
+    let pairs = find_correlated_pairs(&df, 0.95).unwrap();
+    
+    assert!(pairs.is_empty(), "Random data should have no highly correlated pairs at 0.95 threshold");
+}
+
+#[test]
+fn test_select_features_to_drop_protects_target() {
+    let pairs = vec![
+        CorrelatedPair {
+            feature1: "target".to_string(),
+            feature2: "feature_a".to_string(),
+            correlation: 0.98,
+        },
+    ];
+    
+    let to_drop = select_features_to_drop(&pairs, "target");
+    
+    assert_eq!(to_drop.len(), 1, "Should drop exactly 1 feature");
+    assert!(to_drop.contains(&"feature_a".to_string()), "Should drop feature_a");
+    assert!(!to_drop.contains(&"target".to_string()), "Should NEVER drop target");
+}
+
+#[test]
+fn test_select_features_to_drop_target_in_second_position() {
+    let pairs = vec![
+        CorrelatedPair {
+            feature1: "feature_a".to_string(),
+            feature2: "target".to_string(),
+            correlation: 0.98,
+        },
+    ];
+    
+    let to_drop = select_features_to_drop(&pairs, "target");
+    
+    assert_eq!(to_drop.len(), 1);
+    assert!(to_drop.contains(&"feature_a".to_string()));
+    assert!(!to_drop.contains(&"target".to_string()), "Target should be protected regardless of position");
+}
+
+#[test]
+fn test_select_drops_more_frequent_feature() {
+    // feature_a appears in 2 pairs, feature_b and feature_c in 1 each
+    let pairs = vec![
+        CorrelatedPair {
+            feature1: "feature_a".to_string(),
+            feature2: "feature_b".to_string(),
+            correlation: 0.96,
+        },
+        CorrelatedPair {
+            feature1: "feature_a".to_string(),
+            feature2: "feature_c".to_string(),
+            correlation: 0.97,
+        },
+    ];
+    
+    let to_drop = select_features_to_drop(&pairs, "target");
+    
+    // feature_a should be dropped (appears more frequently)
+    assert!(
+        to_drop.contains(&"feature_a".to_string()),
+        "Should drop feature_a (appears in more pairs)"
+    );
+    assert!(!to_drop.contains(&"feature_b".to_string()), "Should NOT drop feature_b");
+    assert!(!to_drop.contains(&"feature_c".to_string()), "Should NOT drop feature_c");
+}
+
+#[test]
+fn test_already_resolved_pairs_skipped() {
+    // If a feature is already marked for dropping, don't process its other pairs
+    let pairs = vec![
+        CorrelatedPair {
+            feature1: "a".to_string(),
+            feature2: "b".to_string(),
+            correlation: 0.98,
+        },
+        CorrelatedPair {
+            feature1: "a".to_string(),
+            feature2: "c".to_string(),
+            correlation: 0.97,
+        },
+        CorrelatedPair {
+            feature1: "b".to_string(),
+            feature2: "c".to_string(),
+            correlation: 0.96,
+        },
+    ];
+    
+    let to_drop = select_features_to_drop(&pairs, "target");
+    
+    // Should resolve pairs efficiently without dropping everything
+    // The exact result depends on frequency, but we shouldn't drop all 3
+    assert!(
+        to_drop.len() < 3,
+        "Should not drop all features, got {:?}",
+        to_drop
+    );
+}
+
+#[test]
+fn test_single_column_dataframe() {
+    let df = df! {
+        "only_col" => [1.0f64, 2.0, 3.0],
+    }.unwrap();
+    
+    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
+    
+    assert!(pairs.is_empty(), "Single column cannot correlate with itself");
+}
+
+#[test]
+fn test_two_identical_columns() {
+    let df = df! {
+        "col_a" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+        "col_b" => [1.0f64, 2.0, 3.0, 4.0, 5.0], // Identical to col_a
+    }.unwrap();
+    
+    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
+    
+    assert!(!pairs.is_empty(), "Identical columns should be correlated");
+    assert!(
+        pairs[0].correlation.abs() > 0.999,
+        "Identical columns should have correlation = 1.0"
+    );
+}
+
+#[test]
+fn test_sorted_by_correlation_descending() {
+    let df = df! {
+        "a" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        "b" => [1.1f64, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1, 10.1], // Very high correlation
+        "c" => [1.5f64, 2.3, 3.1, 4.2, 5.0, 6.1, 7.3, 8.0, 9.2, 10.1], // Slightly less correlated
+    }.unwrap();
+    
+    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
+    
+    // Verify sorted by absolute correlation descending
+    for i in 0..pairs.len().saturating_sub(1) {
+        assert!(
+            pairs[i].correlation.abs() >= pairs[i + 1].correlation.abs(),
+            "Pairs should be sorted by |correlation| descending"
+        );
+    }
+}
+
+#[test]
+fn test_empty_pairs_drop_selection() {
+    let pairs: Vec<CorrelatedPair> = vec![];
+    let to_drop = select_features_to_drop(&pairs, "target");
+    
+    assert!(to_drop.is_empty(), "Empty pairs should result in empty drop list");
+}
+
+#[test]
+fn test_non_numeric_columns_ignored() {
+    // String columns should be ignored in correlation analysis
+    let df = df! {
+        "numeric" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+        "string_col" => ["a", "b", "c", "d", "e"],
+    }.unwrap();
+    
+    let pairs = find_correlated_pairs(&df, 0.5).unwrap();
+    
+    // Should not find any pairs involving string columns
+    for pair in &pairs {
+        assert_ne!(pair.feature1, "string_col");
+        assert_ne!(pair.feature2, "string_col");
+    }
+}
+
