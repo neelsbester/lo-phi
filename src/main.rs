@@ -23,7 +23,7 @@ use pipeline::{
 use report::ReductionSummary;
 use utils::{
     create_spinner, finish_with_success, print_banner, print_completion, print_config,
-    print_count, print_info, print_step_header, print_success,
+    print_count, print_info, print_step_header, print_step_time, print_success,
 };
 
 fn main() -> Result<()> {
@@ -111,7 +111,9 @@ fn main() -> Result<()> {
 
     let initial_features = cols;
     let mut summary = ReductionSummary::new(initial_features);
-    summary.set_load_time(step_start.elapsed());
+    let load_elapsed = step_start.elapsed();
+    summary.set_load_time(load_elapsed);
+    print_step_time(load_elapsed);
 
     // Verify target column exists
     let column_names: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
@@ -151,7 +153,9 @@ fn main() -> Result<()> {
         summary.add_missing_drops(features_to_drop_missing);
         print_success("Dropped features with high missing values");
     }
-    summary.set_missing_time(step_start.elapsed());
+    let missing_elapsed = step_start.elapsed();
+    summary.set_missing_time(missing_elapsed);
+    print_step_time(missing_elapsed);
 
     // Step 2: Univariate Gini Analysis
     print_step_header(2, "Univariate Gini Analysis");
@@ -174,7 +178,9 @@ fn main() -> Result<()> {
         summary.add_gini_drops(features_to_drop_gini);
         print_success("Dropped low Gini features");
     }
-    summary.set_gini_time(step_start.elapsed());
+    let gini_elapsed = step_start.elapsed();
+    summary.set_gini_time(gini_elapsed);
+    print_step_time(gini_elapsed);
 
     // Step 3: Correlation analysis
     print_step_header(3, "Correlation Analysis");
@@ -203,7 +209,9 @@ fn main() -> Result<()> {
         summary.add_correlation_drops(features_to_drop_corr);
         print_success("Dropped highly correlated features");
     }
-    summary.set_correlation_time(step_start.elapsed());
+    let correlation_elapsed = step_start.elapsed();
+    summary.set_correlation_time(correlation_elapsed);
+    print_step_time(correlation_elapsed);
 
     // Step 4: Save output
     print_step_header(4, "Save Results");
@@ -215,7 +223,9 @@ fn main() -> Result<()> {
         &spinner,
         &format!("Saved to {}", output_path.display()),
     );
-    summary.set_save_time(step_start.elapsed());
+    let save_elapsed = step_start.elapsed();
+    summary.set_save_time(save_elapsed);
+    print_step_time(save_elapsed);
 
     // Display summary
     summary.display();

@@ -2,6 +2,7 @@
 
 use console::{style, Emoji};
 use std::path::Path;
+use std::time::Duration;
 
 // Decorative dingbat icons with fallbacks
 pub static INFO: Emoji<'_, '_> = Emoji("✦ ", "[*] ");
@@ -140,6 +141,25 @@ pub fn print_count(description: &str, count: usize, threshold_info: Option<&str>
             style(count).yellow().bold(),
             description
         );
+    }
+}
+
+/// Print step completion time
+pub fn print_step_time(duration: Duration) {
+    println!(
+        "    {} {}",
+        style("⏱").dim(),
+        style(format_duration(duration)).dim()
+    );
+}
+
+/// Format a duration for display
+pub fn format_duration(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    if millis < 1000 {
+        format!("{}ms", millis)
+    } else {
+        format!("{:.2}s", duration.as_secs_f64())
     }
 }
 
