@@ -20,7 +20,7 @@ use pipeline::{
     get_features_above_threshold, get_low_gini_features, load_dataset_with_progress,
     select_features_to_drop,
 };
-use report::ReductionSummary;
+use report::{export_gini_analysis, ReductionSummary};
 use utils::{
     create_spinner, finish_with_success, print_banner, print_completion, print_config,
     print_count, print_info, print_step_header, print_step_time, print_success,
@@ -49,13 +49,13 @@ fn main() -> Result<()> {
     let output_path = cli.output_path().unwrap();
 
     // Determine final config values - either from interactive menu or CLI defaults
-    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold) = if cli.no_confirm {
+    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold, columns_to_drop) = if cli.no_confirm {
         // Skip interactive menu when --no-confirm is set
         // Target is required in non-interactive mode
         let target = cli.target.clone().ok_or_else(|| {
             anyhow::anyhow!("Target column is required when using --no-confirm. Use -t/--target to specify.")
         })?;
-        (target, cli.missing_threshold, cli.gini_threshold, cli.gini_bins, cli.correlation_threshold)
+        (target, cli.missing_threshold, cli.gini_threshold, cli.gini_bins, cli.correlation_threshold, cli.drop_columns.clone())
     } else {
         // Load column names for interactive selection
         let columns = get_column_names(input)?;
@@ -68,6 +68,7 @@ fn main() -> Result<()> {
             missing_threshold: cli.missing_threshold,
             gini_threshold: cli.gini_threshold,
             correlation_threshold: cli.correlation_threshold,
+            columns_to_drop: cli.drop_columns.clone(),
         };
 
         match run_config_menu(config, columns)? {
@@ -75,7 +76,7 @@ fn main() -> Result<()> {
                 let target = cfg.target.ok_or_else(|| {
                     anyhow::anyhow!("Target column must be selected before proceeding")
                 })?;
-                (target, cfg.missing_threshold, cfg.gini_threshold, cli.gini_bins, cfg.correlation_threshold)
+                (target, cfg.missing_threshold, cfg.gini_threshold, cli.gini_bins, cfg.correlation_threshold, cfg.columns_to_drop)
             }
             ConfigResult::Quit => {
                 println!("Cancelled by user.");
@@ -109,7 +110,25 @@ fn main() -> Result<()> {
     println!("      Columns: {}", cols);
     println!("      Estimated memory: {:.2} MB", memory_mb);
 
-    let initial_features = cols;
+    // Apply user-specified column drops
+    let dropped_count = if !columns_to_drop.is_empty() {
+        let column_names: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
+        let valid_columns: Vec<String> = columns_to_drop
+            .iter()
+            .filter(|col| column_names.contains(col))
+            .cloned()
+            .collect();
+        let count = valid_columns.len();
+        if count > 0 {
+            df = df.drop_many(&valid_columns);
+            print_success(&format!("Dropped {} user-specified column(s)", count));
+        }
+        count
+    } else {
+        0
+    };
+
+    let initial_features = cols - dropped_count;
     let mut summary = ReductionSummary::new(initial_features);
     let load_elapsed = step_start.elapsed();
     summary.set_load_time(load_elapsed);
@@ -164,6 +183,11 @@ fn main() -> Result<()> {
     let gini_analyses = analyze_features_iv(&df, &target, gini_bins)?;
     let features_to_drop_gini = get_low_gini_features(&gini_analyses, gini_threshold);
 
+    // Export Gini analysis to JSON for later inspection
+    let gini_output_path = cli.gini_analysis_path().unwrap();
+    export_gini_analysis(&gini_analyses, &features_to_drop_gini, &gini_output_path)?;
+    print_success(&format!("Gini analysis saved to {}", gini_output_path.display()));
+
     if features_to_drop_gini.is_empty() {
         print_info("No features below Gini threshold");
     } else {
@@ -178,6 +202,7 @@ fn main() -> Result<()> {
         summary.add_gini_drops(features_to_drop_gini);
         print_success("Dropped low Gini features");
     }
+
     let gini_elapsed = step_start.elapsed();
     summary.set_gini_time(gini_elapsed);
     print_step_time(gini_elapsed);

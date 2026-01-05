@@ -41,6 +41,11 @@ pub struct Cli {
     #[arg(long, default_value = "10")]
     pub gini_bins: usize,
 
+    /// Columns to drop before processing (comma-separated).
+    /// These columns will be removed from the dataset before any analysis.
+    #[arg(long, value_delimiter = ',')]
+    pub drop_columns: Vec<String>,
+
     /// Skip interactive confirmation prompts
     #[arg(long, default_value = "false")]
     pub no_confirm: bool,
@@ -86,6 +91,15 @@ impl Cli {
             let extension = input.extension().and_then(|e| e.to_str()).unwrap_or("parquet");
             parent.join(format!("{}_reduced.{}", stem, extension))
         }))
+    }
+
+    /// Get the Gini analysis output path, derived from the input file.
+    /// The derived path will be in the same directory as the input with a '_gini_analysis.json' suffix.
+    pub fn gini_analysis_path(&self) -> Option<PathBuf> {
+        let input = self.input.as_ref()?;
+        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let stem = input.file_stem().and_then(|s| s.to_str())?;
+        Some(parent.join(format!("{}_gini_analysis.json", stem)))
     }
 }
 

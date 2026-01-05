@@ -3,6 +3,7 @@
 //! Displays a TUI menu allowing users to review and customize
 //! config parameters before running the pipeline.
 
+use std::collections::HashSet;
 use std::io::{self, stdout};
 use std::path::PathBuf;
 
@@ -26,6 +27,7 @@ pub struct Config {
     pub missing_threshold: f64,
     pub gini_threshold: f64,
     pub correlation_threshold: f64,
+    pub columns_to_drop: Vec<String>,
 }
 
 /// The current state of the menu
@@ -36,6 +38,13 @@ enum MenuState {
         columns: Vec<String>,
         filtered: Vec<usize>,
         selected: usize,
+    },
+    SelectColumnsToDrop {
+        search: String,
+        columns: Vec<String>,
+        filtered: Vec<usize>,
+        selected: usize,
+        checked: HashSet<usize>,
     },
     EditMissing {
         input: String,
@@ -106,6 +115,23 @@ fn run_menu_loop(
                             selected: 0,
                         };
                     }
+                    KeyCode::Char('d') | KeyCode::Char('D') => {
+                        let filtered: Vec<usize> = (0..columns.len()).collect();
+                        // Pre-check columns that are already marked for dropping
+                        let checked: HashSet<usize> = columns
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, col)| config.columns_to_drop.contains(col))
+                            .map(|(i, _)| i)
+                            .collect();
+                        state = MenuState::SelectColumnsToDrop {
+                            search: String::new(),
+                            columns: columns.clone(),
+                            filtered,
+                            selected: 0,
+                            checked,
+                        };
+                    }
                     KeyCode::Char('c') | KeyCode::Char('C') => {
                         state = MenuState::EditMissing {
                             input: format!("{:.2}", config.missing_threshold),
@@ -131,6 +157,58 @@ fn run_menu_loop(
                     }
                     KeyCode::Esc => {
                         state = MenuState::Main;
+                    }
+                    KeyCode::Up => {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected + 1 < filtered.len() {
+                            *selected += 1;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        search.pop();
+                        update_filtered(search, columns, filtered);
+                        *selected = 0;
+                    }
+                    KeyCode::Char(c) => {
+                        search.push(c);
+                        update_filtered(search, columns, filtered);
+                        *selected = 0;
+                    }
+                    _ => {}
+                },
+                MenuState::SelectColumnsToDrop {
+                    search,
+                    columns,
+                    filtered,
+                    selected,
+                    checked,
+                } => match key.code {
+                    KeyCode::Enter => {
+                        // Confirm selection - convert checked indices to column names
+                        config.columns_to_drop = checked
+                            .iter()
+                            .map(|&idx| columns[idx].clone())
+                            .collect();
+                        state = MenuState::Main;
+                    }
+                    KeyCode::Esc => {
+                        // Cancel - discard changes
+                        state = MenuState::Main;
+                    }
+                    KeyCode::Char(' ') => {
+                        // Toggle selection of current item
+                        if !filtered.is_empty() {
+                            let idx = filtered[*selected];
+                            if checked.contains(&idx) {
+                                checked.remove(&idx);
+                            } else {
+                                checked.insert(idx);
+                            }
+                        }
                     }
                     KeyCode::Up => {
                         if *selected > 0 {
@@ -239,7 +317,7 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
 
     // Calculate centered box dimensions
     let menu_width = 60u16;
-    let menu_height = 20u16;
+    let menu_height = 22u16;
     let x = area.width.saturating_sub(menu_width) / 2;
     let y = area.height.saturating_sub(menu_height) / 2;
 
@@ -274,6 +352,15 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
             selected,
         } => {
             draw_target_selector(frame, search, columns, filtered, *selected);
+        }
+        MenuState::SelectColumnsToDrop {
+            search,
+            columns,
+            filtered,
+            selected,
+            checked,
+        } => {
+            draw_columns_to_drop_selector(frame, search, columns, filtered, *selected, checked);
         }
         MenuState::EditMissing { input }
         | MenuState::EditGini { input }
@@ -320,6 +407,22 @@ fn build_content(config: &Config, state: &MenuState, _width: usize) -> Vec<Line<
             config.output.display().to_string(),
             Style::default().fg(Color::White),
         ),
+    ]));
+
+    // Show columns to drop count
+    let drop_display = if config.columns_to_drop.is_empty() {
+        "None".to_string()
+    } else {
+        format!("{} column(s) selected", config.columns_to_drop.len())
+    };
+    let drop_style = if config.columns_to_drop.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::Red)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Drop:   ", Style::default().fg(Color::DarkGray)),
+        Span::styled(drop_display, drop_style),
     ]));
 
     lines.push(Line::from(""));
@@ -399,6 +502,14 @@ fn build_content(config: &Config, state: &MenuState, _width: usize) -> Vec<Line<
         Span::styled("T", Style::default().fg(Color::Cyan).bold()),
         Span::styled(
             "] Select target column",
+            Style::default().fg(Color::White),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  [", Style::default().fg(Color::DarkGray)),
+        Span::styled("D", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(
+            "] Select columns to drop",
             Style::default().fg(Color::White),
         ),
     ]));
@@ -506,6 +617,136 @@ fn draw_target_selector(
     frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
     // Show count indicator at bottom
+    if !filtered.is_empty() {
+        let count_text = format!(
+            " {}/{} columns ",
+            selected + 1,
+            filtered.len()
+        );
+        let text_len = count_text.len();
+        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_area = Rect::new(
+            popup_area.x + popup_area.width - text_len as u16 - 1,
+            popup_area.y + popup_area.height - 1,
+            text_len as u16,
+            1,
+        );
+        frame.render_widget(Paragraph::new(count_span), count_area);
+    }
+}
+
+fn draw_columns_to_drop_selector(
+    frame: &mut Frame,
+    search: &str,
+    columns: &[String],
+    filtered: &[usize],
+    selected: usize,
+    checked: &HashSet<usize>,
+) {
+    let area = frame.area();
+
+    let popup_width = 55u16;
+    let popup_height = 20u16;
+    let x = area.width.saturating_sub(popup_width) / 2;
+    let y = area.height.saturating_sub(popup_height) / 2;
+
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let title = format!(" Select Columns to Drop ({} selected) ", checked.len());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Red))
+        .title(title)
+        .title_style(Style::default().fg(Color::Red).bold());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Split inner area into search box, list, and help text
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+
+    // Search box
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Search ")
+        .title_style(Style::default().fg(Color::DarkGray));
+
+    let search_text = format!("{}", search);
+    let search_para = Paragraph::new(Line::from(vec![
+        Span::styled(search_text, Style::default().fg(Color::White)),
+        Span::styled("▌", Style::default().fg(Color::Red)),
+    ]))
+    .block(search_block);
+
+    frame.render_widget(search_para, chunks[0]);
+
+    // Column list with visible window
+    let max_visible = (chunks[1].height as usize).saturating_sub(0);
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, &col_idx)| {
+            let col_name = &columns[col_idx];
+            let is_checked = checked.contains(&col_idx);
+            let checkbox = if is_checked { "[x]" } else { "[ ]" };
+            
+            let style = if i == selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Red)
+                    .bold()
+            } else if is_checked {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {} {}", checkbox, col_name)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+
+    // Use ListState to track selection for scrolling
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    // Help text at bottom
+    let help_text = Line::from(vec![
+        Span::styled("  Space", Style::default().fg(Color::Cyan)),
+        Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(help_text), chunks[2]);
+
+    // Show count indicator at bottom right of popup
     if !filtered.is_empty() {
         let count_text = format!(
             " {}/{} columns ",
