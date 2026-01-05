@@ -11,10 +11,12 @@ pub struct ReductionSummary {
     pub initial_features: usize,
     pub final_features: usize,
     pub dropped_missing: Vec<String>,
+    pub dropped_gini: Vec<String>,
     pub dropped_correlation: Vec<String>,
     // Timing information
     pub load_time: Duration,
     pub missing_time: Duration,
+    pub gini_time: Duration,
     pub correlation_time: Duration,
     pub save_time: Duration,
 }
@@ -33,6 +35,11 @@ impl ReductionSummary {
         self.dropped_missing = features;
     }
 
+    pub fn add_gini_drops(&mut self, features: Vec<String>) {
+        self.final_features -= features.len();
+        self.dropped_gini = features;
+    }
+
     pub fn add_correlation_drops(&mut self, features: Vec<String>) {
         self.final_features -= features.len();
         self.dropped_correlation = features;
@@ -44,6 +51,10 @@ impl ReductionSummary {
 
     pub fn set_missing_time(&mut self, duration: Duration) {
         self.missing_time = duration;
+    }
+
+    pub fn set_gini_time(&mut self, duration: Duration) {
+        self.gini_time = duration;
     }
 
     pub fn set_correlation_time(&mut self, duration: Duration) {
@@ -64,7 +75,7 @@ impl ReductionSummary {
     }
 
     pub fn total_time(&self) -> Duration {
-        self.load_time + self.missing_time + self.correlation_time + self.save_time
+        self.load_time + self.missing_time + self.gini_time + self.correlation_time + self.save_time
     }
 
     pub fn display(&self) {
@@ -92,6 +103,15 @@ impl ReductionSummary {
         table.add_row(vec![
             Cell::new("✗ Dropped (Missing)"),
             Cell::new(self.dropped_missing.len()).fg(if self.dropped_missing.is_empty() {
+                Color::White
+            } else {
+                Color::Red
+            }),
+        ]);
+
+        table.add_row(vec![
+            Cell::new("◈ Dropped (Low Gini)"),
+            Cell::new(self.dropped_gini.len()).fg(if self.dropped_gini.is_empty() {
                 Color::White
             } else {
                 Color::Red
@@ -164,6 +184,10 @@ impl ReductionSummary {
         timing_table.add_row(vec![
             Cell::new("◈ Missing Analysis"),
             Cell::new(Self::format_duration(self.missing_time)).fg(Color::Cyan),
+        ]);
+        timing_table.add_row(vec![
+            Cell::new("⌘ Gini Analysis"),
+            Cell::new(Self::format_duration(self.gini_time)).fg(Color::Cyan),
         ]);
         timing_table.add_row(vec![
             Cell::new("⋈ Correlation Analysis"),

@@ -13,12 +13,14 @@ use std::time::Instant;
 use anyhow::Result;
 use clap::Parser;
 use console::style;
+use polars::prelude::IntoLazy;
 
 use cli::{run_config_menu, Args, Config, ConfigResult};
 use pipeline::{
-    analyze_missing_values, display_dataset_stats, drop_correlated_features,
-    drop_high_missing_features, find_correlated_pairs, get_column_names, get_features_above_threshold,
-    load_dataset, select_features_to_drop,
+    analyze_features_iv, analyze_missing_values, drop_correlated_features,
+    drop_high_missing_features, drop_low_gini_features, find_correlated_pairs, get_column_names,
+    get_features_above_threshold, get_low_gini_features, load_and_collect, load_dataset,
+    select_features_to_drop,
 };
 use report::ReductionSummary;
 use utils::{
@@ -33,13 +35,13 @@ fn main() -> Result<()> {
     let output_path = args.output_path();
 
     // Determine final config values - either from interactive menu or CLI defaults
-    let (target, missing_threshold, correlation_threshold) = if args.no_confirm {
+    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold) = if args.no_confirm {
         // Skip interactive menu when --no-confirm is set
         // Target is required in non-interactive mode
         let target = args.target.clone().ok_or_else(|| {
             anyhow::anyhow!("Target column is required when using --no-confirm. Use -t/--target to specify.")
         })?;
-        (target, args.missing_threshold, args.correlation_threshold)
+        (target, args.missing_threshold, args.gini_threshold, args.gini_bins, args.correlation_threshold)
     } else {
         // Load column names for interactive selection
         let columns = get_column_names(&args.input)?;
@@ -50,6 +52,7 @@ fn main() -> Result<()> {
             target: args.target.clone(),
             output: output_path.clone(),
             missing_threshold: args.missing_threshold,
+            gini_threshold: args.gini_threshold,
             correlation_threshold: args.correlation_threshold,
         };
 
@@ -58,7 +61,7 @@ fn main() -> Result<()> {
                 let target = cfg.target.ok_or_else(|| {
                     anyhow::anyhow!("Target column must be selected before proceeding")
                 })?;
-                (target, cfg.missing_threshold, cfg.correlation_threshold)
+                (target, cfg.missing_threshold, cfg.gini_threshold, args.gini_bins, cfg.correlation_threshold)
             }
             ConfigResult::Quit => {
                 println!("Cancelled by user.");
@@ -76,30 +79,36 @@ fn main() -> Result<()> {
         &target,
         &output_path,
         missing_threshold,
+        gini_threshold,
         correlation_threshold,
     );
 
     // Step 1: Load dataset
     let step_start = Instant::now();
     let spinner = create_spinner("Loading dataset...");
-    let mut lf = load_dataset(&args.input, args.infer_schema_length)?;
+    let lf = load_dataset(&args.input, args.infer_schema_length)?;
+    let (df, rows, cols, memory_mb) = load_and_collect(lf)?;
     finish_with_success(&spinner, "Dataset loaded");
 
-    // Display initial statistics
-    display_dataset_stats(&lf)?;
+    // Display statistics (instant since data is already collected)
+    println!("\n    {} Dataset Statistics:", style("✧").cyan());
+    println!("      Rows: {}", rows);
+    println!("      Columns: {}", cols);
+    println!("      Estimated memory: {:.2} MB", memory_mb);
 
-    // Get initial feature count
-    let initial_schema = lf.collect_schema()?;
-    let initial_features = initial_schema.len();
+    // Convert back to LazyFrame for pipeline operations
+    let mut lf = df.lazy();
+    let initial_features = cols;
     let mut summary = ReductionSummary::new(initial_features);
     summary.set_load_time(step_start.elapsed());
 
     // Verify target column exists
-    if !initial_schema.contains(&target) {
+    let schema = lf.collect_schema()?;
+    if !schema.contains(&target) {
         anyhow::bail!(
             "Target column '{}' not found in dataset. Available columns: {:?}",
             target,
-            initial_schema.iter_names().collect::<Vec<_>>()
+            schema.iter_names().collect::<Vec<_>>()
         );
     }
 
@@ -131,8 +140,30 @@ fn main() -> Result<()> {
     }
     summary.set_missing_time(step_start.elapsed());
 
+    // Step 2: Univariate Gini Analysis
+    print_step_header(2, "Univariate Gini Analysis");
+
+    let step_start = Instant::now();
+    let gini_analyses = analyze_features_iv(&lf, &target, gini_bins)?;
+    let features_to_drop_gini = get_low_gini_features(&gini_analyses, gini_threshold);
+
+    if features_to_drop_gini.is_empty() {
+        print_info("No features below Gini threshold");
+    } else {
+        print_count(
+            "feature(s) with low Gini",
+            features_to_drop_gini.len(),
+            Some(&format!("(<{:.2})", gini_threshold)),
+        );
+
+        lf = drop_low_gini_features(lf, &features_to_drop_gini);
+        summary.add_gini_drops(features_to_drop_gini);
+        print_success("Dropped low Gini features");
+    }
+    summary.set_gini_time(step_start.elapsed());
+
     // Step 3: Correlation analysis
-    print_step_header(2, "Correlation Analysis");
+    print_step_header(3, "Correlation Analysis");
 
     let step_start = Instant::now();
     let spinner = create_spinner("Calculating correlations...");
@@ -160,7 +191,7 @@ fn main() -> Result<()> {
     summary.set_correlation_time(step_start.elapsed());
 
     // Step 4: Save output
-    print_step_header(3, "Save Results");
+    print_step_header(4, "Save Results");
 
     let step_start = Instant::now();
     let spinner = create_spinner("Writing output file...");

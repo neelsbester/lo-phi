@@ -39,7 +39,14 @@ pub fn print_banner(version: &str) {
 }
 
 /// Print configuration card
-pub fn print_config(input: &Path, target: &str, output: &Path, missing_threshold: f64, correlation_threshold: f64) {
+pub fn print_config(
+    input: &Path,
+    target: &str,
+    output: &Path,
+    missing_threshold: f64,
+    gini_threshold: f64,
+    correlation_threshold: f64,
+) {
     let box_width = 56;
     let line = "─".repeat(box_width - 2);
     
@@ -70,6 +77,11 @@ pub fn print_config(input: &Path, target: &str, output: &Path, missing_threshold
         "    │  {} Missing threshold:     {:<24}│",
         CHART,
         style(format!("{:.1}%", missing_threshold * 100.0)).yellow()
+    );
+    println!(
+        "    │  {} Gini threshold:        {:<24}│",
+        CHART,
+        style(format!("{:.2}", gini_threshold)).yellow()
     );
     println!(
         "    │  {} Correlation threshold: {:<24}│",

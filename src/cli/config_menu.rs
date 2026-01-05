@@ -24,6 +24,7 @@ pub struct Config {
     pub target: Option<String>,
     pub output: PathBuf,
     pub missing_threshold: f64,
+    pub gini_threshold: f64,
     pub correlation_threshold: f64,
 }
 
@@ -37,6 +38,9 @@ enum MenuState {
         selected: usize,
     },
     EditMissing {
+        input: String,
+    },
+    EditGini {
         input: String,
     },
     EditCorrelation {
@@ -157,6 +161,28 @@ fn run_menu_loop(
                                 config.missing_threshold = val;
                             }
                         }
+                        state = MenuState::EditGini {
+                            input: format!("{:.2}", config.gini_threshold),
+                        };
+                    }
+                    KeyCode::Esc => {
+                        state = MenuState::Main;
+                    }
+                    KeyCode::Backspace => {
+                        input.pop();
+                    }
+                    KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                        input.push(c);
+                    }
+                    _ => {}
+                },
+                MenuState::EditGini { input } => match key.code {
+                    KeyCode::Enter => {
+                        if let Ok(val) = input.parse::<f64>() {
+                            if (0.0..=1.0).contains(&val) {
+                                config.gini_threshold = val;
+                            }
+                        }
                         state = MenuState::EditCorrelation {
                             input: format!("{:.2}", config.correlation_threshold),
                         };
@@ -249,7 +275,9 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
         } => {
             draw_target_selector(frame, search, columns, filtered, *selected);
         }
-        MenuState::EditMissing { input } | MenuState::EditCorrelation { input } => {
+        MenuState::EditMissing { input }
+        | MenuState::EditGini { input }
+        | MenuState::EditCorrelation { input } => {
             draw_edit_popup(frame, state, input);
         }
         MenuState::Main => {}
@@ -306,6 +334,10 @@ fn build_content(config: &Config, state: &MenuState, _width: usize) -> Vec<Line<
         MenuState::EditMissing { .. } => Style::default().fg(Color::Yellow).bold(),
         _ => Style::default().fg(Color::Green),
     };
+    let gini_style = match state {
+        MenuState::EditGini { .. } => Style::default().fg(Color::Yellow).bold(),
+        _ => Style::default().fg(Color::Green),
+    };
     let corr_style = match state {
         MenuState::EditCorrelation { .. } => Style::default().fg(Color::Yellow).bold(),
         _ => Style::default().fg(Color::Green),
@@ -321,6 +353,13 @@ fn build_content(config: &Config, state: &MenuState, _width: usize) -> Vec<Line<
             format!(" ({:.0}%)", config.missing_threshold * 100.0),
             Style::default().fg(Color::DarkGray),
         ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Gini Threshold:        ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(format!("{:.2}", config.gini_threshold), gini_style),
     ]));
     lines.push(Line::from(vec![
         Span::styled(
@@ -504,6 +543,7 @@ fn draw_edit_popup(frame: &mut Frame, state: &MenuState, input: &str) {
 
     let title = match state {
         MenuState::EditMissing { .. } => " Missing Threshold ",
+        MenuState::EditGini { .. } => " Gini Threshold ",
         MenuState::EditCorrelation { .. } => " Correlation Threshold ",
         _ => "",
     };

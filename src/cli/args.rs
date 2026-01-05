@@ -30,6 +30,14 @@ pub struct Args {
     #[arg(long, default_value = "0.95")]
     pub correlation_threshold: f64,
 
+    /// Gini threshold - drop features with Gini below this value (calculated via WoE binning)
+    #[arg(long, default_value = "0.05")]
+    pub gini_threshold: f64,
+
+    /// Number of bins for Gini/IV calculation
+    #[arg(long, default_value = "10")]
+    pub gini_bins: usize,
+
     /// Skip interactive confirmation prompts
     #[arg(long, default_value = "false")]
     pub no_confirm: bool,

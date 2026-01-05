@@ -72,20 +72,14 @@ pub fn load_dataset(path: &Path, infer_schema_length: usize) -> Result<LazyFrame
     Ok(lf)
 }
 
-/// Display initial statistics about the dataset
-pub fn display_dataset_stats(lf: &LazyFrame) -> Result<()> {
-    let df = lf.clone().collect()?;
+/// Load and materialize dataset, returning collected DataFrame and stats
+/// 
+/// This function collects the lazy frame into memory and computes basic statistics.
+/// Returns (DataFrame, rows, columns, memory_mb)
+pub fn load_and_collect(lf: LazyFrame) -> Result<(DataFrame, usize, usize, f64)> {
+    let df = lf.collect()?;
     let (rows, cols) = df.shape();
-    
-    println!("\n    ✧ Dataset Statistics:");
-    println!("   Rows: {}", rows);
-    println!("   Columns: {}", cols);
-    
-    // Estimate memory usage
-    let memory_bytes: usize = df.estimated_size();
-    let memory_mb = memory_bytes as f64 / (1024.0 * 1024.0);
-    println!("   Estimated memory: {:.2} MB", memory_mb);
-    
-    Ok(())
+    let memory_mb = df.estimated_size() as f64 / (1024.0 * 1024.0);
+    Ok((df, rows, cols, memory_mb))
 }
 
