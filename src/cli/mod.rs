@@ -2,7 +2,8 @@
 
 mod args;
 mod config_menu;
+pub mod convert;
 
-pub use args::Args;
+pub use args::{Cli, Commands};
 pub use config_menu::{run_config_menu, Config, ConfigResult};
 

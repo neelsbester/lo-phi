@@ -15,7 +15,7 @@ use clap::Parser;
 use console::style;
 use polars::prelude::IntoLazy;
 
-use cli::{run_config_menu, Args, Config, ConfigResult};
+use cli::{run_config_menu, Cli, Commands, Config, ConfigResult};
 use pipeline::{
     analyze_features_iv, analyze_missing_values, drop_correlated_features,
     drop_high_missing_features, drop_low_gini_features, find_correlated_pairs, get_column_names,
@@ -29,31 +29,47 @@ use utils::{
 };
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let cli = Cli::parse();
+
+    // Handle subcommands
+    if let Some(command) = &cli.command {
+        return match command {
+            Commands::Convert {
+                input,
+                output,
+                infer_schema_length,
+            } => cli::convert::run_convert(input, output.as_deref(), *infer_schema_length),
+        };
+    }
+
+    // Main reduce pipeline - require input
+    let input = cli.input().ok_or_else(|| {
+        anyhow::anyhow!("Input file is required. Use -i/--input to specify a file.")
+    })?;
     
     // Derive output path from input if not provided
-    let output_path = args.output_path();
+    let output_path = cli.output_path().unwrap();
 
     // Determine final config values - either from interactive menu or CLI defaults
-    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold) = if args.no_confirm {
+    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold) = if cli.no_confirm {
         // Skip interactive menu when --no-confirm is set
         // Target is required in non-interactive mode
-        let target = args.target.clone().ok_or_else(|| {
+        let target = cli.target.clone().ok_or_else(|| {
             anyhow::anyhow!("Target column is required when using --no-confirm. Use -t/--target to specify.")
         })?;
-        (target, args.missing_threshold, args.gini_threshold, args.gini_bins, args.correlation_threshold)
+        (target, cli.missing_threshold, cli.gini_threshold, cli.gini_bins, cli.correlation_threshold)
     } else {
         // Load column names for interactive selection
-        let columns = get_column_names(&args.input)?;
+        let columns = get_column_names(input)?;
         
         // Show interactive config menu
         let config = Config {
-            input: args.input.clone(),
-            target: args.target.clone(),
+            input: input.clone(),
+            target: cli.target.clone(),
             output: output_path.clone(),
-            missing_threshold: args.missing_threshold,
-            gini_threshold: args.gini_threshold,
-            correlation_threshold: args.correlation_threshold,
+            missing_threshold: cli.missing_threshold,
+            gini_threshold: cli.gini_threshold,
+            correlation_threshold: cli.correlation_threshold,
         };
 
         match run_config_menu(config, columns)? {
@@ -61,7 +77,7 @@ fn main() -> Result<()> {
                 let target = cfg.target.ok_or_else(|| {
                     anyhow::anyhow!("Target column must be selected before proceeding")
                 })?;
-                (target, cfg.missing_threshold, cfg.gini_threshold, args.gini_bins, cfg.correlation_threshold)
+                (target, cfg.missing_threshold, cfg.gini_threshold, cli.gini_bins, cfg.correlation_threshold)
             }
             ConfigResult::Quit => {
                 println!("Cancelled by user.");
@@ -75,7 +91,7 @@ fn main() -> Result<()> {
 
     // Print configuration card
     print_config(
-        &args.input,
+        input,
         &target,
         &output_path,
         missing_threshold,
@@ -86,7 +102,7 @@ fn main() -> Result<()> {
     // Step 1: Load dataset
     let step_start = Instant::now();
     let spinner = create_spinner("Loading dataset...");
-    let lf = load_dataset(&args.input, args.infer_schema_length)?;
+    let lf = load_dataset(input, cli.infer_schema_length)?;
     let (df, rows, cols, memory_mb) = load_and_collect(lf)?;
     finish_with_success(&spinner, "Dataset loaded");
 

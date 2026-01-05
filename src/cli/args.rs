@@ -1,16 +1,19 @@
 //! Command-line argument definitions using clap
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 /// Lo-phi - Reduce dataset features using missing value and correlation analysis
 #[derive(Parser, Debug)]
 #[command(name = "lophi")]
 #[command(author, version, about, long_about = None)]
-pub struct Args {
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
     /// Input file path (CSV or Parquet)
     #[arg(short, long)]
-    pub input: PathBuf,
+    pub input: Option<PathBuf>,
 
     /// Target column name (preserved during reduction).
     /// If not provided, will be selected interactively from available columns.
@@ -49,16 +52,40 @@ pub struct Args {
     pub infer_schema_length: usize,
 }
 
-impl Args {
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Convert CSV file to Parquet format
+    Convert {
+        /// Input CSV file path
+        input: PathBuf,
+
+        /// Output Parquet file path (optional, defaults to input with .parquet extension)
+        output: Option<PathBuf>,
+
+        /// Number of rows to use for schema inference.
+        /// Higher values improve type detection for ambiguous columns but may be slower.
+        /// Use 0 for full table scan (very slow for large files).
+        #[arg(long, default_value = "10000")]
+        infer_schema_length: usize,
+    },
+}
+
+impl Cli {
+    /// Get the input path, returning an error if not provided when running the reduce pipeline.
+    pub fn input(&self) -> Option<&PathBuf> {
+        self.input.as_ref()
+    }
+
     /// Get the output path, deriving from input if not explicitly provided.
     /// The derived path will be in the same directory as the input with a '_reduced' suffix.
-    pub fn output_path(&self) -> PathBuf {
-        self.output.clone().unwrap_or_else(|| {
-            let parent = self.input.parent().unwrap_or_else(|| std::path::Path::new("."));
-            let stem = self.input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-            let extension = self.input.extension().and_then(|e| e.to_str()).unwrap_or("parquet");
+    pub fn output_path(&self) -> Option<PathBuf> {
+        let input = self.input.as_ref()?;
+        Some(self.output.clone().unwrap_or_else(|| {
+            let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+            let extension = input.extension().and_then(|e| e.to_str()).unwrap_or("parquet");
             parent.join(format!("{}_reduced.{}", stem, extension))
-        })
+        }))
     }
 }
 
