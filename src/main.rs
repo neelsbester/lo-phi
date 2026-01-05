@@ -17,7 +17,7 @@ use console::style;
 use cli::{run_config_menu, Args, Config, ConfigResult};
 use pipeline::{
     analyze_missing_values, display_dataset_stats, drop_correlated_features,
-    drop_high_missing_features, find_correlated_pairs, get_features_above_threshold,
+    drop_high_missing_features, find_correlated_pairs, get_column_names, get_features_above_threshold,
     load_dataset, select_features_to_drop,
 };
 use report::ReductionSummary;
@@ -33,10 +33,17 @@ fn main() -> Result<()> {
     let output_path = args.output_path();
 
     // Determine final config values - either from interactive menu or CLI defaults
-    let (missing_threshold, correlation_threshold) = if args.no_confirm {
+    let (target, missing_threshold, correlation_threshold) = if args.no_confirm {
         // Skip interactive menu when --no-confirm is set
-        (args.missing_threshold, args.correlation_threshold)
+        // Target is required in non-interactive mode
+        let target = args.target.clone().ok_or_else(|| {
+            anyhow::anyhow!("Target column is required when using --no-confirm. Use -t/--target to specify.")
+        })?;
+        (target, args.missing_threshold, args.correlation_threshold)
     } else {
+        // Load column names for interactive selection
+        let columns = get_column_names(&args.input)?;
+        
         // Show interactive config menu
         let config = Config {
             input: args.input.clone(),
@@ -46,8 +53,13 @@ fn main() -> Result<()> {
             correlation_threshold: args.correlation_threshold,
         };
 
-        match run_config_menu(config)? {
-            ConfigResult::Proceed(cfg) => (cfg.missing_threshold, cfg.correlation_threshold),
+        match run_config_menu(config, columns)? {
+            ConfigResult::Proceed(cfg) => {
+                let target = cfg.target.ok_or_else(|| {
+                    anyhow::anyhow!("Target column must be selected before proceeding")
+                })?;
+                (target, cfg.missing_threshold, cfg.correlation_threshold)
+            }
             ConfigResult::Quit => {
                 println!("Cancelled by user.");
                 return Ok(());
@@ -61,7 +73,7 @@ fn main() -> Result<()> {
     // Print configuration card
     print_config(
         &args.input,
-        &args.target,
+        &target,
         &output_path,
         missing_threshold,
         correlation_threshold,
@@ -70,7 +82,7 @@ fn main() -> Result<()> {
     // Step 1: Load dataset
     let step_start = Instant::now();
     let spinner = create_spinner("Loading dataset...");
-    let mut lf = load_dataset(&args.input)?;
+    let mut lf = load_dataset(&args.input, args.infer_schema_length)?;
     finish_with_success(&spinner, "Dataset loaded");
 
     // Display initial statistics
@@ -83,10 +95,10 @@ fn main() -> Result<()> {
     summary.set_load_time(step_start.elapsed());
 
     // Verify target column exists
-    if !initial_schema.contains(&args.target) {
+    if !initial_schema.contains(&target) {
         anyhow::bail!(
             "Target column '{}' not found in dataset. Available columns: {:?}",
-            args.target,
+            target,
             initial_schema.iter_names().collect::<Vec<_>>()
         );
     }
@@ -100,7 +112,7 @@ fn main() -> Result<()> {
     let features_to_drop_missing = get_features_above_threshold(
         &missing_ratios,
         missing_threshold,
-        &args.target,
+        &target,
     );
     finish_with_success(&spinner, "Missing value analysis complete");
 
@@ -125,7 +137,7 @@ fn main() -> Result<()> {
     let step_start = Instant::now();
     let spinner = create_spinner("Calculating correlations...");
     let correlated_pairs = find_correlated_pairs(&lf, correlation_threshold)?;
-    let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &args.target);
+    let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &target);
     finish_with_success(&spinner, "Correlation analysis complete");
 
     if correlated_pairs.is_empty() {

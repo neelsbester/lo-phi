@@ -3,14 +3,14 @@
 use console::{style, Emoji};
 use std::path::Path;
 
-// Emoji icons with fallbacks for terminals that don't support them
-pub static INFO: Emoji<'_, '_> = Emoji("ℹ️  ", "[*] ");
-pub static ROCKET: Emoji<'_, '_> = Emoji("🚀 ", ">> ");
-pub static CHART: Emoji<'_, '_> = Emoji("📊 ", "");
-pub static FOLDER: Emoji<'_, '_> = Emoji("📂 ", "");
-pub static TARGET: Emoji<'_, '_> = Emoji("🎯 ", "");
-pub static SAVE: Emoji<'_, '_> = Emoji("💾 ", "");
-pub static LINK: Emoji<'_, '_> = Emoji("🔗 ", "");
+// Decorative dingbat icons with fallbacks
+pub static INFO: Emoji<'_, '_> = Emoji("✦ ", "[*] ");
+pub static ROCKET: Emoji<'_, '_> = Emoji("❯ ", ">> ");
+pub static CHART: Emoji<'_, '_> = Emoji("✧ ", "");
+pub static FOLDER: Emoji<'_, '_> = Emoji("❮ ", "");
+pub static TARGET: Emoji<'_, '_> = Emoji("⊛ ", "");
+pub static SAVE: Emoji<'_, '_> = Emoji("⊚ ", "");
+pub static LINK: Emoji<'_, '_> = Emoji("⋈ ", "");
 
 /// Print the application banner with ASCII art
 pub fn print_banner(version: &str) {
@@ -46,8 +46,8 @@ pub fn print_config(input: &Path, target: &str, output: &Path, missing_threshold
     println!("    ┌{}┐", line);
     println!(
         "    │ {}{}│",
-        style("⚙️  Configuration").cyan().bold(),
-        " ".repeat(box_width - 20)
+        style("❖ Configuration").cyan().bold(),
+        " ".repeat(box_width - 17)
     );
     println!("    ├{}┤", line);
     println!(

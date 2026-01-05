@@ -71,7 +71,7 @@ impl ReductionSummary {
         println!();
         println!(
             "    {} {}",
-            style("📋").cyan(),
+            style("✦").cyan(),
             style("REDUCTION SUMMARY").white().bold()
         );
         println!("    {}", style("─".repeat(50)).dim());
@@ -85,12 +85,12 @@ impl ReductionSummary {
         ]);
 
         table.add_row(vec![
-            Cell::new("📁 Initial Features"),
+            Cell::new("❮ Initial Features"),
             Cell::new(self.initial_features),
         ]);
 
         table.add_row(vec![
-            Cell::new("🗑️  Dropped (Missing)"),
+            Cell::new("✗ Dropped (Missing)"),
             Cell::new(self.dropped_missing.len()).fg(if self.dropped_missing.is_empty() {
                 Color::White
             } else {
@@ -99,7 +99,7 @@ impl ReductionSummary {
         ]);
 
         table.add_row(vec![
-            Cell::new("🔗 Dropped (Correlation)"),
+            Cell::new("⋈ Dropped (Correlation)"),
             Cell::new(self.dropped_correlation.len()).fg(if self.dropped_correlation.is_empty() {
                 Color::White
             } else {
@@ -108,7 +108,7 @@ impl ReductionSummary {
         ]);
 
         table.add_row(vec![
-            Cell::new("✅ Final Features"),
+            Cell::new("✓ Final Features"),
             Cell::new(self.final_features)
                 .fg(Color::Green)
                 .add_attribute(Attribute::Bold),
@@ -130,7 +130,7 @@ impl ReductionSummary {
         };
 
         table.add_row(vec![
-            Cell::new("📉 Reduction"),
+            Cell::new("↓ Reduction"),
             Cell::new(format!("{:.1}%", reduction_pct))
                 .fg(color)
                 .add_attribute(Attribute::Bold),
@@ -145,7 +145,7 @@ impl ReductionSummary {
         println!();
         println!(
             "    {} {}",
-            style("⏱️ ").cyan(),
+            style("◇").cyan(),
             style("TIMING").white().bold()
         );
         println!("    {}", style("─".repeat(50)).dim());
@@ -158,23 +158,23 @@ impl ReductionSummary {
         ]);
 
         timing_table.add_row(vec![
-            Cell::new("📂 Load Dataset"),
+            Cell::new("❮ Load Dataset"),
             Cell::new(Self::format_duration(self.load_time)).fg(Color::Cyan),
         ]);
         timing_table.add_row(vec![
-            Cell::new("🔍 Missing Analysis"),
+            Cell::new("◈ Missing Analysis"),
             Cell::new(Self::format_duration(self.missing_time)).fg(Color::Cyan),
         ]);
         timing_table.add_row(vec![
-            Cell::new("🔗 Correlation Analysis"),
+            Cell::new("⋈ Correlation Analysis"),
             Cell::new(Self::format_duration(self.correlation_time)).fg(Color::Cyan),
         ]);
         timing_table.add_row(vec![
-            Cell::new("💾 Save Results"),
+            Cell::new("⊚ Save Results"),
             Cell::new(Self::format_duration(self.save_time)).fg(Color::Cyan),
         ]);
         timing_table.add_row(vec![
-            Cell::new("⏱️  Total Time")
+            Cell::new("∑ Total Time")
                 .add_attribute(Attribute::Bold),
             Cell::new(Self::format_duration(self.total_time()))
                 .fg(Color::Green)

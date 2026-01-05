@@ -12,9 +12,10 @@ pub struct Args {
     #[arg(short, long)]
     pub input: PathBuf,
 
-    /// Target column name (preserved during reduction)
+    /// Target column name (preserved during reduction).
+    /// If not provided, will be selected interactively from available columns.
     #[arg(short, long)]
-    pub target: String,
+    pub target: Option<String>,
 
     /// Output file path (CSV or Parquet, determined by extension).
     /// Defaults to input directory with '_reduced' suffix (e.g., data.csv → data_reduced.csv)
@@ -32,6 +33,12 @@ pub struct Args {
     /// Skip interactive confirmation prompts
     #[arg(long, default_value = "false")]
     pub no_confirm: bool,
+
+    /// Number of rows to use for schema inference (CSV only).
+    /// Higher values improve type detection for ambiguous columns but may be slower.
+    /// Use 0 for full table scan (very slow for large files).
+    #[arg(long, default_value = "10000")]
+    pub infer_schema_length: usize,
 }
 
 impl Args {
