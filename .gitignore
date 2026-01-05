@@ -1,1 +1,9 @@
 /target
+
+# Python virtual environment
+.venv/
+
+# Test data (large generated files)
+/test_data/
+*.parquet
+*.csv

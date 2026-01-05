@@ -1,6 +1,7 @@
 //! Reduction summary report generation
 
-use comfy_table::{Cell, Color, Table};
+use comfy_table::{presets::UTF8_FULL_CONDENSED, Attribute, Cell, Color, Table};
+use console::style;
 
 /// Summary of the feature reduction process
 #[derive(Debug, Default)]
@@ -31,52 +32,112 @@ impl ReductionSummary {
     }
 
     pub fn display(&self) {
-        println!("\n📋 Reduction Summary");
-        println!("═══════════════════════════════════════");
-        
+        println!();
+        println!(
+            "    {} {}",
+            style("📋").cyan(),
+            style("REDUCTION SUMMARY").white().bold()
+        );
+        println!("    {}", style("─".repeat(50)).dim());
+        println!();
+
         let mut table = Table::new();
-        table.set_header(vec!["Metric", "Value"]);
-        
+        table.load_preset(UTF8_FULL_CONDENSED);
+        table.set_header(vec![
+            Cell::new("Metric").add_attribute(Attribute::Bold),
+            Cell::new("Value").add_attribute(Attribute::Bold),
+        ]);
+
         table.add_row(vec![
-            Cell::new("Initial Features"),
+            Cell::new("📁 Initial Features"),
             Cell::new(self.initial_features),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Dropped (High Missing)"),
-            Cell::new(self.dropped_missing.len()).fg(Color::Yellow),
+            Cell::new("🗑️  Dropped (Missing)"),
+            Cell::new(self.dropped_missing.len()).fg(if self.dropped_missing.is_empty() {
+                Color::White
+            } else {
+                Color::Red
+            }),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Dropped (High Correlation)"),
-            Cell::new(self.dropped_correlation.len()).fg(Color::Yellow),
+            Cell::new("🔗 Dropped (Correlation)"),
+            Cell::new(self.dropped_correlation.len()).fg(if self.dropped_correlation.is_empty() {
+                Color::White
+            } else {
+                Color::Red
+            }),
         ]);
-        
+
         table.add_row(vec![
-            Cell::new("Final Features"),
-            Cell::new(self.final_features).fg(Color::Green),
+            Cell::new("✅ Final Features"),
+            Cell::new(self.final_features)
+                .fg(Color::Green)
+                .add_attribute(Attribute::Bold),
         ]);
-        
+
         let reduction_pct = if self.initial_features > 0 {
-            ((self.initial_features - self.final_features) as f64 / self.initial_features as f64) * 100.0
+            ((self.initial_features - self.final_features) as f64 / self.initial_features as f64)
+                * 100.0
         } else {
             0.0
         };
-        
+
+        let color = if reduction_pct > 30.0 {
+            Color::Green
+        } else if reduction_pct > 10.0 {
+            Color::Yellow
+        } else {
+            Color::Cyan
+        };
+
         table.add_row(vec![
-            Cell::new("Reduction"),
-            Cell::new(format!("{:.1}%", reduction_pct)).fg(Color::Cyan),
+            Cell::new("📉 Reduction"),
+            Cell::new(format!("{:.1}%", reduction_pct))
+                .fg(color)
+                .add_attribute(Attribute::Bold),
         ]);
-        
-        println!("{table}");
-        
-        if !self.dropped_missing.is_empty() {
-            println!("\n🗑️  Dropped (High Missing): {}", self.dropped_missing.join(", "));
+
+        // Indent the table
+        for line in table.to_string().lines() {
+            println!("    {}", line);
         }
-        
-        if !self.dropped_correlation.is_empty() {
-            println!("\n🔗 Dropped (High Correlation): {}", self.dropped_correlation.join(", "));
+
+        // Show dropped features details if any
+        if !self.dropped_missing.is_empty() || !self.dropped_correlation.is_empty() {
+            println!();
+            println!(
+                "    {} {}",
+                style("📝").cyan(),
+                style("DROPPED FEATURES").white().bold()
+            );
+            println!("    {}", style("─".repeat(50)).dim());
+
+            if !self.dropped_missing.is_empty() {
+                println!();
+                println!(
+                    "      {} {}:",
+                    style("High Missing Values").yellow(),
+                    style(format!("({})", self.dropped_missing.len())).dim()
+                );
+                for feature in &self.dropped_missing {
+                    println!("        {} {}", style("•").dim(), feature);
+                }
+            }
+
+            if !self.dropped_correlation.is_empty() {
+                println!();
+                println!(
+                    "      {} {}:",
+                    style("High Correlation").yellow(),
+                    style(format!("({})", self.dropped_correlation.len())).dim()
+                );
+                for feature in &self.dropped_correlation {
+                    println!("        {} {}", style("•").dim(), feature);
+                }
+            }
         }
     }
 }
-

@@ -1,5 +1,5 @@
 <!-- 4a575303-d4fd-4fde-aef8-04159f46fb50 07b2bec1-626d-489c-ac1e-86aedebf45e5 -->
-# Feature Reduction CLI Tool
+# Lo-phi (φ) - Feature Reduction CLI Tool
 
 ## Architecture Overview
 
@@ -54,7 +54,7 @@ flowchart TB
 ## Project Structure
 
 ```
-feature_reduction_cli/
+lophi/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs              # Entry point, CLI setup
@@ -78,10 +78,10 @@ feature_reduction_cli/
 
 ```bash
 # Basic usage with defaults
-feature-reduce --input data.csv --target target_column --output reduced.parquet
+lophi --input data.csv --target target_column --output reduced.parquet
 
 # With custom thresholds
-feature-reduce --input data.parquet \
+lophi --input data.parquet \
   --target target_column \
   --missing-threshold 0.3 \
   --correlation-threshold 0.95 \
@@ -132,10 +132,10 @@ The pipeline is designed as a chain of reduction steps. Adding IV/Gini will invo
 ### To-dos
 
 - [x] Initialize Cargo project with dependencies (polars, clap, indicatif, dialoguer, etc.)
-- [ ] Implement CLI argument parsing with clap (input, output, target, thresholds)
-- [ ] Build CSV/Parquet loader with initial dataset statistics display
-- [ ] Implement missing value analysis and reduction step with progress bar
-- [ ] Implement correlation matrix calculation and reduction step
-- [ ] Add dialoguer prompts for step-by-step confirmation flow
-- [ ] Create summary report showing all reductions made
-- [ ] Implement output file writing (CSV/Parquet based on extension)
+- [x] Implement CLI argument parsing with clap (input, output, target, thresholds)
+- [x] Build CSV/Parquet loader with initial dataset statistics display
+- [x] Implement missing value analysis and reduction step with progress bar
+- [x] Implement correlation matrix calculation and reduction step
+- [x] Add dialoguer prompts for step-by-step confirmation flow
+- [x] Create summary report showing all reductions made
+- [x] Implement output file writing (CSV/Parquet based on extension)

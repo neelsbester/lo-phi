@@ -3,9 +3,9 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-/// Feature Reduction CLI - Reduce dataset features using missing value and correlation analysis
+/// Lo-phi - Reduce dataset features using missing value and correlation analysis
 #[derive(Parser, Debug)]
-#[command(name = "feature-reduce")]
+#[command(name = "lophi")]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Input file path (CSV or Parquet)
