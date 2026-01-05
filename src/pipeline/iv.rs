@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use polars::prelude::*;
 use rayon::prelude::*;
+use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -20,7 +21,7 @@ const MIN_BIN_SAMPLES: usize = 5;
 const SMOOTHING: f64 = 0.5;
 
 /// A single bin with WoE statistics
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]  // Fields may be used for reporting/debugging
 pub struct WoeBin {
     /// Lower bound (inclusive)
@@ -38,7 +39,7 @@ pub struct WoeBin {
 }
 
 /// Complete IV analysis results for a single feature
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]  // Fields may be used for reporting/debugging
 pub struct IvAnalysis {
     /// Name of the analyzed feature
