@@ -38,3 +38,7 @@ console = "0.15"
 # TUI framework - interactive configuration menu
 ratatui = "0.29"
 crossterm = "0.28"
+
+# JSON serialization - export analysis results
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
