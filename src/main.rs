@@ -8,11 +8,13 @@ mod pipeline;
 mod report;
 mod utils;
 
+use std::time::Instant;
+
 use anyhow::Result;
 use clap::Parser;
 use console::style;
 
-use cli::{Args, confirm_drop_features};
+use cli::{run_config_menu, Args, Config, ConfigResult};
 use pipeline::{
     analyze_missing_values, display_dataset_stats, drop_correlated_features,
     drop_high_missing_features, find_correlated_pairs, get_features_above_threshold,
@@ -21,11 +23,37 @@ use pipeline::{
 use report::ReductionSummary;
 use utils::{
     create_spinner, finish_with_success, print_banner, print_completion, print_config,
-    print_count, print_info, print_skip, print_step_header, print_success,
+    print_count, print_info, print_step_header, print_success,
 };
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    
+    // Derive output path from input if not provided
+    let output_path = args.output_path();
+
+    // Determine final config values - either from interactive menu or CLI defaults
+    let (missing_threshold, correlation_threshold) = if args.no_confirm {
+        // Skip interactive menu when --no-confirm is set
+        (args.missing_threshold, args.correlation_threshold)
+    } else {
+        // Show interactive config menu
+        let config = Config {
+            input: args.input.clone(),
+            target: args.target.clone(),
+            output: output_path.clone(),
+            missing_threshold: args.missing_threshold,
+            correlation_threshold: args.correlation_threshold,
+        };
+
+        match run_config_menu(config)? {
+            ConfigResult::Proceed(cfg) => (cfg.missing_threshold, cfg.correlation_threshold),
+            ConfigResult::Quit => {
+                println!("Cancelled by user.");
+                return Ok(());
+            }
+        }
+    };
 
     // Print styled banner
     print_banner(env!("CARGO_PKG_VERSION"));
@@ -34,12 +62,13 @@ fn main() -> Result<()> {
     print_config(
         &args.input,
         &args.target,
-        &args.output,
-        args.missing_threshold,
-        args.correlation_threshold,
+        &output_path,
+        missing_threshold,
+        correlation_threshold,
     );
 
     // Step 1: Load dataset
+    let step_start = Instant::now();
     let spinner = create_spinner("Loading dataset...");
     let mut lf = load_dataset(&args.input)?;
     finish_with_success(&spinner, "Dataset loaded");
@@ -51,6 +80,7 @@ fn main() -> Result<()> {
     let initial_schema = lf.collect_schema()?;
     let initial_features = initial_schema.len();
     let mut summary = ReductionSummary::new(initial_features);
+    summary.set_load_time(step_start.elapsed());
 
     // Verify target column exists
     if !initial_schema.contains(&args.target) {
@@ -64,11 +94,12 @@ fn main() -> Result<()> {
     // Step 2: Missing value analysis
     print_step_header(1, "Missing Value Analysis");
 
+    let step_start = Instant::now();
     let spinner = create_spinner("Analyzing missing values...");
     let missing_ratios = analyze_missing_values(&lf)?;
     let features_to_drop_missing = get_features_above_threshold(
         &missing_ratios,
-        args.missing_threshold,
+        missing_threshold,
         &args.target,
     );
     finish_with_success(&spinner, "Missing value analysis complete");
@@ -79,26 +110,21 @@ fn main() -> Result<()> {
         print_count(
             "feature(s) with high missing values",
             features_to_drop_missing.len(),
-            Some(&format!("(>{:.1}%)", args.missing_threshold * 100.0)),
+            Some(&format!("(>{:.1}%)", missing_threshold * 100.0)),
         );
 
-        let should_drop = args.no_confirm
-            || confirm_drop_features(features_to_drop_missing.len(), "missing value")?;
-
-        if should_drop {
-            lf = drop_high_missing_features(lf, &features_to_drop_missing);
-            summary.add_missing_drops(features_to_drop_missing);
-            print_success("Dropped features with high missing values");
-        } else {
-            print_skip("Skipped missing value reduction");
-        }
+        lf = drop_high_missing_features(lf, &features_to_drop_missing);
+        summary.add_missing_drops(features_to_drop_missing);
+        print_success("Dropped features with high missing values");
     }
+    summary.set_missing_time(step_start.elapsed());
 
     // Step 3: Correlation analysis
     print_step_header(2, "Correlation Analysis");
 
+    let step_start = Instant::now();
     let spinner = create_spinner("Calculating correlations...");
-    let correlated_pairs = find_correlated_pairs(&lf, args.correlation_threshold)?;
+    let correlated_pairs = find_correlated_pairs(&lf, correlation_threshold)?;
     let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &args.target);
     finish_with_success(&spinner, "Correlation analysis complete");
 
@@ -108,34 +134,30 @@ fn main() -> Result<()> {
         print_count(
             "correlated pair(s)",
             correlated_pairs.len(),
-            Some(&format!("(>{:.2})", args.correlation_threshold)),
+            Some(&format!("(>{:.2})", correlation_threshold)),
         );
         println!(
-            "      Recommended to drop {} feature(s)",
+            "      Dropping {} feature(s)",
             style(features_to_drop_corr.len()).yellow().bold()
         );
 
-        let should_drop = args.no_confirm
-            || confirm_drop_features(features_to_drop_corr.len(), "correlation")?;
-
-        if should_drop {
-            lf = drop_correlated_features(lf, &features_to_drop_corr);
-            summary.add_correlation_drops(features_to_drop_corr);
-            print_success("Dropped highly correlated features");
-        } else {
-            print_skip("Skipped correlation reduction");
-        }
+        lf = drop_correlated_features(lf, &features_to_drop_corr);
+        summary.add_correlation_drops(features_to_drop_corr);
+        print_success("Dropped highly correlated features");
     }
+    summary.set_correlation_time(step_start.elapsed());
 
     // Step 4: Save output
     print_step_header(3, "Save Results");
 
+    let step_start = Instant::now();
     let spinner = create_spinner("Writing output file...");
-    save_dataset(&lf, &args.output)?;
+    save_dataset(&lf, &output_path)?;
     finish_with_success(
         &spinner,
-        &format!("Saved to {}", args.output.display()),
+        &format!("Saved to {}", output_path.display()),
     );
+    summary.set_save_time(step_start.elapsed());
 
     // Display summary
     summary.display();

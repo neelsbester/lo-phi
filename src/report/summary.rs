@@ -1,5 +1,7 @@
 //! Reduction summary report generation
 
+use std::time::Duration;
+
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Attribute, Cell, Color, Table};
 use console::style;
 
@@ -10,6 +12,11 @@ pub struct ReductionSummary {
     pub final_features: usize,
     pub dropped_missing: Vec<String>,
     pub dropped_correlation: Vec<String>,
+    // Timing information
+    pub load_time: Duration,
+    pub missing_time: Duration,
+    pub correlation_time: Duration,
+    pub save_time: Duration,
 }
 
 impl ReductionSummary {
@@ -29,6 +36,35 @@ impl ReductionSummary {
     pub fn add_correlation_drops(&mut self, features: Vec<String>) {
         self.final_features -= features.len();
         self.dropped_correlation = features;
+    }
+
+    pub fn set_load_time(&mut self, duration: Duration) {
+        self.load_time = duration;
+    }
+
+    pub fn set_missing_time(&mut self, duration: Duration) {
+        self.missing_time = duration;
+    }
+
+    pub fn set_correlation_time(&mut self, duration: Duration) {
+        self.correlation_time = duration;
+    }
+
+    pub fn set_save_time(&mut self, duration: Duration) {
+        self.save_time = duration;
+    }
+
+    fn format_duration(duration: Duration) -> String {
+        let millis = duration.as_millis();
+        if millis < 1000 {
+            format!("{}ms", millis)
+        } else {
+            format!("{:.2}s", duration.as_secs_f64())
+        }
+    }
+
+    pub fn total_time(&self) -> Duration {
+        self.load_time + self.missing_time + self.correlation_time + self.save_time
     }
 
     pub fn display(&self) {
@@ -105,39 +141,48 @@ impl ReductionSummary {
             println!("    {}", line);
         }
 
-        // Show dropped features details if any
-        if !self.dropped_missing.is_empty() || !self.dropped_correlation.is_empty() {
-            println!();
-            println!(
-                "    {} {}",
-                style("📝").cyan(),
-                style("DROPPED FEATURES").white().bold()
-            );
-            println!("    {}", style("─".repeat(50)).dim());
+        // Show timing summary
+        println!();
+        println!(
+            "    {} {}",
+            style("⏱️ ").cyan(),
+            style("TIMING").white().bold()
+        );
+        println!("    {}", style("─".repeat(50)).dim());
 
-            if !self.dropped_missing.is_empty() {
-                println!();
-                println!(
-                    "      {} {}:",
-                    style("High Missing Values").yellow(),
-                    style(format!("({})", self.dropped_missing.len())).dim()
-                );
-                for feature in &self.dropped_missing {
-                    println!("        {} {}", style("•").dim(), feature);
-                }
-            }
+        let mut timing_table = Table::new();
+        timing_table.load_preset(UTF8_FULL_CONDENSED);
+        timing_table.set_header(vec![
+            Cell::new("Step").add_attribute(Attribute::Bold),
+            Cell::new("Duration").add_attribute(Attribute::Bold),
+        ]);
 
-            if !self.dropped_correlation.is_empty() {
-                println!();
-                println!(
-                    "      {} {}:",
-                    style("High Correlation").yellow(),
-                    style(format!("({})", self.dropped_correlation.len())).dim()
-                );
-                for feature in &self.dropped_correlation {
-                    println!("        {} {}", style("•").dim(), feature);
-                }
-            }
+        timing_table.add_row(vec![
+            Cell::new("📂 Load Dataset"),
+            Cell::new(Self::format_duration(self.load_time)).fg(Color::Cyan),
+        ]);
+        timing_table.add_row(vec![
+            Cell::new("🔍 Missing Analysis"),
+            Cell::new(Self::format_duration(self.missing_time)).fg(Color::Cyan),
+        ]);
+        timing_table.add_row(vec![
+            Cell::new("🔗 Correlation Analysis"),
+            Cell::new(Self::format_duration(self.correlation_time)).fg(Color::Cyan),
+        ]);
+        timing_table.add_row(vec![
+            Cell::new("💾 Save Results"),
+            Cell::new(Self::format_duration(self.save_time)).fg(Color::Cyan),
+        ]);
+        timing_table.add_row(vec![
+            Cell::new("⏱️  Total Time")
+                .add_attribute(Attribute::Bold),
+            Cell::new(Self::format_duration(self.total_time()))
+                .fg(Color::Green)
+                .add_attribute(Attribute::Bold),
+        ]);
+
+        for line in timing_table.to_string().lines() {
+            println!("    {}", line);
         }
     }
 }

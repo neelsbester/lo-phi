@@ -16,9 +16,10 @@ pub struct Args {
     #[arg(short, long)]
     pub target: String,
 
-    /// Output file path (CSV or Parquet, determined by extension)
+    /// Output file path (CSV or Parquet, determined by extension).
+    /// Defaults to input directory with '_reduced' suffix (e.g., data.csv → data_reduced.csv)
     #[arg(short, long)]
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
 
     /// Missing value threshold - drop features with missing values above this ratio
     #[arg(long, default_value = "0.3")]
@@ -31,5 +32,18 @@ pub struct Args {
     /// Skip interactive confirmation prompts
     #[arg(long, default_value = "false")]
     pub no_confirm: bool,
+}
+
+impl Args {
+    /// Get the output path, deriving from input if not explicitly provided.
+    /// The derived path will be in the same directory as the input with a '_reduced' suffix.
+    pub fn output_path(&self) -> PathBuf {
+        self.output.clone().unwrap_or_else(|| {
+            let parent = self.input.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let stem = self.input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+            let extension = self.input.extension().and_then(|e| e.to_str()).unwrap_or("parquet");
+            parent.join(format!("{}_reduced.{}", stem, extension))
+        })
+    }
 }
 

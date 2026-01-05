@@ -4,20 +4,13 @@ use console::{style, Emoji};
 use std::path::Path;
 
 // Emoji icons with fallbacks for terminals that don't support them
-pub static SUCCESS: Emoji<'_, '_> = Emoji("✅ ", "[OK] ");
 pub static INFO: Emoji<'_, '_> = Emoji("ℹ️  ", "[*] ");
-pub static WARN: Emoji<'_, '_> = Emoji("⚠️  ", "[!] ");
-pub static SKIP: Emoji<'_, '_> = Emoji("⏭️  ", "[>] ");
 pub static ROCKET: Emoji<'_, '_> = Emoji("🚀 ", ">> ");
 pub static CHART: Emoji<'_, '_> = Emoji("📊 ", "");
-pub static SCISSORS: Emoji<'_, '_> = Emoji("✂️  ", "");
 pub static FOLDER: Emoji<'_, '_> = Emoji("📂 ", "");
 pub static TARGET: Emoji<'_, '_> = Emoji("🎯 ", "");
 pub static SAVE: Emoji<'_, '_> = Emoji("💾 ", "");
 pub static LINK: Emoji<'_, '_> = Emoji("🔗 ", "");
-pub static TRASH: Emoji<'_, '_> = Emoji("🗑️  ", "");
-pub static CHECK: Emoji<'_, '_> = Emoji("✅ ", "[OK] ");
-pub static SPARKLE: Emoji<'_, '_> = Emoji("✨ ", "** ");
 
 /// Print the application banner with ASCII art
 pub fn print_banner(version: &str) {
@@ -35,30 +28,13 @@ pub fn print_banner(version: &str) {
     println!(
         "    {} {}",
         style("φ").magenta().bold(),
-        style("Feature Reduction Made Simple").dim()
+        style("Feature Reduction as simple as phi").dim()
     );
     println!(
         "    {}",
         style(format!("v{}", version)).dim()
     );
     println!("    {}", style("━".repeat(50)).dim());
-    println!();
-}
-
-/// Print a minimal banner (alternative to full ASCII art)
-pub fn print_minimal_banner(version: &str) {
-    println!();
-    println!(
-        "    {} {}",
-        style("φ").cyan().bold(),
-        style("LO-PHI").white().bold()
-    );
-    println!(
-        "    {}  v{}",
-        style("φ").magenta().bold(),
-        style(version).dim()
-    );
-    println!("    {}", style("━".repeat(40)).dim());
     println!();
 }
 
@@ -126,16 +102,6 @@ pub fn print_info(message: &str) {
     println!("    {} {}", INFO, message);
 }
 
-/// Print a warning message
-pub fn print_warning(message: &str) {
-    println!("    {} {}", style("⚠").yellow().bold(), style(message).yellow());
-}
-
-/// Print a skip message
-pub fn print_skip(message: &str) {
-    println!("    {} {}", SKIP, style(message).dim());
-}
-
 /// Print the final completion message
 pub fn print_completion() {
     println!();
@@ -145,11 +111,6 @@ pub fn print_completion() {
         style("Lo-phi reduction complete!").green().bold()
     );
     println!();
-}
-
-/// Print a detail line (indented)
-pub fn print_detail(message: &str) {
-    println!("      {}", message);
 }
 
 /// Print a styled count message
