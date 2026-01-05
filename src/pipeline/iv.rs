@@ -138,22 +138,51 @@ pub fn analyze_features_iv(
 }
 
 /// Validate that the target column is binary (contains only 0 and 1)
+///
+/// This function handles edge cases from CSV/Parquet conversion:
+/// - Empty or all-null columns
+/// - Float64 columns with values like 0.0 and 1.0 (with tolerance)
+/// - Integer columns with 0 and 1
 fn validate_binary_target(df: &DataFrame, target: &str) -> Result<()> {
-    // NOTE: df is already borrowed, no collection needed
     let target_col = df
         .column(target)
         .with_context(|| format!("Target column '{}' not found", target))?;
 
-    let unique = target_col.unique()?.cast(&DataType::Int32)?;
-    let unique_values: Vec<i32> = unique.i32()?.into_no_null_iter().collect();
+    // Check for empty or all-null column first
+    if target_col.len() == 0 {
+        anyhow::bail!("Target column '{}' is empty", target);
+    }
 
+    if target_col.null_count() == target_col.len() {
+        anyhow::bail!("Target column '{}' contains only null values", target);
+    }
+
+    // Cast to Float64 first to handle both integer and float types uniformly
+    let float_col = target_col.cast(&DataType::Float64)?;
+    let unique = float_col.unique()?;
+
+    let unique_values: Vec<f64> = unique
+        .f64()?
+        .into_iter()
+        .filter_map(|v| v) // Skip nulls
+        .collect();
+
+    if unique_values.is_empty() {
+        anyhow::bail!("Target column '{}' has no valid (non-null) values", target);
+    }
+
+    // Check if values are 0.0 and 1.0 with tolerance for floating point precision
+    const TOLERANCE: f64 = 1e-9;
     let valid = unique_values.len() <= 2
-        && unique_values.iter().all(|&v| v == 0 || v == 1);
+        && unique_values
+            .iter()
+            .all(|&v| (v - 0.0).abs() < TOLERANCE || (v - 1.0).abs() < TOLERANCE);
 
     if !valid {
         anyhow::bail!(
-            "Target column '{}' must be binary (0/1). Found values: {:?}",
+            "Target column '{}' must be binary (0/1). Found {} unique values: {:?}",
             target,
+            unique_values.len(),
             unique_values
         );
     }
@@ -475,6 +504,91 @@ mod tests {
             "Partial discrimination should give AUC between 0.5 and 1.0, got {}", 
             auc
         );
+    }
+
+    #[test]
+    fn test_validate_binary_target_valid_int() {
+        // Valid binary target with integers
+        let df = df! {
+            "target" => [0i32, 1, 0, 1, 0, 1],
+            "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }.unwrap();
+        
+        assert!(validate_binary_target(&df, "target").is_ok());
+    }
+
+    #[test]
+    fn test_validate_binary_target_valid_float() {
+        // Valid binary target stored as floats (0.0 and 1.0)
+        let df = df! {
+            "target" => [0.0f64, 1.0, 0.0, 1.0, 0.0, 1.0],
+            "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }.unwrap();
+        
+        assert!(validate_binary_target(&df, "target").is_ok());
+    }
+
+    #[test]
+    fn test_validate_binary_target_empty_column() {
+        // Empty target column should fail
+        let df = df! {
+            "target" => Vec::<i32>::new(),
+            "feature" => Vec::<f64>::new(),
+        }.unwrap();
+        
+        let result = validate_binary_target(&df, "target");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_validate_binary_target_all_nulls() {
+        // All-null target column should fail
+        let df = df! {
+            "target" => [None::<i32>, None, None, None],
+            "feature" => [1.0f64, 2.0, 3.0, 4.0],
+        }.unwrap();
+        
+        let result = validate_binary_target(&df, "target");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("null"));
+    }
+
+    #[test]
+    fn test_validate_binary_target_non_binary() {
+        // Non-binary target (0, 1, 2) should fail
+        let df = df! {
+            "target" => [0i32, 1, 2, 0, 1, 2],
+            "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
+        }.unwrap();
+        
+        let result = validate_binary_target(&df, "target");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("must be binary"));
+    }
+
+    #[test]
+    fn test_validate_binary_target_column_not_found() {
+        // Missing target column should fail
+        let df = df! {
+            "other" => [0i32, 1, 0, 1],
+            "feature" => [1.0f64, 2.0, 3.0, 4.0],
+        }.unwrap();
+        
+        let result = validate_binary_target(&df, "target");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_validate_binary_target_with_nulls_but_valid() {
+        // Target with some nulls but valid 0/1 values should pass
+        let df = df! {
+            "target" => [Some(0i32), Some(1), None, Some(0), Some(1)],
+            "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+        }.unwrap();
+        
+        assert!(validate_binary_target(&df, "target").is_ok());
     }
 }
 

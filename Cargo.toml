@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Data processing - memory-efficient large dataset handling
-polars = { version = "0.46", features = ["lazy", "csv", "parquet", "dtype-full"] }
+polars = { version = "0.46", features = ["lazy", "csv", "parquet", "dtype-full", "streaming"] }
 
 # CLI arguments - type-safe argument parsing with defaults
 clap = { version = "4.5", features = ["derive"] }
