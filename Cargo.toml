@@ -60,3 +60,10 @@ rand = "0.8"
 # CLI testing utilities
 assert_cmd = "2.0"
 predicates = "3.1"
+
+# Benchmarking framework
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "binning_benchmark"
+harness = false
