@@ -652,10 +652,22 @@ pub fn analyze_features_iv(
     target_mapping: Option<&TargetMapping>,
     binning_strategy: BinningStrategy,
     min_category_samples: Option<usize>,
+    cart_min_bin_pct: Option<f64>,
     weights: &[f64],
     weight_column: Option<&str>,
 ) -> Result<Vec<IvAnalysis>> {
     let min_cat_samples = min_category_samples.unwrap_or(DEFAULT_MIN_CATEGORY_SAMPLES);
+
+    // Calculate CART min bin samples from percentage
+    // Only used when binning_strategy == BinningStrategy::Cart
+    let cart_min_samples: usize = if let Some(pct) = cart_min_bin_pct {
+        let total_rows = df.height();
+        let calculated = (total_rows as f64 * pct / 100.0).floor() as usize;
+        // Floor of 1 to ensure at least 1 sample minimum
+        calculated.max(1)
+    } else {
+        MIN_BIN_SAMPLES
+    };
 
     // Get target values based on whether we have a mapping
     let target_values: Vec<Option<i32>> = if let Some(mapping) = target_mapping {
@@ -732,6 +744,7 @@ pub fn analyze_features_iv(
                 &target_values,
                 num_bins,
                 binning_strategy,
+                cart_min_samples,
                 &weights_arc,
             );
 
@@ -757,6 +770,7 @@ pub fn analyze_features_iv(
                 col_name,
                 &target_values,
                 min_cat_samples,
+                cart_min_samples,
                 &weights_arc,
                 binning_strategy,
                 num_bins,
@@ -855,6 +869,7 @@ fn analyze_single_numeric_feature(
     target_values: &[Option<i32>],
     num_bins: usize,
     binning_strategy: BinningStrategy,
+    cart_min_bin_samples: usize,
     weights: &[f64],
 ) -> Result<IvAnalysis> {
     let col = df.column(col_name)?;
@@ -983,7 +998,7 @@ fn analyze_single_numeric_feature(
         BinningStrategy::Cart => create_cart_prebins(
             &pairs,
             num_bins,
-            MIN_BIN_SAMPLES,
+            cart_min_bin_samples,
             total_events,
             total_non_events,
             total_samples,
@@ -1042,6 +1057,7 @@ fn analyze_categorical_feature(
     col_name: &str,
     target_values: &[Option<i32>],
     min_category_samples: usize,
+    cart_min_bin_samples: usize,
     weights: &[f64],
     binning_strategy: BinningStrategy,
     num_bins: usize,
@@ -1215,7 +1231,7 @@ fn analyze_categorical_feature(
             let sorted = sort_categories_by_event_rate(&category_stats);
 
             // Find CART splits
-            let splits = find_categorical_cart_splits(&sorted, num_bins, MIN_BIN_SAMPLES);
+            let splits = find_categorical_cart_splits(&sorted, num_bins, cart_min_bin_samples);
 
             // Create bins from splits
             let mut bins = create_categorical_cart_bins(
@@ -1893,6 +1909,7 @@ mod tests {
             "category",
             &target_values,
             1,
+            5,
             &weights,
             BinningStrategy::Quantile,
             5,
@@ -1964,6 +1981,7 @@ mod tests {
             &target_values,
             5,
             BinningStrategy::Quantile,
+            5,
             &weights,
         );
         assert!(
@@ -2028,6 +2046,7 @@ mod tests {
             "category",
             &target_values,
             1,
+            5,
             &weights,
             BinningStrategy::Quantile,
             5,
@@ -2092,6 +2111,7 @@ mod tests {
             &target_values,
             5,
             BinningStrategy::Quantile,
+            5,
             &weights,
         );
         assert!(
@@ -2140,6 +2160,7 @@ mod tests {
             &target_values,
             5,
             BinningStrategy::Quantile,
+            5,
             &weights,
         );
         assert!(result.is_ok(), "Should analyze feature");
@@ -2176,6 +2197,7 @@ mod tests {
             &target_values,
             5,
             BinningStrategy::Quantile,
+            5,
             &weights,
         );
         assert!(result.is_ok(), "Should handle all-missing feature values");
@@ -2231,6 +2253,7 @@ mod tests {
             &target_values,
             5,
             BinningStrategy::Quantile,
+            5,
             &weights,
         );
         assert!(result.is_ok(), "Should analyze feature");
@@ -2284,6 +2307,7 @@ mod tests {
             &target_values,
             5,
             BinningStrategy::Quantile,
+            5,
             &weights,
         );
         assert!(result.is_ok(), "Should analyze feature");
@@ -2340,6 +2364,7 @@ mod tests {
             "category",
             &target_values,
             1,
+            1,
             &weights,
             BinningStrategy::Cart,
             2,
@@ -2380,6 +2405,7 @@ mod tests {
             "category",
             &target_values,
             1,
+            1,
             &weights,
             BinningStrategy::Cart,
             10, // Request 10 bins but only 2 categories
@@ -2410,6 +2436,7 @@ mod tests {
             &df,
             "category",
             &target_values,
+            2,
             2,
             &weights, // min 2 samples per category
             BinningStrategy::Cart,
@@ -2453,6 +2480,7 @@ mod tests {
             "category",
             &target_values,
             1,
+            1,
             &weights,
             BinningStrategy::Quantile,
             3,
@@ -2465,6 +2493,7 @@ mod tests {
             &df,
             "category",
             &target_values,
+            1,
             1,
             &weights,
             BinningStrategy::Cart,

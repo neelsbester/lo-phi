@@ -30,6 +30,9 @@ pub struct AnalysisMetadata {
     pub gini_threshold: f64,
     /// Minimum samples per category
     pub min_category_samples: usize,
+    /// CART minimum bin size percentage (if CART strategy used)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cart_min_bin_pct: Option<f64>,
 }
 
 /// Summary statistics of the analysis
@@ -81,6 +84,7 @@ pub struct ExportParams<'a> {
     pub num_bins: usize,
     pub gini_threshold: f64,
     pub min_category_samples: usize,
+    pub cart_min_bin_pct: Option<f64>,
 }
 
 /// Export Gini analysis results to a JSON file with enhanced metadata
@@ -145,6 +149,7 @@ pub fn export_gini_analysis_enhanced(
             num_bins: params.num_bins,
             gini_threshold: params.gini_threshold,
             min_category_samples: params.min_category_samples,
+            cart_min_bin_pct: params.cart_min_bin_pct,
         },
         summary: AnalysisSummary {
             total_features_analyzed: analyses.len(),

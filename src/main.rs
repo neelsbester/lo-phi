@@ -318,6 +318,7 @@ fn main() -> Result<()> {
         target_mapping.as_ref(),
         binning_strategy,
         Some(cli.min_category_samples),
+        Some(cli.cart_min_bin_pct),
         &weights,
         weight_column.as_deref(),
     )?;
@@ -333,6 +334,11 @@ fn main() -> Result<()> {
         num_bins: gini_bins,
         gini_threshold,
         min_category_samples: cli.min_category_samples,
+        cart_min_bin_pct: if binning_strategy == BinningStrategy::Cart {
+            Some(cli.cart_min_bin_pct)
+        } else {
+            None
+        },
     };
     export_gini_analysis_enhanced(
         &gini_analyses,

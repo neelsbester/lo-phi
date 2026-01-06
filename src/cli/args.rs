@@ -67,6 +67,13 @@ pub struct Cli {
     #[arg(long, default_value = "5")]
     pub min_category_samples: usize,
 
+    /// Minimum bin size as percentage of total samples for CART binning (0-100).
+    /// Only applies to CART binning strategy; ignored for Quantile.
+    /// Example: 5.0 means bins must contain at least 5% of total samples.
+    /// Default: 5.0 (5% of total samples)
+    #[arg(long, default_value = "5.0")]
+    pub cart_min_bin_pct: f64,
+
     /// Columns to drop before processing (comma-separated).
     /// These columns will be removed from the dataset before any analysis.
     #[arg(long, value_delimiter = ',')]
