@@ -312,16 +312,81 @@ fn update_filtered(search: &str, columns: &[String], filtered: &mut Vec<usize>) 
     }
 }
 
+/// Truncate a path string from the start to fit within max_len characters
+/// Returns "...rest/of/path" style truncation
+fn truncate_path_start(path: &str, max_len: usize) -> String {
+    if path.len() <= max_len {
+        return path.to_string();
+    }
+    if max_len <= 3 {
+        return "...".to_string();
+    }
+    let truncate_to = max_len - 3; // Account for "..."
+    let start_idx = path.len() - truncate_to;
+    format!("...{}", &path[start_idx..])
+}
+
 fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[String]) {
     let area = frame.area();
 
-    // Calculate centered box dimensions
-    let menu_width = 60u16;
-    let menu_height = 22u16;
-    let x = area.width.saturating_sub(menu_width) / 2;
-    let y = area.height.saturating_sub(menu_height) / 2;
+    // ASCII logo for Lo-phi
+    let logo_lines = vec![
+        Line::from(Span::styled(
+            "██╗      ██████╗       ██████╗ ██╗  ██╗██╗",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "██║     ██╔═══██╗      ██╔══██╗██║  ██║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "██║     ██║   ██║█████╗██████╔╝███████║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "██║     ██║   ██║╚════╝██╔═══╝ ██╔══██║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "███████╗╚██████╔╝      ██║     ██║  ██║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "╚══════╝ ╚═════╝       ╚═╝     ╚═╝  ╚═╝╚═╝",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("φ ", Style::default().fg(Color::Magenta).bold()),
+            Span::styled(
+                "Feature Reduction as simple as phi",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+    ];
+    let logo_height = 9u16; // 6 logo lines + 1 empty + 1 subtitle + 1 spacing
 
-    let menu_area = Rect::new(x, y, menu_width.min(area.width), menu_height.min(area.height));
+    // Calculate centered box dimensions - wider box (66 chars, ~10% wider than 60)
+    let menu_width = 66u16;
+    // Dynamic height: use minimum needed (22) or available space, whichever is smaller
+    let ideal_height = 22u16;
+    let menu_height = ideal_height.min(area.height.saturating_sub(logo_height + 2)); // Leave room for logo
+
+    // Total height needed: logo + menu
+    let total_height = logo_height + menu_height;
+    let x = area.width.saturating_sub(menu_width) / 2;
+    let y = area.height.saturating_sub(total_height) / 2;
+
+    // Draw logo above the menu (centered)
+    let logo_width = 43u16; // Width of the ASCII art
+    let logo_x = area.width.saturating_sub(logo_width) / 2;
+    let logo_area = Rect::new(logo_x, y, logo_width.min(area.width), logo_height);
+    let logo_paragraph = Paragraph::new(logo_lines).alignment(Alignment::Center);
+    frame.render_widget(logo_paragraph, logo_area);
+
+    // Menu area positioned below the logo
+    let menu_y = y + logo_height;
+    let menu_area = Rect::new(x, menu_y, menu_width.min(area.width), menu_height.max(10)); // Min 10 rows
 
     // Clear the area behind the menu
     frame.render_widget(Clear, menu_area);
@@ -336,8 +401,8 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
     let inner_area = outer_block.inner(menu_area);
     frame.render_widget(outer_block, menu_area);
 
-    // Build content based on state
-    let content = build_content(config, state, inner_area.width as usize);
+    // Build content based on state with adaptive sizing
+    let content = build_content(config, state, inner_area.width as usize, inner_area.height as usize);
 
     let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
 
@@ -371,19 +436,23 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
     }
 }
 
-fn build_content(config: &Config, state: &MenuState, _width: usize) -> Vec<Line<'static>> {
+fn build_content(config: &Config, state: &MenuState, width: usize, height: usize) -> Vec<Line<'static>> {
     let mut lines = vec![];
 
-    // Header section
-    lines.push(Line::from(""));
+    // Calculate max path length (width minus label and padding)
+    // Label is "  Input:  " = 10 chars, plus 2 for border = 12, plus some margin
+    let max_path_len = width.saturating_sub(14);
 
-    // File info section
+    // Header section - skip if very tight on space
+    if height >= 18 {
+        lines.push(Line::from(""));
+    }
+
+    // File info section with truncated paths
+    let input_path = truncate_path_start(&config.input.display().to_string(), max_path_len);
     lines.push(Line::from(vec![
         Span::styled("  Input:  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            config.input.display().to_string(),
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(input_path, Style::default().fg(Color::White)),
     ]));
 
     // Target with highlighting if not selected
@@ -401,12 +470,10 @@ fn build_content(config: &Config, state: &MenuState, _width: usize) -> Vec<Line<
         Span::styled(target_display, target_style),
     ]));
 
+    let output_path = truncate_path_start(&config.output.display().to_string(), max_path_len);
     lines.push(Line::from(vec![
         Span::styled("  Output: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            config.output.display().to_string(),
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(output_path, Style::default().fg(Color::White)),
     ]));
 
     // Show columns to drop count
@@ -425,12 +492,20 @@ fn build_content(config: &Config, state: &MenuState, _width: usize) -> Vec<Line<
         Span::styled(drop_display, drop_style),
     ]));
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  ─────────────────────────────────────────────",
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(Line::from(""));
+    // Separator - use shorter one for compact mode
+    if height >= 16 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  ───────────────────────────────────────────────────",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  ─────────────────────────────────",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
 
     // Threshold section with highlighting based on state
     let missing_style = match state {
@@ -472,12 +547,20 @@ fn build_content(config: &Config, state: &MenuState, _width: usize) -> Vec<Line<
         Span::styled(format!("{:.2}", config.correlation_threshold), corr_style),
     ]));
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  ─────────────────────────────────────────────",
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(Line::from(""));
+    // Second separator - adaptive
+    if height >= 16 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  ───────────────────────────────────────────────────",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  ─────────────────────────────────",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
 
     // Controls section
     let enter_style = if config.target.is_some() {
