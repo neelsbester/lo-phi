@@ -19,7 +19,7 @@ The tool applies three reduction strategies in sequence:
 | CLI Arguments | `clap` (derive) | Type-safe argument parsing with defaults |
 | Progress Bars | `indicatif` | Visual progress indicators during analysis |
 | Interactive Prompts | `dialoguer` | Step confirmations and threshold adjustments |
-| TUI Framework | `ratatui` + `crossterm` | Interactive configuration menu |
+| TUI Framework | `ratatui` + `crossterm` | Interactive configuration menu with ASCII logo |
 | Table Output | `comfy-table` | Display reduction summaries |
 | Error Handling | `anyhow` + `thiserror` | Clean error messages |
 | Parallel Processing | `rayon` | Multi-threaded correlation and IV calculations |
