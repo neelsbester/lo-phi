@@ -29,7 +29,7 @@ fn test_basic_csv_to_parquet_conversion() {
     let parquet_path = temp_dir.path().join("test.parquet");
 
     // Convert CSV to Parquet
-    run_convert(&csv_path, Some(&parquet_path), 1000).unwrap();
+    run_convert(&csv_path, Some(&parquet_path), 1000, false).unwrap();
 
     // Verify the Parquet file exists and has correct shape
     assert!(parquet_path.exists(), "Parquet file should be created");
@@ -59,7 +59,7 @@ fn test_conversion_preserves_data_types() {
     let csv_path = create_test_csv(&temp_dir, "types_test.csv", &mut df);
     let parquet_path = temp_dir.path().join("types_test.parquet");
 
-    run_convert(&csv_path, Some(&parquet_path), 1000).unwrap();
+    run_convert(&csv_path, Some(&parquet_path), 1000, false).unwrap();
 
     let result_df = LazyFrame::scan_parquet(&parquet_path, Default::default())
         .unwrap()
@@ -93,7 +93,7 @@ fn test_conversion_with_binary_target_preserved() {
     let csv_path = create_test_csv(&temp_dir, "binary_target.csv", &mut df);
     let parquet_path = temp_dir.path().join("binary_target.parquet");
 
-    run_convert(&csv_path, Some(&parquet_path), 1000).unwrap();
+    run_convert(&csv_path, Some(&parquet_path), 1000, false).unwrap();
 
     let result_df = LazyFrame::scan_parquet(&parquet_path, Default::default())
         .unwrap()
@@ -130,7 +130,7 @@ fn test_conversion_auto_output_path() {
     let csv_path = create_test_csv(&temp_dir, "auto_output.csv", &mut df);
 
     // Convert without explicit output path
-    run_convert(&csv_path, None, 1000).unwrap();
+    run_convert(&csv_path, None, 1000, false).unwrap();
 
     // Should create parquet with same base name
     let expected_parquet = temp_dir.path().join("auto_output.parquet");
@@ -155,7 +155,7 @@ fn test_conversion_with_missing_values() {
     let csv_path = create_test_csv(&temp_dir, "nulls_test.csv", &mut df);
     let parquet_path = temp_dir.path().join("nulls_test.parquet");
 
-    run_convert(&csv_path, Some(&parquet_path), 1000).unwrap();
+    run_convert(&csv_path, Some(&parquet_path), 1000, false).unwrap();
 
     let result_df = LazyFrame::scan_parquet(&parquet_path, Default::default())
         .unwrap()
@@ -184,7 +184,7 @@ fn test_conversion_produces_valid_parquet() {
     let csv_path = create_test_csv(&temp_dir, "compression_test.csv", &mut df);
     let parquet_path = temp_dir.path().join("compression_test.parquet");
 
-    run_convert(&csv_path, Some(&parquet_path), 1000).unwrap();
+    run_convert(&csv_path, Some(&parquet_path), 1000, false).unwrap();
 
     // Verify the Parquet file is valid and readable
     let result_df = LazyFrame::scan_parquet(&parquet_path, Default::default())
@@ -221,7 +221,7 @@ fn test_conversion_with_many_columns() {
     let csv_path = create_test_csv(&temp_dir, "wide_test.csv", &mut df);
     let parquet_path = temp_dir.path().join("wide_test.parquet");
 
-    run_convert(&csv_path, Some(&parquet_path), 1000).unwrap();
+    run_convert(&csv_path, Some(&parquet_path), 1000, false).unwrap();
 
     let result_df = LazyFrame::scan_parquet(&parquet_path, Default::default())
         .unwrap()
@@ -229,5 +229,33 @@ fn test_conversion_with_many_columns() {
         .unwrap();
 
     assert_eq!(result_df.shape(), (10, 51), "Should have 10 rows and 51 columns");
+}
+
+#[test]
+fn test_fast_mode_conversion() {
+    // Test the fast (in-memory) conversion mode
+    let mut df = df! {
+        "id" => [1i32, 2, 3, 4, 5],
+        "value" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+        "target" => [0i32, 1, 0, 1, 0],
+    }
+    .unwrap();
+
+    let temp_dir = TempDir::new().unwrap();
+    let csv_path = create_test_csv(&temp_dir, "fast_test.csv", &mut df);
+    let parquet_path = temp_dir.path().join("fast_test.parquet");
+
+    // Convert using fast mode (in-memory, multi-core)
+    run_convert(&csv_path, Some(&parquet_path), 1000, true).unwrap();
+
+    // Verify the Parquet file exists and has correct shape
+    assert!(parquet_path.exists(), "Parquet file should be created");
+
+    let result_df = LazyFrame::scan_parquet(&parquet_path, Default::default())
+        .unwrap()
+        .collect()
+        .unwrap();
+
+    assert_eq!(result_df.shape(), (5, 3));
 }
 

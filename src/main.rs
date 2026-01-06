@@ -36,7 +36,8 @@ fn main() -> Result<()> {
                 input,
                 output,
                 infer_schema_length,
-            } => cli::convert::run_convert(input, output.as_deref(), *infer_schema_length),
+                fast,
+            } => cli::convert::run_convert(input, output.as_deref(), *infer_schema_length, *fast),
         };
     }
 

@@ -1,4 +1,4 @@
-//! CSV to Parquet conversion utility with streaming support
+//! CSV to Parquet conversion utility with streaming and fast in-memory modes
 
 use std::path::Path;
 use std::time::Instant;
@@ -29,17 +29,19 @@ fn format_duration(duration: std::time::Duration) -> String {
     }
 }
 
-/// Run the CSV to Parquet conversion using streaming for memory efficiency
+/// Run the CSV to Parquet conversion
 ///
 /// # Arguments
 /// * `input` - Path to the input CSV file
 /// * `output` - Optional output path. If not provided, uses input path with .parquet extension
 /// * `infer_schema_length` - Number of rows to use for schema inference
+/// * `fast` - If true, uses in-memory conversion (more RAM, all CPU cores).
+///            If false, uses streaming conversion (low RAM, single-threaded).
 ///
 /// # Performance Notes
-/// Uses streaming `sink_parquet()` to convert without loading the entire dataset into memory.
-/// This is significantly faster and more memory-efficient for large files.
-pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usize) -> Result<()> {
+/// - **Streaming mode (default)**: Uses `sink_parquet()` for memory efficiency. Single-threaded.
+/// - **Fast mode (`--fast`)**: Loads entire dataset into memory, parallelizes across all cores.
+pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usize, fast: bool) -> Result<()> {
     let total_start = Instant::now();
 
     // Determine output path
@@ -55,6 +57,8 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
         }
     };
 
+    let mode_str = if fast { "fast (in-memory, multi-core)" } else { "streaming (low memory)" };
+    
     println!(
         "\n {} Converting CSV to Parquet  {}",
         style("◆").cyan().bold(),
@@ -66,6 +70,7 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
         "   Schema inference: {} rows",
         style(if infer_schema_length == 0 { "full scan".to_string() } else { infer_schema_length.to_string() }).dim()
     );
+    println!("   Mode: {}", style(mode_str).yellow());
     println!();
 
     // Convert schema length: 0 means full scan
@@ -75,74 +80,174 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
         Some(infer_schema_length)
     };
 
-    // Step 1: Create LazyFrame from CSV
-    println!(
-        "   {} [{}] Initializing CSV reader...",
-        style("→").blue(),
-        style(timestamp()).dim()
-    );
-    let step_start = Instant::now();
-    let spinner = create_spinner("Initializing CSV reader...");
-    let lf = LazyCsvReader::new(input)
-        .with_infer_schema_length(schema_length)
-        .with_low_memory(true) // Reduces memory pressure for large files
-        .with_rechunk(false)   // No rechunking needed for streaming
-        .finish()
-        .with_context(|| format!("Failed to read CSV file: {}", input.display()))?;
-    let init_time = step_start.elapsed();
-    spinner.finish_with_message(format!(
-        "{} [{}] CSV reader initialized ({})",
-        style("✓").green(),
-        style(timestamp()).dim(),
-        style(format_duration(init_time)).cyan()
-    ));
+    // Variables to track timing
+    let init_time;
+    let schema_time;
+    let load_time;
+    let write_time;
+    let num_cols;
 
-    // Step 2: Collect schema (triggers schema inference)
-    println!(
-        "   {} [{}] Inferring schema...",
-        style("→").blue(),
-        style(timestamp()).dim()
-    );
-    let step_start = Instant::now();
-    let spinner = create_spinner("Inferring schema (reading sample rows)...");
-    let schema = lf.clone().collect_schema()?;
-    let num_cols = schema.len();
-    let schema_time = step_start.elapsed();
-    spinner.finish_with_message(format!(
-        "{} [{}] Schema inferred: {} columns ({})",
-        style("✓").green(),
-        style(timestamp()).dim(),
-        style(num_cols).yellow(),
-        style(format_duration(schema_time)).cyan()
-    ));
+    if fast {
+        // === FAST MODE: In-memory conversion with parallelization ===
+        
+        // Step 1: Create LazyFrame from CSV
+        println!(
+            "   {} [{}] Initializing CSV reader...",
+            style("→").blue(),
+            style(timestamp()).dim()
+        );
+        let step_start = Instant::now();
+        let spinner = create_spinner("Initializing CSV reader...");
+        let lf = LazyCsvReader::new(input)
+            .with_infer_schema_length(schema_length)
+            .with_rechunk(true)  // Rechunk for better parallel performance
+            .finish()
+            .with_context(|| format!("Failed to read CSV file: {}", input.display()))?;
+        init_time = step_start.elapsed();
+        spinner.finish_with_message(format!(
+            "{} [{}] CSV reader initialized ({})",
+            style("✓").green(),
+            style(timestamp()).dim(),
+            style(format_duration(init_time)).cyan()
+        ));
 
-    // Step 3: Stream directly to Parquet without collecting into memory
-    println!(
-        "   {} [{}] Streaming to Parquet...",
-        style("→").blue(),
-        style(timestamp()).dim()
-    );
-    let step_start = Instant::now();
-    let spinner = create_spinner("Streaming to Parquet (this may take a while for large files)...");
+        // Step 2: Collect schema
+        println!(
+            "   {} [{}] Inferring schema...",
+            style("→").blue(),
+            style(timestamp()).dim()
+        );
+        let step_start = Instant::now();
+        let spinner = create_spinner("Inferring schema (reading sample rows)...");
+        let schema = lf.clone().collect_schema()?;
+        num_cols = schema.len();
+        schema_time = step_start.elapsed();
+        spinner.finish_with_message(format!(
+            "{} [{}] Schema inferred: {} columns ({})",
+            style("✓").green(),
+            style(timestamp()).dim(),
+            style(num_cols).yellow(),
+            style(format_duration(schema_time)).cyan()
+        ));
 
-    // Configure Parquet write options for optimal performance
-    let parquet_options = ParquetWriteOptions {
-        compression: ParquetCompression::Snappy,
-        statistics: StatisticsOptions::full(),
-        row_group_size: Some(100_000), // Optimal row group size for query performance
-        ..Default::default()
-    };
+        // Step 3: Load entire dataset into memory (parallelized!)
+        println!(
+            "   {} [{}] Loading into memory (using all CPU cores)...",
+            style("→").blue(),
+            style(timestamp()).dim()
+        );
+        let step_start = Instant::now();
+        let spinner = create_spinner("Loading dataset into memory...");
+        let mut df = lf.collect()
+            .with_context(|| "Failed to load dataset into memory")?;
+        load_time = step_start.elapsed();
+        spinner.finish_with_message(format!(
+            "{} [{}] Loaded into memory ({})",
+            style("✓").green(),
+            style(timestamp()).dim(),
+            style(format_duration(load_time)).cyan()
+        ));
 
-    lf.sink_parquet(&output_path, parquet_options, None)
-        .with_context(|| format!("Failed to write Parquet file: {}", output_path.display()))?;
+        // Step 4: Write to Parquet (parallelized column encoding!)
+        println!(
+            "   {} [{}] Writing Parquet (parallel column encoding)...",
+            style("→").blue(),
+            style(timestamp()).dim()
+        );
+        let step_start = Instant::now();
+        let spinner = create_spinner("Writing Parquet file...");
+        
+        let file = std::fs::File::create(&output_path)
+            .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
+        
+        ParquetWriter::new(file)
+            .with_compression(ParquetCompression::Snappy)
+            .with_statistics(StatisticsOptions::full())
+            .with_row_group_size(Some(100_000))
+            .finish(&mut df)
+            .with_context(|| format!("Failed to write Parquet file: {}", output_path.display()))?;
 
-    let write_time = step_start.elapsed();
-    spinner.finish_with_message(format!(
-        "{} [{}] Parquet written ({})",
-        style("✓").green(),
-        style(timestamp()).dim(),
-        style(format_duration(write_time)).cyan()
-    ));
+        write_time = step_start.elapsed();
+        spinner.finish_with_message(format!(
+            "{} [{}] Parquet written ({})",
+            style("✓").green(),
+            style(timestamp()).dim(),
+            style(format_duration(write_time)).cyan()
+        ));
+
+    } else {
+        // === STREAMING MODE: Memory-efficient but single-threaded ===
+        load_time = std::time::Duration::ZERO; // No separate load step in streaming mode
+        
+        // Step 1: Create LazyFrame from CSV
+        println!(
+            "   {} [{}] Initializing CSV reader...",
+            style("→").blue(),
+            style(timestamp()).dim()
+        );
+        let step_start = Instant::now();
+        let spinner = create_spinner("Initializing CSV reader...");
+        let lf = LazyCsvReader::new(input)
+            .with_infer_schema_length(schema_length)
+            .with_low_memory(true) // Reduces memory pressure for large files
+            .with_rechunk(false)   // No rechunking needed for streaming
+            .finish()
+            .with_context(|| format!("Failed to read CSV file: {}", input.display()))?;
+        init_time = step_start.elapsed();
+        spinner.finish_with_message(format!(
+            "{} [{}] CSV reader initialized ({})",
+            style("✓").green(),
+            style(timestamp()).dim(),
+            style(format_duration(init_time)).cyan()
+        ));
+
+        // Step 2: Collect schema (triggers schema inference)
+        println!(
+            "   {} [{}] Inferring schema...",
+            style("→").blue(),
+            style(timestamp()).dim()
+        );
+        let step_start = Instant::now();
+        let spinner = create_spinner("Inferring schema (reading sample rows)...");
+        let schema = lf.clone().collect_schema()?;
+        num_cols = schema.len();
+        schema_time = step_start.elapsed();
+        spinner.finish_with_message(format!(
+            "{} [{}] Schema inferred: {} columns ({})",
+            style("✓").green(),
+            style(timestamp()).dim(),
+            style(num_cols).yellow(),
+            style(format_duration(schema_time)).cyan()
+        ));
+
+        // Step 3: Stream directly to Parquet without collecting into memory
+        println!(
+            "   {} [{}] Streaming to Parquet (single-threaded)...",
+            style("→").blue(),
+            style(timestamp()).dim()
+        );
+        let step_start = Instant::now();
+        let spinner = create_spinner("Streaming to Parquet (this may take a while for large files)...");
+
+        // Configure Parquet write options for optimal performance
+        let parquet_options = ParquetWriteOptions {
+            compression: ParquetCompression::Snappy,
+            statistics: StatisticsOptions::full(),
+            row_group_size: Some(100_000),
+            ..Default::default()
+        };
+
+        lf.sink_parquet(&output_path, parquet_options, None)
+            .with_context(|| format!("Failed to write Parquet file: {}", output_path.display()))?;
+
+        write_time = step_start.elapsed();
+        spinner.finish_with_message(format!(
+            "{} [{}] Parquet written ({})",
+            style("✓").green(),
+            style(timestamp()).dim(),
+            style(format_duration(write_time)).cyan()
+        ));
+    }
 
     // Show file size comparison
     let input_size_bytes = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
@@ -178,6 +283,9 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
     println!("   {} Timing breakdown:", style("⏱").cyan());
     println!("      Init:    {}", format_duration(init_time));
     println!("      Schema:  {}", format_duration(schema_time));
+    if fast {
+        println!("      Load:    {}", format_duration(load_time));
+    }
     println!("      Write:   {}", format_duration(write_time));
     println!(
         "      {}",

@@ -72,6 +72,12 @@ pub enum Commands {
         /// Use 0 for full table scan (very slow for large files).
         #[arg(long, default_value = "10000")]
         infer_schema_length: usize,
+
+        /// Use fast in-memory conversion (uses more RAM but parallelizes across all CPU cores).
+        /// Recommended for machines with sufficient RAM (roughly 2-3x the CSV file size).
+        /// Without this flag, uses memory-efficient streaming (single-threaded but low RAM).
+        #[arg(long, default_value = "false")]
+        fast: bool,
     },
 }
 
