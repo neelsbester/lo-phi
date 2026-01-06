@@ -111,6 +111,8 @@ lophi --input data.csv \
 | `--missing-threshold` | | `0.3` | Drop features with missing values above this ratio |
 | `--gini-threshold` | | `0.05` | Drop features with Gini coefficient below this value |
 | `--gini-bins` | | `10` | Number of bins for Gini/IV calculation |
+| `--binning-strategy` | | `quantile` | Binning strategy: "quantile" (equal-frequency) or "cart" (decision tree) |
+| `--min-category-samples` | | `5` | Min samples per category before merging to "OTHER" |
 | `--correlation-threshold` | | `0.95` | Drop one feature from pairs above this correlation |
 | `--drop-columns` | | *none* | Comma-separated list of columns to drop before analysis |
 | `--no-confirm` | | `false` | Skip interactive configuration menu |
@@ -144,10 +146,14 @@ lophi convert input.csv --output custom_name.parquet
 - Always preserves the target column
 
 ### Step 3: Univariate Gini Analysis
-- Calculates Information Value (IV) and Gini coefficient for each numeric feature
-- Uses WoE (Weight of Evidence) binning with greedy merging
+- Calculates Information Value (IV) and Gini coefficient for each feature
+- Supports both **numeric** and **categorical** features
+- **Binning strategies**:
+  - **Quantile** (default): Equal-frequency bins with greedy IV-optimal merging
+  - **CART**: Decision tree-based splits that maximize information gain
+- **Categorical handling**: Rare categories (< min_category_samples) merged to "OTHER"
 - Drops features below the Gini threshold (default: 0.05)
-- Exports full analysis to `{input}_gini_analysis.json`
+- Exports full analysis with metadata to `{input}_gini_analysis.json`
 
 ### Step 4: Correlation Analysis
 - Calculates Pearson correlation for all numeric column pairs
@@ -173,10 +179,25 @@ lophi convert input.csv --output custom_name.parquet
 - Welford's algorithm for numerically stable correlation computation
 
 ### Gini/IV Calculation
-- Creates 50 initial quantile pre-bins
-- Greedy merging to target bin count (minimizes IV loss)
+
+**Binning Strategies:**
+- **Quantile binning** (default):
+  - Creates 50 initial quantile pre-bins (equal-frequency)
+  - Greedy merging to target bin count (minimizes IV loss)
+- **CART binning** (decision tree):
+  - Recursively finds optimal splits that maximize Gini impurity reduction
+  - Produces bins aligned with natural data boundaries
+  - More effective for features with non-linear relationships
+
+**Categorical Feature Support:**
+- Groups categories and calculates WoE/IV per category
+- Rare categories (< `--min-category-samples`) merged into "OTHER"
+- Gini calculated using category WoE values
+
+**Common:**
 - Laplace smoothing to avoid log(0) in WoE calculation
 - AUC-based Gini using Mann-Whitney U statistic
+- Enhanced bin statistics: count, population_pct, event_rate
 
 ### Target Column Handling
 - **Binary targets (0/1)**: Automatically detected and used directly
@@ -249,9 +270,13 @@ When running the reduction pipeline, Lo-phi generates:
    - Same format as specified in output path
 
 2. **Gini Analysis JSON** (`{input}_gini_analysis.json`)
-   - Complete IV/Gini analysis for each numeric feature
-   - WoE bins with boundaries and statistics
-   - List of features dropped due to low Gini
+   - **Metadata**: timestamp, lo-phi version, input file, binning strategy, thresholds
+   - **Summary**: total features analyzed, numeric/categorical counts, avg IV/Gini
+   - **Per-feature analysis**:
+     - Feature name and type (Numeric/Categorical)
+     - WoE bins (numeric) or categories (categorical) with statistics
+     - IV, Gini, population percentages, event rates
+     - Dropped status
 
 ## Example Output
 

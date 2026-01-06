@@ -51,6 +51,16 @@ pub struct Cli {
     #[arg(long, default_value = "10")]
     pub gini_bins: usize,
 
+    /// Binning strategy for Gini/IV calculation.
+    /// Options: "quantile" (equal-frequency, default) or "cart" (decision tree splits)
+    #[arg(long, default_value = "quantile")]
+    pub binning_strategy: String,
+
+    /// Minimum samples per category for categorical features.
+    /// Categories with fewer samples are merged into "OTHER".
+    #[arg(long, default_value = "5")]
+    pub min_category_samples: usize,
+
     /// Columns to drop before processing (comma-separated).
     /// These columns will be removed from the dataset before any analysis.
     #[arg(long, value_delimiter = ',')]

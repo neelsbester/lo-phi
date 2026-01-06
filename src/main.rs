@@ -18,9 +18,9 @@ use cli::{run_config_menu, run_target_mapping_selector, Cli, Commands, Config, C
 use pipeline::{
     analyze_features_iv, analyze_missing_values, analyze_target_column, find_correlated_pairs,
     get_column_names, get_features_above_threshold, get_low_gini_features,
-    load_dataset_with_progress, select_features_to_drop, TargetAnalysis, TargetMapping,
+    load_dataset_with_progress, select_features_to_drop, BinningStrategy, TargetAnalysis, TargetMapping,
 };
-use report::{export_gini_analysis, ReductionSummary};
+use report::{export_gini_analysis_enhanced, ExportParams, ReductionSummary};
 use utils::{
     create_spinner, finish_with_success, print_banner, print_completion, print_config,
     print_count, print_info, print_step_header, print_step_time, print_success,
@@ -244,13 +244,33 @@ fn main() -> Result<()> {
     // Step 2: Univariate Gini Analysis
     print_step_header(2, "Univariate Gini Analysis");
 
+    // Parse binning strategy
+    let binning_strategy: BinningStrategy = cli.binning_strategy.parse().map_err(|e: String| {
+        anyhow::anyhow!(e)
+    })?;
+
     let step_start = Instant::now();
-    let gini_analyses = analyze_features_iv(&df, &target, gini_bins, target_mapping.as_ref())?;
+    let gini_analyses = analyze_features_iv(
+        &df,
+        &target,
+        gini_bins,
+        target_mapping.as_ref(),
+        binning_strategy,
+        Some(cli.min_category_samples),
+    )?;
     let features_to_drop_gini = get_low_gini_features(&gini_analyses, gini_threshold);
 
     // Export Gini analysis to JSON for later inspection
     let gini_output_path = cli.gini_analysis_path().unwrap();
-    export_gini_analysis(&gini_analyses, &features_to_drop_gini, &gini_output_path)?;
+    let export_params = ExportParams {
+        input_file: input.to_str().unwrap_or("unknown"),
+        target_column: &target,
+        binning_strategy,
+        num_bins: gini_bins,
+        gini_threshold,
+        min_category_samples: cli.min_category_samples,
+    };
+    export_gini_analysis_enhanced(&gini_analyses, &features_to_drop_gini, &gini_output_path, &export_params)?;
     print_success(&format!("Gini analysis saved to {}", gini_output_path.display()));
 
     if features_to_drop_gini.is_empty() {
