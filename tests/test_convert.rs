@@ -74,10 +74,7 @@ fn test_conversion_preserves_data_types() {
         int_col.dtype().is_integer() || int_col.dtype().is_float(),
         "int_col should be numeric"
     );
-    assert!(
-        float_col.dtype().is_float(),
-        "float_col should be float"
-    );
+    assert!(float_col.dtype().is_float(), "float_col should be float");
 }
 
 #[test]
@@ -164,7 +161,11 @@ fn test_conversion_with_missing_values() {
 
     // Verify null counts are preserved
     let with_nulls_col = result_df.column("with_nulls").unwrap();
-    assert_eq!(with_nulls_col.null_count(), 2, "Null count should be preserved");
+    assert_eq!(
+        with_nulls_col.null_count(),
+        2,
+        "Null count should be preserved"
+    );
 }
 
 #[test]
@@ -193,12 +194,12 @@ fn test_conversion_produces_valid_parquet() {
         .unwrap();
 
     assert_eq!(result_df.shape(), (n, 2));
-    
+
     // Verify data integrity
     let feature_col = result_df.column("feature").unwrap();
     let first_val = feature_col.get(0).unwrap();
     let last_val = feature_col.get(n - 1).unwrap();
-    
+
     // Check first and last values match expected
     assert!(matches!(first_val, AnyValue::Float64(v) if (v - 0.0).abs() < 0.01));
     assert!(matches!(last_val, AnyValue::Float64(v) if (v - 999.0).abs() < 0.01));
@@ -213,7 +214,10 @@ fn test_conversion_with_many_columns() {
         let values: Vec<f64> = vec![i as f64; 10];
         columns.push(Column::new(format!("col_{}", i).into(), values));
     }
-    columns.push(Column::new("target".into(), vec![0i32, 1, 0, 1, 0, 1, 0, 1, 0, 1]));
+    columns.push(Column::new(
+        "target".into(),
+        vec![0i32, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+    ));
 
     let mut df = DataFrame::new(columns).unwrap();
 
@@ -228,7 +232,11 @@ fn test_conversion_with_many_columns() {
         .collect()
         .unwrap();
 
-    assert_eq!(result_df.shape(), (10, 51), "Should have 10 rows and 51 columns");
+    assert_eq!(
+        result_df.shape(),
+        (10, 51),
+        "Should have 10 rows and 51 columns"
+    );
 }
 
 #[test]
@@ -258,4 +266,3 @@ fn test_fast_mode_conversion() {
 
     assert_eq!(result_df.shape(), (5, 3));
 }
-

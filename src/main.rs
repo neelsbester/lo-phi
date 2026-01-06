@@ -14,16 +14,20 @@ use anyhow::Result;
 use clap::Parser;
 use console::style;
 
-use cli::{run_config_menu, run_target_mapping_selector, Cli, Commands, Config, ConfigResult, TargetMappingResult};
+use cli::{
+    run_config_menu, run_target_mapping_selector, Cli, Commands, Config, ConfigResult,
+    TargetMappingResult,
+};
 use pipeline::{
     analyze_features_iv, analyze_missing_values, analyze_target_column, find_correlated_pairs,
     get_column_names, get_features_above_threshold, get_low_gini_features, get_weights,
-    load_dataset_with_progress, select_features_to_drop, BinningStrategy, TargetAnalysis, TargetMapping,
+    load_dataset_with_progress, select_features_to_drop, BinningStrategy, TargetAnalysis,
+    TargetMapping,
 };
 use report::{export_gini_analysis_enhanced, ExportParams, ReductionSummary};
 use utils::{
-    create_spinner, finish_with_success, print_banner, print_completion, print_config,
-    print_count, print_info, print_step_header, print_step_time, print_success,
+    create_spinner, finish_with_success, print_banner, print_completion, print_config, print_count,
+    print_info, print_step_header, print_step_time, print_success,
 };
 
 fn main() -> Result<()> {
@@ -45,13 +49,15 @@ fn main() -> Result<()> {
     let input = cli.input().ok_or_else(|| {
         anyhow::anyhow!("Input file is required. Use -i/--input to specify a file.")
     })?;
-    
+
     // Derive output path from input if not provided
     let output_path = cli.output_path().unwrap();
 
     // Build initial target mapping from CLI args if provided
     let cli_target_mapping = match (&cli.event_value, &cli.non_event_value) {
-        (Some(event), Some(non_event)) => Some(TargetMapping::new(event.clone(), non_event.clone())),
+        (Some(event), Some(non_event)) => {
+            Some(TargetMapping::new(event.clone(), non_event.clone()))
+        }
         (Some(_), None) | (None, Some(_)) => {
             anyhow::bail!("Both --event-value and --non-event-value must be provided together")
         }
@@ -59,17 +65,37 @@ fn main() -> Result<()> {
     };
 
     // Determine final config values - either from interactive menu or CLI defaults
-    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold, columns_to_drop, mut target_mapping, weight_column) = if cli.no_confirm {
+    let (
+        target,
+        missing_threshold,
+        gini_threshold,
+        gini_bins,
+        correlation_threshold,
+        columns_to_drop,
+        mut target_mapping,
+        weight_column,
+    ) = if cli.no_confirm {
         // Skip interactive menu when --no-confirm is set
         // Target is required in non-interactive mode
         let target = cli.target.clone().ok_or_else(|| {
-            anyhow::anyhow!("Target column is required when using --no-confirm. Use -t/--target to specify.")
+            anyhow::anyhow!(
+                "Target column is required when using --no-confirm. Use -t/--target to specify."
+            )
         })?;
-        (target, cli.missing_threshold, cli.gini_threshold, cli.gini_bins, cli.correlation_threshold, cli.drop_columns.clone(), cli_target_mapping, cli.weight_column.clone())
+        (
+            target,
+            cli.missing_threshold,
+            cli.gini_threshold,
+            cli.gini_bins,
+            cli.correlation_threshold,
+            cli.drop_columns.clone(),
+            cli_target_mapping,
+            cli.weight_column.clone(),
+        )
     } else {
         // Load column names for interactive selection
         let columns = get_column_names(input)?;
-        
+
         // Show interactive config menu
         let config = Config {
             input: input.clone(),
@@ -89,7 +115,16 @@ fn main() -> Result<()> {
                     anyhow::anyhow!("Target column must be selected before proceeding")
                 })?;
                 // Use config's target_mapping if set (from CLI), otherwise None (will be determined after loading data)
-                (target, cfg.missing_threshold, cfg.gini_threshold, cli.gini_bins, cfg.correlation_threshold, cfg.columns_to_drop, cfg.target_mapping, cfg.weight_column)
+                (
+                    target,
+                    cfg.missing_threshold,
+                    cfg.gini_threshold,
+                    cli.gini_bins,
+                    cfg.correlation_threshold,
+                    cfg.columns_to_drop,
+                    cfg.target_mapping,
+                    cfg.weight_column,
+                )
             }
             ConfigResult::Quit => {
                 println!("Cancelled by user.");
@@ -113,8 +148,9 @@ fn main() -> Result<()> {
 
     // Step 1: Load dataset (with progress bar for CSV files)
     let step_start = Instant::now();
-    println!();  // Blank line before progress bar
-    let (mut df, rows, cols, memory_mb) = load_dataset_with_progress(input, cli.infer_schema_length)?;
+    println!(); // Blank line before progress bar
+    let (mut df, rows, cols, memory_mb) =
+        load_dataset_with_progress(input, cli.infer_schema_length)?;
     print_success("Dataset loaded");
 
     // Display statistics (instant since data is already collected)
@@ -125,7 +161,11 @@ fn main() -> Result<()> {
 
     // Apply user-specified column drops
     let dropped_count = if !columns_to_drop.is_empty() {
-        let column_names: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
+        let column_names: Vec<String> = df
+            .get_column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let valid_columns: Vec<String> = columns_to_drop
             .iter()
             .filter(|col| column_names.contains(col))
@@ -148,7 +188,11 @@ fn main() -> Result<()> {
     print_step_time(load_elapsed);
 
     // Verify target column exists
-    let column_names: Vec<String> = df.get_column_names().iter().map(|s| s.to_string()).collect();
+    let column_names: Vec<String> = df
+        .get_column_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     if !column_names.contains(&target) {
         anyhow::bail!(
             "Target column '{}' not found in dataset. Available columns: {:?}",
@@ -183,16 +227,24 @@ fn main() -> Result<()> {
                         unique_values
                     );
                 }
-                
+
                 // Show interactive selector for event/non-event values
                 println!();
-                println!("   {} Target column '{}' is not binary (0/1)", style("⚠").yellow(), target);
-                println!("     Found {} unique values: {:?}", unique_values.len(), &unique_values[..unique_values.len().min(5)]);
+                println!(
+                    "   {} Target column '{}' is not binary (0/1)",
+                    style("⚠").yellow(),
+                    target
+                );
+                println!(
+                    "     Found {} unique values: {:?}",
+                    unique_values.len(),
+                    &unique_values[..unique_values.len().min(5)]
+                );
                 if unique_values.len() > 5 {
                     println!("     ... and {} more", unique_values.len() - 5);
                 }
                 println!();
-                
+
                 match run_target_mapping_selector(unique_values)? {
                     TargetMappingResult::Selected(mapping) => {
                         println!("   {} Target mapping configured: '{}' → 1 (event), '{}' → 0 (non-event)",
@@ -212,7 +264,8 @@ fn main() -> Result<()> {
     } else {
         // Mapping was provided via CLI - validate it
         let mapping = target_mapping.as_ref().unwrap();
-        println!("   {} Using target mapping: '{}' → 1, '{}' → 0",
+        println!(
+            "   {} Using target mapping: '{}' → 1, '{}' → 0",
             style("✓").green(),
             mapping.event_value,
             mapping.non_event_value
@@ -226,11 +279,8 @@ fn main() -> Result<()> {
     let step_start = Instant::now();
     let spinner = create_spinner("Analyzing missing values...");
     let missing_ratios = analyze_missing_values(&df, &weights, weight_column.as_deref())?;
-    let features_to_drop_missing = get_features_above_threshold(
-        &missing_ratios,
-        missing_threshold,
-        &target,
-    );
+    let features_to_drop_missing =
+        get_features_above_threshold(&missing_ratios, missing_threshold, &target);
     finish_with_success(&spinner, "Missing value analysis complete");
 
     if features_to_drop_missing.is_empty() {
@@ -255,9 +305,10 @@ fn main() -> Result<()> {
     print_step_header(2, "Univariate Gini Analysis");
 
     // Parse binning strategy
-    let binning_strategy: BinningStrategy = cli.binning_strategy.parse().map_err(|e: String| {
-        anyhow::anyhow!(e)
-    })?;
+    let binning_strategy: BinningStrategy = cli
+        .binning_strategy
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!(e))?;
 
     let step_start = Instant::now();
     let gini_analyses = analyze_features_iv(
@@ -283,8 +334,16 @@ fn main() -> Result<()> {
         gini_threshold,
         min_category_samples: cli.min_category_samples,
     };
-    export_gini_analysis_enhanced(&gini_analyses, &features_to_drop_gini, &gini_output_path, &export_params)?;
-    print_success(&format!("Gini analysis saved to {}", gini_output_path.display()));
+    export_gini_analysis_enhanced(
+        &gini_analyses,
+        &features_to_drop_gini,
+        &gini_output_path,
+        &export_params,
+    )?;
+    print_success(&format!(
+        "Gini analysis saved to {}",
+        gini_output_path.display()
+    ));
 
     if features_to_drop_gini.is_empty() {
         print_info("No features below Gini threshold");
@@ -309,7 +368,12 @@ fn main() -> Result<()> {
     print_step_header(3, "Correlation Analysis");
 
     let step_start = Instant::now();
-    let correlated_pairs = find_correlated_pairs(&df, correlation_threshold, &weights, weight_column.as_deref())?;
+    let correlated_pairs = find_correlated_pairs(
+        &df,
+        correlation_threshold,
+        &weights,
+        weight_column.as_deref(),
+    )?;
     let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &target);
     print_success("Correlation analysis complete");
 
@@ -341,10 +405,7 @@ fn main() -> Result<()> {
     let step_start = Instant::now();
     let spinner = create_spinner("Writing output file...");
     save_dataset(&mut df, &output_path)?;
-    finish_with_success(
-        &spinner,
-        &format!("Saved to {}", output_path.display()),
-    );
+    finish_with_success(&spinner, &format!("Saved to {}", output_path.display()));
     let save_elapsed = step_start.elapsed();
     summary.set_save_time(save_elapsed);
     print_step_time(save_elapsed);

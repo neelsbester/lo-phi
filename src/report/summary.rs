@@ -198,8 +198,7 @@ impl ReductionSummary {
             Cell::new(Self::format_duration(self.save_time)).fg(Color::Cyan),
         ]);
         timing_table.add_row(vec![
-            Cell::new("∑ Total Time")
-                .add_attribute(Attribute::Bold),
+            Cell::new("∑ Total Time").add_attribute(Attribute::Bold),
             Cell::new(Self::format_duration(self.total_time()))
                 .fg(Color::Green)
                 .add_attribute(Attribute::Bold),

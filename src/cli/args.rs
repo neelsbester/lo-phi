@@ -119,8 +119,14 @@ impl Cli {
         let input = self.input.as_ref()?;
         Some(self.output.clone().unwrap_or_else(|| {
             let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-            let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-            let extension = input.extension().and_then(|e| e.to_str()).unwrap_or("parquet");
+            let stem = input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            let extension = input
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("parquet");
             parent.join(format!("{}_reduced.{}", stem, extension))
         }))
     }
@@ -134,4 +140,3 @@ impl Cli {
         Some(parent.join(format!("{}_gini_analysis.json", stem)))
     }
 }
-

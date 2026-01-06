@@ -43,13 +43,7 @@ pub fn analyze_missing_values(
             .as_materialized_series()
             .iter()
             .zip(weights.iter())
-            .filter_map(|(val, &w)| {
-                if val.is_null() {
-                    Some(w)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(val, &w)| if val.is_null() { Some(w) } else { None })
             .sum();
 
         let missing_ratio = weighted_null_count / total_weight;

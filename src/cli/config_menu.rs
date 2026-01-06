@@ -107,7 +107,7 @@ pub enum TargetMappingResult {
 }
 
 /// Run target mapping selector as a standalone TUI
-/// 
+///
 /// This is called from main.rs after loading data and analyzing the target column
 /// when the target column is not already binary 0/1.
 pub fn run_target_mapping_selector(unique_values: Vec<String>) -> Result<TargetMappingResult> {
@@ -240,15 +240,10 @@ fn draw_mapping_ui(frame: &mut Frame, state: &MappingState) {
     let info_x = area.width.saturating_sub(info_width) / 2;
     let info_y = area.height.saturating_sub(25) / 2;
 
-    let info_area = Rect::new(
-        info_x,
-        info_y,
-        info_width.min(area.width),
-        info_height,
-    );
+    let info_area = Rect::new(info_x, info_y, info_width.min(area.width), info_height);
 
     frame.render_widget(Clear, info_area);
-    
+
     let info_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
@@ -257,12 +252,14 @@ fn draw_mapping_ui(frame: &mut Frame, state: &MappingState) {
 
     let info_content = Paragraph::new(vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Target column is not binary (0/1).", Style::default().fg(Color::White)),
-        ]),
-        Line::from(vec![
-            Span::styled("  Please select event and non-event values.", Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  Target column is not binary (0/1).",
+            Style::default().fg(Color::White),
+        )]),
+        Line::from(vec![Span::styled(
+            "  Please select event and non-event values.",
+            Style::default().fg(Color::DarkGray),
+        )]),
     ])
     .block(info_block);
 
@@ -270,11 +267,29 @@ fn draw_mapping_ui(frame: &mut Frame, state: &MappingState) {
 
     // Draw the selector below the info box
     match state {
-        MappingState::SelectEvent { unique_values, selected } => {
-            draw_standalone_event_selector(frame, unique_values, *selected, info_y + info_height + 1);
+        MappingState::SelectEvent {
+            unique_values,
+            selected,
+        } => {
+            draw_standalone_event_selector(
+                frame,
+                unique_values,
+                *selected,
+                info_y + info_height + 1,
+            );
         }
-        MappingState::SelectNonEvent { unique_values, selected, event_value } => {
-            draw_standalone_non_event_selector(frame, unique_values, *selected, event_value, info_y + info_height + 1);
+        MappingState::SelectNonEvent {
+            unique_values,
+            selected,
+            event_value,
+        } => {
+            draw_standalone_non_event_selector(
+                frame,
+                unique_values,
+                *selected,
+                event_value,
+                info_y + info_height + 1,
+            );
         }
     }
 }
@@ -311,15 +326,20 @@ fn draw_standalone_event_selector(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(1), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
         .split(inner);
 
-    let desc = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled("  Select the value that represents ", Style::default().fg(Color::DarkGray)),
-            Span::styled("EVENT (1)", Style::default().fg(Color::Green).bold()),
-        ]),
-    ]);
+    let desc = Paragraph::new(vec![Line::from(vec![
+        Span::styled(
+            "  Select the value that represents ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled("EVENT (1)", Style::default().fg(Color::Green).bold()),
+    ])]);
     frame.render_widget(desc, chunks[0]);
 
     let max_visible = (chunks[1].height as usize).saturating_sub(0);
@@ -391,7 +411,11 @@ fn draw_standalone_non_event_selector(
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
         .split(inner);
 
     let desc = Paragraph::new(vec![
@@ -400,7 +424,10 @@ fn draw_standalone_non_event_selector(
             Span::styled(event_value, Style::default().fg(Color::Green).bold()),
         ]),
         Line::from(vec![
-            Span::styled("  Select the value for ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "  Select the value for ",
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled("NON-EVENT (0)", Style::default().fg(Color::Yellow).bold()),
         ]),
     ]);
@@ -550,10 +577,8 @@ fn run_menu_loop(
                 } => match key.code {
                     KeyCode::Enter => {
                         // Confirm selection - convert checked indices to column names
-                        config.columns_to_drop = checked
-                            .iter()
-                            .map(|&idx| columns[idx].clone())
-                            .collect();
+                        config.columns_to_drop =
+                            checked.iter().map(|&idx| columns[idx].clone()).collect();
                         state = MenuState::Main;
                     }
                     KeyCode::Esc => {
@@ -639,10 +664,8 @@ fn run_menu_loop(
                         if !unique_values.is_empty() {
                             let non_event_value = unique_values[*selected].clone();
                             // Create the target mapping
-                            config.target_mapping = Some(TargetMapping::new(
-                                event_value.clone(),
-                                non_event_value,
-                            ));
+                            config.target_mapping =
+                                Some(TargetMapping::new(event_value.clone(), non_event_value));
                             state = MenuState::Main;
                         }
                     }
@@ -838,7 +861,12 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
     frame.render_widget(outer_block, menu_area);
 
     // Build content based on state with adaptive sizing
-    let content = build_content(config, state, inner_area.width as usize, inner_area.height as usize);
+    let content = build_content(
+        config,
+        state,
+        inner_area.width as usize,
+        inner_area.height as usize,
+    );
 
     let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
 
@@ -885,7 +913,12 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
     }
 }
 
-fn build_content(config: &Config, state: &MenuState, width: usize, height: usize) -> Vec<Line<'static>> {
+fn build_content(
+    config: &Config,
+    state: &MenuState,
+    width: usize,
+    height: usize,
+) -> Vec<Line<'static>> {
     let mut lines = vec![];
 
     // Calculate max path length (width minus label and padding)
@@ -923,8 +956,13 @@ fn build_content(config: &Config, state: &MenuState, width: usize, height: usize
     if let Some(mapping) = &config.target_mapping {
         lines.push(Line::from(vec![
             Span::styled("          ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("→ {} = 1, {} = 0", mapping.event_value, mapping.non_event_value), 
-                Style::default().fg(Color::DarkGray).italic()),
+            Span::styled(
+                format!(
+                    "→ {} = 1, {} = 0",
+                    mapping.event_value, mapping.non_event_value
+                ),
+                Style::default().fg(Color::DarkGray).italic(),
+            ),
         ]));
     }
 
@@ -1041,10 +1079,7 @@ fn build_content(config: &Config, state: &MenuState, width: usize, height: usize
     lines.push(Line::from(vec![
         Span::styled("  [", Style::default().fg(Color::DarkGray)),
         Span::styled("T", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(
-            "] Select target column",
-            Style::default().fg(Color::White),
-        ),
+        Span::styled("] Select target column", Style::default().fg(Color::White)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  [", Style::default().fg(Color::DarkGray)),
@@ -1138,10 +1173,7 @@ fn draw_target_selector(
         .map(|(i, &col_idx)| {
             let col_name = &columns[col_idx];
             let style = if i == selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Magenta)
-                    .bold()
+                Style::default().fg(Color::Black).bg(Color::Magenta).bold()
             } else {
                 Style::default().fg(Color::White)
             };
@@ -1159,11 +1191,7 @@ fn draw_target_selector(
 
     // Show count indicator at bottom
     if !filtered.is_empty() {
-        let count_text = format!(
-            " {}/{} columns ",
-            selected + 1,
-            filtered.len()
-        );
+        let count_text = format!(" {}/{} columns ", selected + 1, filtered.len());
         let text_len = count_text.len();
         let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
         let count_area = Rect::new(
@@ -1253,12 +1281,9 @@ fn draw_columns_to_drop_selector(
             let col_name = &columns[col_idx];
             let is_checked = checked.contains(&col_idx);
             let checkbox = if is_checked { "[x]" } else { "[ ]" };
-            
+
             let style = if i == selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Red)
-                    .bold()
+                Style::default().fg(Color::Black).bg(Color::Red).bold()
             } else if is_checked {
                 Style::default().fg(Color::Red)
             } else {
@@ -1289,11 +1314,7 @@ fn draw_columns_to_drop_selector(
 
     // Show count indicator at bottom right of popup
     if !filtered.is_empty() {
-        let count_text = format!(
-            " {}/{} columns ",
-            selected + 1,
-            filtered.len()
-        );
+        let count_text = format!(" {}/{} columns ", selected + 1, filtered.len());
         let text_len = count_text.len();
         let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
         let count_area = Rect::new(
@@ -1360,11 +1381,7 @@ fn draw_edit_popup(frame: &mut Frame, state: &MenuState, input: &str) {
 }
 
 /// Draw the event value selector popup
-fn draw_event_value_selector(
-    frame: &mut Frame,
-    unique_values: &[String],
-    selected: usize,
-) {
+fn draw_event_value_selector(frame: &mut Frame, unique_values: &[String], selected: usize) {
     let area = frame.area();
 
     let popup_width = 50u16;
@@ -1393,14 +1410,21 @@ fn draw_event_value_selector(
     // Split inner area into description and list
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
         .split(inner);
 
     // Description
     let desc = Paragraph::new(vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Select the value that represents ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "  Select the value that represents ",
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled("EVENT (1)", Style::default().fg(Color::Green).bold()),
         ]),
     ]);
@@ -1421,10 +1445,7 @@ fn draw_event_value_selector(
         .take(max_visible)
         .map(|(i, value)| {
             let style = if i == selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Green)
-                    .bold()
+                Style::default().fg(Color::Black).bg(Color::Green).bold()
             } else {
                 Style::default().fg(Color::White)
             };
@@ -1496,7 +1517,11 @@ fn draw_non_event_value_selector(
     // Split inner area into description and list
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Min(1), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
         .split(inner);
 
     // Description showing the already selected event value
@@ -1507,7 +1532,10 @@ fn draw_non_event_value_selector(
             Span::styled(event_value, Style::default().fg(Color::Green).bold()),
         ]),
         Line::from(vec![
-            Span::styled("  Select the value for ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "  Select the value for ",
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled("NON-EVENT (0)", Style::default().fg(Color::Yellow).bold()),
         ]),
     ]);
@@ -1528,10 +1556,7 @@ fn draw_non_event_value_selector(
         .take(max_visible)
         .map(|(i, value)| {
             let style = if i == selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .bold()
+                Style::default().fg(Color::Black).bg(Color::Yellow).bold()
             } else {
                 Style::default().fg(Color::White)
             };

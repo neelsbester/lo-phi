@@ -40,8 +40,8 @@ pub fn get_column_names(path: &Path) -> Result<Vec<String>> {
 
 /// Load a CSV file with a progress bar showing bytes read
 fn load_csv_with_progress(path: &Path, schema_length: Option<usize>) -> Result<DataFrame> {
-    let file = File::open(path)
-        .with_context(|| format!("Failed to open CSV file: {}", path.display()))?;
+    let file =
+        File::open(path).with_context(|| format!("Failed to open CSV file: {}", path.display()))?;
     let file_size = file
         .metadata()
         .with_context(|| "Failed to get file metadata")?
@@ -160,4 +160,3 @@ pub fn load_dataset_with_progress(
 
     Ok((df, rows, cols, memory_mb))
 }
-

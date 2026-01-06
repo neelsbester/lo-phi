@@ -53,7 +53,8 @@ fn test_pipeline_preserves_target_column() {
     let mut df = df! {
         "target" => [0i32, 1, 0, 1, 0, 1, 0, 1, 0, 1],
         "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
-    }.unwrap();
+    }
+    .unwrap();
 
     let (_temp_dir, csv_path) = create_temp_csv(&mut df);
     let (df, _, _, _) = load_dataset_with_progress(&csv_path, 100).unwrap();
@@ -68,7 +69,8 @@ fn test_pipeline_handles_all_numeric_dataset() {
         "target" => [0i32, 1, 0, 1, 0, 1, 0, 1, 0, 1],
         "f1" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
         "f2" => [10.0f64, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
-    }.unwrap();
+    }
+    .unwrap();
 
     let (_temp_dir, parquet_path) = create_temp_parquet(&mut df);
     let (df, rows, cols, _) = load_dataset_with_progress(&parquet_path, 100).unwrap();
@@ -92,7 +94,8 @@ fn test_pipeline_with_no_reductions_needed() {
         "target" => [0i32, 1, 0, 1, 0, 1, 0, 1, 0, 1],
         "independent_a" => [1.0f64, 5.0, 2.0, 8.0, 3.0, 9.0, 4.0, 6.0, 7.0, 0.0],
         "independent_b" => [9.0f64, 3.0, 7.0, 1.0, 6.0, 2.0, 8.0, 5.0, 0.0, 4.0],
-    }.unwrap();
+    }
+    .unwrap();
 
     let (_temp_dir, csv_path) = create_temp_csv(&mut df);
     let (df, _, initial_cols, _) = load_dataset_with_progress(&csv_path, 100).unwrap();
@@ -101,19 +104,29 @@ fn test_pipeline_with_no_reductions_needed() {
     // Missing - none above 30%
     let missing_ratios = analyze_missing_values(&df, &weights, None).unwrap();
     let missing_drops = get_features_above_threshold(&missing_ratios, 0.3, "target");
-    assert!(missing_drops.is_empty(), "No features should be dropped for missing values");
+    assert!(
+        missing_drops.is_empty(),
+        "No features should be dropped for missing values"
+    );
 
     // Correlation - check that no pairs exceed 0.95 threshold among non-target columns
     let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
     // Filter to only pairs between our independent features
-    let feature_pairs: Vec<_> = pairs.iter()
+    let feature_pairs: Vec<_> = pairs
+        .iter()
         .filter(|p| p.feature1 != "target" && p.feature2 != "target")
         .collect();
-    assert!(feature_pairs.is_empty(), "Independent features should not be correlated above 0.95");
+    assert!(
+        feature_pairs.is_empty(),
+        "Independent features should not be correlated above 0.95"
+    );
 
     // Final shape unchanged (no drops for missing)
     let missing_drop_count = get_features_above_threshold(&missing_ratios, 0.3, "target").len();
-    assert_eq!(missing_drop_count, 0, "Clean data should have no missing-based reductions");
+    assert_eq!(
+        missing_drop_count, 0,
+        "Clean data should have no missing-based reductions"
+    );
 }
 
 #[test]
@@ -164,7 +177,8 @@ fn test_drop_many_removes_correct_columns() {
         "drop_me_1" => [4, 5, 6],
         "drop_me_2" => [7, 8, 9],
         "also_keep" => [10, 11, 12],
-    }.unwrap();
+    }
+    .unwrap();
 
     let to_drop = vec!["drop_me_1".to_string(), "drop_me_2".to_string()];
     let result = df.drop_many(&to_drop);
@@ -243,7 +257,8 @@ fn test_csv_and_parquet_produce_same_results() {
 
     // Load both
     let (df_csv, rows_csv, cols_csv, _) = load_dataset_with_progress(&csv_path, 100).unwrap();
-    let (df_parquet, rows_parquet, cols_parquet, _) = load_dataset_with_progress(&parquet_path, 100).unwrap();
+    let (df_parquet, rows_parquet, cols_parquet, _) =
+        load_dataset_with_progress(&parquet_path, 100).unwrap();
 
     // Same dimensions
     assert_eq!(rows_csv, rows_parquet);

@@ -51,7 +51,10 @@ impl std::str::FromStr for BinningStrategy {
         match s.to_lowercase().as_str() {
             "quantile" => Ok(BinningStrategy::Quantile),
             "cart" => Ok(BinningStrategy::Cart),
-            _ => Err(format!("Unknown binning strategy: '{}'. Use 'quantile' or 'cart'.", s)),
+            _ => Err(format!(
+                "Unknown binning strategy: '{}'. Use 'quantile' or 'cart'.",
+                s
+            )),
         }
     }
 }
@@ -66,8 +69,12 @@ pub enum FeatureType {
 /// A single bin with WoE statistics for categorical features
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoricalWoeBin {
-    /// Category value (string)
+    /// Category value (string) - used for single category bins (Quantile strategy)
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub category: String,
+    /// Multiple category values - used for CART-merged bins
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
     /// Weighted count of events (target = 1) in this category
     pub events: f64,
     /// Weighted count of non-events (target = 0) in this category
@@ -86,7 +93,7 @@ pub struct CategoricalWoeBin {
 
 /// A single bin with WoE statistics
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]  // Fields may be used for reporting/debugging
+#[allow(dead_code)] // Fields may be used for reporting/debugging
 pub struct WoeBin {
     /// Lower bound (inclusive)
     pub lower_bound: f64,
@@ -129,7 +136,7 @@ pub struct MissingBin {
 
 /// Complete IV analysis results for a single feature
 #[derive(Debug, Clone, Serialize)]
-#[allow(dead_code)]  // Fields may be used for reporting/debugging
+#[allow(dead_code)] // Fields may be used for reporting/debugging
 pub struct IvAnalysis {
     /// Name of the analyzed feature
     pub feature_name: String,
@@ -155,7 +162,7 @@ pub struct IvAnalysis {
 // ============================================================================
 
 /// Calculate Gini impurity for a set of samples
-/// 
+///
 /// Gini impurity measures the probability of incorrectly classifying a randomly
 /// chosen element. For binary classification: Gini = 2 * p * (1 - p)
 /// where p is the proportion of positive class (events).
@@ -177,7 +184,7 @@ fn gini_impurity(events: f64, non_events: f64) -> f64 {
 /// # Returns
 /// Option of (split_index, information_gain) or None if no valid split found
 fn find_best_split(
-    sorted_pairs: &[(f64, i32, f64)],  // (value, target, weight)
+    sorted_pairs: &[(f64, i32, f64)], // (value, target, weight)
     min_samples: usize,
 ) -> Option<(usize, f64)> {
     let n = sorted_pairs.len();
@@ -186,8 +193,16 @@ fn find_best_split(
     }
 
     // Calculate total weighted events and non-events
-    let total_events: f64 = sorted_pairs.iter().filter(|(_, t, _)| *t == 1).map(|(_, _, w)| w).sum();
-    let total_non_events: f64 = sorted_pairs.iter().filter(|(_, t, _)| *t == 0).map(|(_, _, w)| w).sum();
+    let total_events: f64 = sorted_pairs
+        .iter()
+        .filter(|(_, t, _)| *t == 1)
+        .map(|(_, _, w)| w)
+        .sum();
+    let total_non_events: f64 = sorted_pairs
+        .iter()
+        .filter(|(_, t, _)| *t == 0)
+        .map(|(_, _, w)| w)
+        .sum();
     let total_weight = total_events + total_non_events;
 
     // Calculate parent Gini impurity
@@ -282,18 +297,24 @@ fn find_cart_splits_recursive(
         let right_splits = remaining_splits - left_splits;
 
         find_cart_splits_recursive(left, offset, left_splits, min_samples, split_indices);
-        find_cart_splits_recursive(right, global_split_idx, right_splits, min_samples, split_indices);
+        find_cart_splits_recursive(
+            right,
+            global_split_idx,
+            right_splits,
+            min_samples,
+            split_indices,
+        );
     }
 }
 
 /// Create pre-bins using CART-style decision tree splits
-/// 
+///
 /// Algorithm:
 /// 1. Sort data by feature value
 /// 2. Recursively find split points that maximize information gain
 /// 3. Create bins from the split boundaries
 fn create_cart_prebins(
-    sorted_pairs: &[(f64, i32, f64)],  // (value, target, weight)
+    sorted_pairs: &[(f64, i32, f64)], // (value, target, weight)
     max_bins: usize,
     min_bin_samples: usize,
     total_events: f64,
@@ -307,7 +328,13 @@ fn create_cart_prebins(
 
     // Find split points recursively
     let mut split_indices = Vec::new();
-    find_cart_splits_recursive(sorted_pairs, 0, max_splits, min_bin_samples, &mut split_indices);
+    find_cart_splits_recursive(
+        sorted_pairs,
+        0,
+        max_splits,
+        min_bin_samples,
+        &mut split_indices,
+    );
 
     // Sort split indices
     split_indices.sort_unstable();
@@ -354,13 +381,25 @@ fn create_cart_prebins(
 
     // If no valid bins created, fall back to a single bin
     if bins.is_empty() {
-        let events: f64 = sorted_pairs.iter().filter(|(_, t, _)| *t == 1).map(|(_, _, w)| w).sum();
-        let non_events: f64 = sorted_pairs.iter().filter(|(_, t, _)| *t == 0).map(|(_, _, w)| w).sum();
+        let events: f64 = sorted_pairs
+            .iter()
+            .filter(|(_, t, _)| *t == 1)
+            .map(|(_, _, w)| w)
+            .sum();
+        let non_events: f64 = sorted_pairs
+            .iter()
+            .filter(|(_, t, _)| *t == 0)
+            .map(|(_, _, w)| w)
+            .sum();
         let count = events + non_events;
-        let (woe, iv_contrib) = calculate_woe_iv(events, non_events, total_events, total_non_events);
+        let (woe, iv_contrib) =
+            calculate_woe_iv(events, non_events, total_events, total_non_events);
 
         bins.push(WoeBin {
-            lower_bound: sorted_pairs.first().map(|(v, _, _)| *v).unwrap_or(f64::NEG_INFINITY),
+            lower_bound: sorted_pairs
+                .first()
+                .map(|(v, _, _)| *v)
+                .unwrap_or(f64::NEG_INFINITY),
             upper_bound: f64::INFINITY,
             events,
             non_events,
@@ -377,7 +416,7 @@ fn create_cart_prebins(
 
 /// Create a WoeBin from a slice of pairs
 fn create_woe_bin_from_pairs(
-    bin_pairs: &[(f64, i32, f64)],  // (value, target, weight)
+    bin_pairs: &[(f64, i32, f64)], // (value, target, weight)
     _start_idx: usize,
     end_idx: usize,
     total_len: usize,
@@ -390,7 +429,10 @@ fn create_woe_bin_from_pairs(
         return None;
     }
 
-    let lower = bin_pairs.first().map(|(v, _, _)| *v).unwrap_or(f64::NEG_INFINITY);
+    let lower = bin_pairs
+        .first()
+        .map(|(v, _, _)| *v)
+        .unwrap_or(f64::NEG_INFINITY);
     let upper = if end_idx < total_len {
         all_pairs[end_idx].0
     } else {
@@ -398,8 +440,16 @@ fn create_woe_bin_from_pairs(
     };
 
     // Weighted counts
-    let events: f64 = bin_pairs.iter().filter(|(_, t, _)| *t == 1).map(|(_, _, w)| w).sum();
-    let non_events: f64 = bin_pairs.iter().filter(|(_, t, _)| *t == 0).map(|(_, _, w)| w).sum();
+    let events: f64 = bin_pairs
+        .iter()
+        .filter(|(_, t, _)| *t == 1)
+        .map(|(_, _, w)| w)
+        .sum();
+    let non_events: f64 = bin_pairs
+        .iter()
+        .filter(|(_, t, _)| *t == 0)
+        .map(|(_, _, w)| w)
+        .sum();
     let count = events + non_events;
 
     let (woe, iv_contrib) = calculate_woe_iv(events, non_events, total_events, total_non_events);
@@ -415,6 +465,166 @@ fn create_woe_bin_from_pairs(
         population_pct: count / total_samples * 100.0,
         event_rate: if count > 0.0 { events / count } else { 0.0 },
     })
+}
+
+// ============================================================================
+// Categorical CART Binning Support
+// ============================================================================
+
+/// Statistics for a category used in CART binning
+#[allow(dead_code)]
+struct CategoryStats {
+    name: String,
+    events: f64,
+    non_events: f64,
+    raw_count: usize,
+    event_rate: f64,
+}
+
+/// Sort categories by event rate for CART binning
+/// Returns categories sorted by ascending event rate (lower risk to higher risk)
+fn sort_categories_by_event_rate(
+    category_stats: &std::collections::HashMap<String, (f64, f64, usize)>,
+) -> Vec<CategoryStats> {
+    let mut sorted: Vec<CategoryStats> = category_stats
+        .iter()
+        .map(|(name, (events, non_events, raw_count))| {
+            let count = events + non_events;
+            let event_rate = if count > 0.0 { events / count } else { 0.0 };
+            CategoryStats {
+                name: name.clone(),
+                events: *events,
+                non_events: *non_events,
+                raw_count: *raw_count,
+                event_rate,
+            }
+        })
+        .collect();
+
+    // Sort by event rate (ascending), then by name for determinism
+    sorted.sort_by(|a, b| {
+        a.event_rate
+            .partial_cmp(&b.event_rate)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    sorted
+}
+
+/// Find CART split points for categorical features using event-rate ordering
+fn find_categorical_cart_splits(
+    sorted_categories: &[CategoryStats],
+    max_bins: usize,
+    min_bin_samples: usize,
+) -> Vec<usize> {
+    let n = sorted_categories.len();
+    if n <= 1 || max_bins <= 1 {
+        return Vec::new();
+    }
+
+    // Convert to (index, target, weight) format for CART
+    let mut pairs: Vec<(f64, i32, f64)> = Vec::new();
+
+    for (idx, cat) in sorted_categories.iter().enumerate() {
+        // Add event samples (target=1)
+        if cat.events > 0.0 {
+            pairs.push((idx as f64, 1, cat.events));
+        }
+        // Add non-event samples (target=0)
+        if cat.non_events > 0.0 {
+            pairs.push((idx as f64, 0, cat.non_events));
+        }
+    }
+
+    // Sort by index
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Find split indices using existing CART logic
+    let max_splits = max_bins.saturating_sub(1);
+    let mut split_indices = Vec::new();
+
+    find_cart_splits_recursive(&pairs, 0, max_splits, min_bin_samples, &mut split_indices);
+
+    // Convert split indices from pair array to category indices
+    let mut category_splits: Vec<usize> = split_indices
+        .iter()
+        .filter_map(|&idx| {
+            if idx > 0 && idx < pairs.len() {
+                let cat_before = pairs[idx - 1].0 as usize;
+                let cat_at = pairs[idx].0 as usize;
+                if cat_at > cat_before {
+                    Some(cat_at)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    category_splits.sort_unstable();
+    category_splits.dedup();
+    category_splits
+}
+
+/// Create CategoricalWoeBin entries by grouping categories based on CART splits
+fn create_categorical_cart_bins(
+    sorted_categories: &[CategoryStats],
+    split_indices: &[usize],
+    total_events: f64,
+    total_non_events: f64,
+    total_samples: f64,
+) -> Vec<CategoricalWoeBin> {
+    let n = sorted_categories.len();
+    if n == 0 {
+        return Vec::new();
+    }
+
+    let mut bins = Vec::new();
+    let mut start_idx = 0;
+
+    // Add split indices plus final index
+    let mut boundaries: Vec<usize> = split_indices.to_vec();
+    boundaries.push(n);
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    for &end_idx in &boundaries {
+        if end_idx > start_idx {
+            let group = &sorted_categories[start_idx..end_idx];
+
+            // Aggregate statistics
+            let events: f64 = group.iter().map(|c| c.events).sum();
+            let non_events: f64 = group.iter().map(|c| c.non_events).sum();
+            let count = events + non_events;
+
+            if count > 0.0 {
+                let (woe, iv_contribution) =
+                    calculate_woe_iv(events, non_events, total_events, total_non_events);
+
+                // Collect category names
+                let category_names: Vec<String> = group.iter().map(|c| c.name.clone()).collect();
+
+                bins.push(CategoricalWoeBin {
+                    category: String::new(), // Empty for CART bins
+                    categories: category_names,
+                    events,
+                    non_events,
+                    woe,
+                    iv_contribution,
+                    count,
+                    population_pct: count / total_samples * 100.0,
+                    event_rate: if count > 0.0 { events / count } else { 0.0 },
+                });
+            }
+
+            start_idx = end_idx;
+        }
+    }
+
+    bins
 }
 
 // ============================================================================
@@ -454,7 +664,7 @@ pub fn analyze_features_iv(
     } else {
         // Validate binary target and get values directly
         validate_binary_target(df, target)?;
-        
+
         let target_col = df.column(target)?;
         target_col
             .cast(&DataType::Int32)?
@@ -542,7 +752,15 @@ pub fn analyze_features_iv(
     let categorical_analyses: Vec<IvAnalysis> = categorical_cols
         .par_iter()
         .filter_map(|col_name| {
-            let result = analyze_categorical_feature(df, col_name, &target_values, min_cat_samples, &weights_arc);
+            let result = analyze_categorical_feature(
+                df,
+                col_name,
+                &target_values,
+                min_cat_samples,
+                &weights_arc,
+                binning_strategy,
+                num_bins,
+            );
 
             // Update progress
             let count = progress_counter.fetch_add(1, Ordering::Relaxed);
@@ -628,7 +846,7 @@ fn validate_binary_target(df: &DataFrame, target: &str) -> Result<()> {
 }
 
 /// Analyze a single numeric feature and calculate its IV
-/// 
+///
 /// Missing feature values are placed in a dedicated MISSING bin rather than being dropped.
 /// Only records with invalid/unmapped target values are excluded from the analysis.
 fn analyze_single_numeric_feature(
@@ -645,7 +863,7 @@ fn analyze_single_numeric_feature(
 
     // Separate non-null value/target/weight tuples and missing value targets
     // Only filter out records where target is None (not matching event or non-event in mapping)
-    let mut pairs: Vec<(f64, i32, f64)> = Vec::new();  // (value, target, weight)
+    let mut pairs: Vec<(f64, i32, f64)> = Vec::new(); // (value, target, weight)
     let mut missing_events: f64 = 0.0;
     let mut missing_non_events: f64 = 0.0;
     let mut valid_record_count: usize = 0;
@@ -681,8 +899,16 @@ fn analyze_single_numeric_feature(
     }
 
     // Count total weighted events and non-events (including missing bin)
-    let non_missing_events: f64 = pairs.iter().filter(|(_, t, _)| *t == 1).map(|(_, _, w)| w).sum();
-    let non_missing_non_events: f64 = pairs.iter().filter(|(_, t, _)| *t == 0).map(|(_, _, w)| w).sum();
+    let non_missing_events: f64 = pairs
+        .iter()
+        .filter(|(_, t, _)| *t == 1)
+        .map(|(_, _, w)| w)
+        .sum();
+    let non_missing_non_events: f64 = pairs
+        .iter()
+        .filter(|(_, t, _)| *t == 0)
+        .map(|(_, _, w)| w)
+        .sum();
 
     let total_events = non_missing_events + missing_events;
     let total_non_events = non_missing_non_events + missing_non_events;
@@ -697,7 +923,12 @@ fn analyze_single_numeric_feature(
 
     // Create MISSING bin if there are missing values
     let missing_bin = if missing_count > 0.0 {
-        let (woe, iv_contrib) = calculate_woe_iv(missing_events, missing_non_events, total_events, total_non_events);
+        let (woe, iv_contrib) = calculate_woe_iv(
+            missing_events,
+            missing_non_events,
+            total_events,
+            total_non_events,
+        );
         Some(MissingBin {
             events: missing_events,
             non_events: missing_non_events,
@@ -705,7 +936,11 @@ fn analyze_single_numeric_feature(
             iv_contribution: iv_contrib,
             count: missing_count,
             population_pct: missing_count / total_samples * 100.0,
-            event_rate: if missing_count > 0.0 { missing_events / missing_count } else { 0.0 },
+            event_rate: if missing_count > 0.0 {
+                missing_events / missing_count
+            } else {
+                0.0
+            },
         })
     } else {
         None
@@ -714,7 +949,10 @@ fn analyze_single_numeric_feature(
     // If all values are missing or too few non-missing records for binning,
     // return early with just the missing bin (check raw pair count, not weighted)
     if pairs.len() < MIN_BIN_SAMPLES * 2 {
-        let iv = missing_bin.as_ref().map(|b| b.iv_contribution).unwrap_or(0.0);
+        let iv = missing_bin
+            .as_ref()
+            .map(|b| b.iv_contribution)
+            .unwrap_or(0.0);
         // With only missing bin and insufficient non-missing values for binning,
         // Gini is 0 as there's no discrimination possible
         let gini = 0.0;
@@ -735,19 +973,32 @@ fn analyze_single_numeric_feature(
 
     // Phase 1: Create initial pre-bins based on strategy (for non-missing values)
     let pre_bins = match binning_strategy {
-        BinningStrategy::Quantile => {
-            create_quantile_prebins(&pairs, PRE_BIN_COUNT, total_events, total_non_events, total_samples)
-        }
-        BinningStrategy::Cart => {
-            create_cart_prebins(&pairs, num_bins, MIN_BIN_SAMPLES, total_events, total_non_events, total_samples)
-        }
+        BinningStrategy::Quantile => create_quantile_prebins(
+            &pairs,
+            PRE_BIN_COUNT,
+            total_events,
+            total_non_events,
+            total_samples,
+        ),
+        BinningStrategy::Cart => create_cart_prebins(
+            &pairs,
+            num_bins,
+            MIN_BIN_SAMPLES,
+            total_events,
+            total_non_events,
+            total_samples,
+        ),
     };
 
     // Phase 2: Greedy merge until target bin count (only needed for Quantile strategy)
     let final_bins = match binning_strategy {
-        BinningStrategy::Quantile => {
-            greedy_merge_bins(pre_bins, num_bins, total_events, total_non_events, total_samples)
-        }
+        BinningStrategy::Quantile => greedy_merge_bins(
+            pre_bins,
+            num_bins,
+            total_events,
+            total_non_events,
+            total_samples,
+        ),
         BinningStrategy::Cart => {
             // CART already produces the target number of bins
             pre_bins
@@ -756,11 +1007,20 @@ fn analyze_single_numeric_feature(
 
     // Calculate total IV (including missing bin contribution)
     let bins_iv: f64 = final_bins.iter().map(|b| b.iv_contribution).sum();
-    let missing_iv: f64 = missing_bin.as_ref().map(|b| b.iv_contribution).unwrap_or(0.0);
+    let missing_iv: f64 = missing_bin
+        .as_ref()
+        .map(|b| b.iv_contribution)
+        .unwrap_or(0.0);
     let iv = bins_iv + missing_iv;
 
     // Calculate Gini on WoE-encoded values (including missing bin)
-    let gini = calculate_gini_on_woe_with_missing(&pairs, &final_bins, &missing_bin, missing_events, missing_non_events);
+    let gini = calculate_gini_on_woe_with_missing(
+        &pairs,
+        &final_bins,
+        &missing_bin,
+        missing_events,
+        missing_non_events,
+    );
 
     Ok(IvAnalysis {
         feature_name: col_name.to_string(),
@@ -774,7 +1034,7 @@ fn analyze_single_numeric_feature(
 }
 
 /// Analyze a categorical feature and calculate its IV
-/// 
+///
 /// Missing feature values are placed in a dedicated MISSING bin rather than being dropped.
 /// Only records with invalid/unmapped target values are excluded from the analysis.
 fn analyze_categorical_feature(
@@ -783,6 +1043,8 @@ fn analyze_categorical_feature(
     target_values: &[Option<i32>],
     min_category_samples: usize,
     weights: &[f64],
+    binning_strategy: BinningStrategy,
+    num_bins: usize,
 ) -> Result<IvAnalysis> {
     let col = df.column(col_name)?;
 
@@ -791,7 +1053,8 @@ fn analyze_categorical_feature(
     let values = string_col.str()?;
 
     // Collect category/target pairs with weighted counts, including MISSING for null values
-    let mut category_stats: std::collections::HashMap<String, (f64, f64, usize)> = std::collections::HashMap::new();
+    let mut category_stats: std::collections::HashMap<String, (f64, f64, usize)> =
+        std::collections::HashMap::new();
     // (weighted_events, weighted_non_events, raw_count)
     let mut missing_events: f64 = 0.0;
     let mut missing_non_events: f64 = 0.0;
@@ -801,7 +1064,9 @@ fn analyze_categorical_feature(
         match (val, target) {
             (Some(cat), Some(t)) => {
                 // Non-null category with valid target
-                let entry = category_stats.entry(cat.to_string()).or_insert((0.0, 0.0, 0));
+                let entry = category_stats
+                    .entry(cat.to_string())
+                    .or_insert((0.0, 0.0, 0));
                 if *t == 1 {
                     entry.0 += w; // weighted events
                 } else {
@@ -850,7 +1115,12 @@ fn analyze_categorical_feature(
 
     // Create MISSING bin if there are missing values
     let missing_bin = if missing_count > 0.0 {
-        let (woe, iv_contrib) = calculate_woe_iv(missing_events, missing_non_events, total_events, total_non_events);
+        let (woe, iv_contrib) = calculate_woe_iv(
+            missing_events,
+            missing_non_events,
+            total_events,
+            total_non_events,
+        );
         Some(MissingBin {
             events: missing_events,
             non_events: missing_non_events,
@@ -858,7 +1128,11 @@ fn analyze_categorical_feature(
             iv_contribution: iv_contrib,
             count: missing_count,
             population_pct: missing_count / total_samples * 100.0,
-            event_rate: if missing_count > 0.0 { missing_events / missing_count } else { 0.0 },
+            event_rate: if missing_count > 0.0 {
+                missing_events / missing_count
+            } else {
+                0.0
+            },
         })
     } else {
         None
@@ -883,36 +1157,129 @@ fn analyze_categorical_feature(
         final_categories.push(("OTHER".to_string(), other_events, other_non_events));
     }
 
-    // Create CategoricalWoeBin for each category
-    let mut categories: Vec<CategoricalWoeBin> = final_categories
-        .into_iter()
-        .map(|(category, events, non_events)| {
-            let count = events + non_events;
-            let (woe, iv_contribution) = calculate_woe_iv(events, non_events, total_events, total_non_events);
+    // Create CategoricalWoeBin based on binning strategy
+    let mut categories: Vec<CategoricalWoeBin> = match binning_strategy {
+        BinningStrategy::Quantile => {
+            // Existing logic: one bin per category
+            final_categories
+                .into_iter()
+                .map(|(category, events, non_events)| {
+                    let count = events + non_events;
+                    let (woe, iv_contribution) =
+                        calculate_woe_iv(events, non_events, total_events, total_non_events);
 
-            CategoricalWoeBin {
-                category,
-                events,
-                non_events,
-                woe,
-                iv_contribution,
-                count,
-                population_pct: count / total_samples * 100.0,
-                event_rate: if count > 0.0 { events / count } else { 0.0 },
+                    CategoricalWoeBin {
+                        category,
+                        categories: Vec::new(),
+                        events,
+                        non_events,
+                        woe,
+                        iv_contribution,
+                        count,
+                        population_pct: count / total_samples * 100.0,
+                        event_rate: if count > 0.0 { events / count } else { 0.0 },
+                    }
+                })
+                .collect()
+        }
+        BinningStrategy::Cart => {
+            // CART binning: group categories by event rate
+            // Separate "OTHER" from main categories
+            let (other_entry, main_categories): (
+                Option<(String, f64, f64)>,
+                Vec<(String, f64, f64)>,
+            ) = {
+                let mut other = None;
+                let mut main = Vec::new();
+                for entry in final_categories {
+                    if entry.0 == "OTHER" {
+                        other = Some(entry);
+                    } else {
+                        main.push(entry);
+                    }
+                }
+                (other, main)
+            };
+
+            // Build category stats for main categories (excluding OTHER)
+            let category_stats: std::collections::HashMap<String, (f64, f64, usize)> =
+                main_categories
+                    .iter()
+                    .map(|(name, events, non_events)| {
+                        let raw_count = (*events + *non_events) as usize;
+                        (name.clone(), (*events, *non_events, raw_count))
+                    })
+                    .collect();
+
+            // Sort by event rate
+            let sorted = sort_categories_by_event_rate(&category_stats);
+
+            // Find CART splits
+            let splits = find_categorical_cart_splits(&sorted, num_bins, MIN_BIN_SAMPLES);
+
+            // Create bins from splits
+            let mut bins = create_categorical_cart_bins(
+                &sorted,
+                &splits,
+                total_events,
+                total_non_events,
+                total_samples,
+            );
+
+            // Add OTHER as separate bin if it exists
+            if let Some((_, other_events, other_non_events)) = other_entry {
+                let count = other_events + other_non_events;
+                if count > 0.0 {
+                    let (woe, iv_contribution) = calculate_woe_iv(
+                        other_events,
+                        other_non_events,
+                        total_events,
+                        total_non_events,
+                    );
+                    bins.push(CategoricalWoeBin {
+                        category: "OTHER".to_string(),
+                        categories: Vec::new(),
+                        events: other_events,
+                        non_events: other_non_events,
+                        woe,
+                        iv_contribution,
+                        count,
+                        population_pct: count / total_samples * 100.0,
+                        event_rate: if count > 0.0 {
+                            other_events / count
+                        } else {
+                            0.0
+                        },
+                    });
+                }
             }
-        })
-        .collect();
+
+            bins
+        }
+    };
 
     // Sort by WoE
-    categories.sort_by(|a, b| a.woe.partial_cmp(&b.woe).unwrap_or(std::cmp::Ordering::Equal));
+    categories.sort_by(|a, b| {
+        a.woe
+            .partial_cmp(&b.woe)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Calculate total IV (including missing bin contribution)
     let categories_iv: f64 = categories.iter().map(|c| c.iv_contribution).sum();
-    let missing_iv: f64 = missing_bin.as_ref().map(|b| b.iv_contribution).unwrap_or(0.0);
+    let missing_iv: f64 = missing_bin
+        .as_ref()
+        .map(|b| b.iv_contribution)
+        .unwrap_or(0.0);
     let iv = categories_iv + missing_iv;
 
     // Calculate Gini using category WoE values (including missing bin)
-    let gini = calculate_gini_on_categories_with_missing(&categories, &missing_bin, total_events, total_non_events);
+    let gini = calculate_gini_on_categories_with_missing(
+        &categories,
+        &missing_bin,
+        total_events,
+        total_non_events,
+    );
 
     Ok(IvAnalysis {
         feature_name: col_name.to_string(),
@@ -927,7 +1294,7 @@ fn analyze_categorical_feature(
 
 /// Create initial quantile-based pre-bins
 fn create_quantile_prebins(
-    sorted_pairs: &[(f64, i32, f64)],  // (value, target, weight)
+    sorted_pairs: &[(f64, i32, f64)], // (value, target, weight)
     num_prebins: usize,
     total_events: f64,
     total_non_events: f64,
@@ -943,7 +1310,10 @@ fn create_quantile_prebins(
         let end_idx = (start_idx + bin_size).min(n);
         let bin_pairs = &sorted_pairs[start_idx..end_idx];
 
-        let lower = bin_pairs.first().map(|(v, _, _)| *v).unwrap_or(f64::NEG_INFINITY);
+        let lower = bin_pairs
+            .first()
+            .map(|(v, _, _)| *v)
+            .unwrap_or(f64::NEG_INFINITY);
         let upper = if end_idx < n {
             sorted_pairs[end_idx].0
         } else {
@@ -951,8 +1321,16 @@ fn create_quantile_prebins(
         };
 
         // Weighted counts
-        let events: f64 = bin_pairs.iter().filter(|(_, t, _)| *t == 1).map(|(_, _, w)| w).sum();
-        let non_events: f64 = bin_pairs.iter().filter(|(_, t, _)| *t == 0).map(|(_, _, w)| w).sum();
+        let events: f64 = bin_pairs
+            .iter()
+            .filter(|(_, t, _)| *t == 1)
+            .map(|(_, _, w)| w)
+            .sum();
+        let non_events: f64 = bin_pairs
+            .iter()
+            .filter(|(_, t, _)| *t == 0)
+            .map(|(_, _, w)| w)
+            .sum();
         let count = events + non_events;
 
         let (woe, iv_contrib) =
@@ -977,7 +1355,7 @@ fn create_quantile_prebins(
 }
 
 /// Calculate WoE and IV contribution for a bin
-/// 
+///
 /// Uses the ln(%bad/%good) convention where:
 /// - WoE > 0 indicates higher risk (more events/defaults)
 /// - WoE < 0 indicates lower risk (fewer events/defaults)
@@ -1013,7 +1391,13 @@ fn greedy_merge_bins(
         let mut merge_idx = 0;
 
         for i in 0..bins.len() - 1 {
-            let merged = merge_two_bins(&bins[i], &bins[i + 1], total_events, total_non_events, total_samples);
+            let merged = merge_two_bins(
+                &bins[i],
+                &bins[i + 1],
+                total_events,
+                total_non_events,
+                total_samples,
+            );
             let current_iv = bins[i].iv_contribution + bins[i + 1].iv_contribution;
             let new_iv = merged.iv_contribution;
             let loss = current_iv - new_iv;
@@ -1068,7 +1452,7 @@ fn merge_two_bins(
 /// Calculate Gini coefficient on WoE-encoded values including missing bin
 /// Uses weighted AUC calculation for weighted samples
 fn calculate_gini_on_woe_with_missing(
-    sorted_pairs: &[(f64, i32, f64)],  // (value, target, weight)
+    sorted_pairs: &[(f64, i32, f64)], // (value, target, weight)
     bins: &[WoeBin],
     missing_bin: &Option<MissingBin>,
     missing_events: f64,
@@ -1115,7 +1499,10 @@ fn calculate_gini_on_categories_with_missing(
     total_events: f64,
     total_non_events: f64,
 ) -> f64 {
-    if (categories.is_empty() && missing_bin.is_none()) || total_events <= 0.0 || total_non_events <= 0.0 {
+    if (categories.is_empty() && missing_bin.is_none())
+        || total_events <= 0.0
+        || total_non_events <= 0.0
+    {
         return 0.0;
     }
 
@@ -1259,7 +1646,10 @@ mod tests {
         let (woe, iv) = calculate_woe_iv(10.0, 90.0, 100.0, 900.0);
 
         // With smoothing, dist_events ≈ 10.5/100.5, dist_non_events ≈ 90.5/900.5
-        assert!(woe.abs() < 0.1, "WoE should be close to 0 for equal distributions");
+        assert!(
+            woe.abs() < 0.1,
+            "WoE should be close to 0 for equal distributions"
+        );
         assert!(iv >= 0.0, "IV should be non-negative");
     }
 
@@ -1268,7 +1658,11 @@ mod tests {
         // Perfect separation: all 0s have lower values than all 1s (weight=1.0)
         let perfect = vec![(1.0, 0, 1.0), (2.0, 0, 1.0), (3.0, 1, 1.0), (4.0, 1, 1.0)];
         let auc = calculate_weighted_auc(&perfect);
-        assert!((auc - 1.0).abs() < 0.01, "Perfect separation should give AUC ≈ 1.0, got {}", auc);
+        assert!(
+            (auc - 1.0).abs() < 0.01,
+            "Perfect separation should give AUC ≈ 1.0, got {}",
+            auc
+        );
 
         // No discrimination: 0s and 1s have same values (ties)
         let no_disc = vec![(1.0, 0, 1.0), (1.0, 1, 1.0), (2.0, 0, 1.0), (2.0, 1, 1.0)];
@@ -1295,8 +1689,9 @@ mod tests {
         let df = df! {
             "target" => [0i32, 1, 0, 1, 0, 1],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         assert!(validate_binary_target(&df, "target").is_ok());
     }
 
@@ -1306,8 +1701,9 @@ mod tests {
         let df = df! {
             "target" => [0.0f64, 1.0, 0.0, 1.0, 0.0, 1.0],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         assert!(validate_binary_target(&df, "target").is_ok());
     }
 
@@ -1317,8 +1713,9 @@ mod tests {
         let df = df! {
             "target" => Vec::<i32>::new(),
             "feature" => Vec::<f64>::new(),
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = validate_binary_target(&df, "target");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
@@ -1330,8 +1727,9 @@ mod tests {
         let df = df! {
             "target" => [None::<i32>, None, None, None],
             "feature" => [1.0f64, 2.0, 3.0, 4.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = validate_binary_target(&df, "target");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("null"));
@@ -1343,8 +1741,9 @@ mod tests {
         let df = df! {
             "target" => [0i32, 1, 2, 0, 1, 2],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = validate_binary_target(&df, "target");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("must be binary"));
@@ -1356,8 +1755,9 @@ mod tests {
         let df = df! {
             "other" => [0i32, 1, 0, 1],
             "feature" => [1.0f64, 2.0, 3.0, 4.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = validate_binary_target(&df, "target");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -1369,8 +1769,9 @@ mod tests {
         let df = df! {
             "target" => [Some(0i32), Some(1), None, Some(0), Some(1)],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         assert!(validate_binary_target(&df, "target").is_ok());
     }
 
@@ -1385,7 +1786,10 @@ mod tests {
 
         // Skewed splits should have lower impurity
         let skewed = gini_impurity(9.0, 1.0);
-        assert!(skewed < 0.5, "Skewed split should have lower impurity than 50/50");
+        assert!(
+            skewed < 0.5,
+            "Skewed split should have lower impurity than 50/50"
+        );
         assert!(skewed > 0.0, "Non-pure split should have positive impurity");
     }
 
@@ -1408,14 +1812,26 @@ mod tests {
         let pairs = vec![(1.0, 0, 1.0), (2.0, 1, 1.0)];
 
         let result = find_best_split(&pairs, 2); // min_samples = 2
-        assert!(result.is_none(), "Should not find a split with insufficient samples");
+        assert!(
+            result.is_none(),
+            "Should not find a split with insufficient samples"
+        );
     }
 
     #[test]
     fn test_binning_strategy_from_str() {
-        assert_eq!("quantile".parse::<BinningStrategy>().unwrap(), BinningStrategy::Quantile);
-        assert_eq!("cart".parse::<BinningStrategy>().unwrap(), BinningStrategy::Cart);
-        assert_eq!("CART".parse::<BinningStrategy>().unwrap(), BinningStrategy::Cart);
+        assert_eq!(
+            "quantile".parse::<BinningStrategy>().unwrap(),
+            BinningStrategy::Quantile
+        );
+        assert_eq!(
+            "cart".parse::<BinningStrategy>().unwrap(),
+            BinningStrategy::Cart
+        );
+        assert_eq!(
+            "CART".parse::<BinningStrategy>().unwrap(),
+            BinningStrategy::Cart
+        );
         assert!("invalid".parse::<BinningStrategy>().is_err());
     }
 
@@ -1443,7 +1859,10 @@ mod tests {
 
         // Verify all samples are covered
         let total_count: f64 = bins.iter().map(|b| b.count).sum();
-        assert!((total_count - 20.0).abs() < 0.01, "All samples should be binned");
+        assert!(
+            (total_count - 20.0).abs() < 0.01,
+            "All samples should be binned"
+        );
     }
 
     #[test]
@@ -1452,15 +1871,32 @@ mod tests {
         let df = df! {
             "target" => [0i32, 0, 1, 1, 0, 0, 1, 1, 0, 1],
             "category" => ["A", "A", "A", "B", "B", "C", "C", "C", "C", "C"],
-        }.unwrap();
+        }
+        .unwrap();
 
         let target_values: Vec<Option<i32>> = vec![
-            Some(0), Some(0), Some(1), Some(1), Some(0),
-            Some(0), Some(1), Some(1), Some(0), Some(1)
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(1),
         ];
         let weights = vec![1.0; 10];
 
-        let result = analyze_categorical_feature(&df, "category", &target_values, 1, &weights);
+        let result = analyze_categorical_feature(
+            &df,
+            "category",
+            &target_values,
+            1,
+            &weights,
+            BinningStrategy::Quantile,
+            5,
+        );
         assert!(result.is_ok(), "Should analyze categorical feature");
 
         let analysis = result.unwrap();
@@ -1477,18 +1913,22 @@ mod tests {
         // Create a simple bin and verify enhanced fields (with weight=1.0)
         let bins = create_quantile_prebins(
             &[(1.0, 0, 1.0), (2.0, 0, 1.0), (3.0, 1, 1.0), (4.0, 1, 1.0)],
-            2,    // 2 pre-bins
-            2.0,  // total_events
-            2.0,  // total_non_events
-            4.0,  // total_samples
+            2,   // 2 pre-bins
+            2.0, // total_events
+            2.0, // total_non_events
+            4.0, // total_samples
         );
 
         for bin in &bins {
             assert!(bin.count > 0.0, "Bin count should be positive");
-            assert!(bin.population_pct >= 0.0 && bin.population_pct <= 100.0,
-                "Population percent should be 0-100");
-            assert!(bin.event_rate >= 0.0 && bin.event_rate <= 1.0,
-                "Event rate should be 0-1");
+            assert!(
+                bin.population_pct >= 0.0 && bin.population_pct <= 100.0,
+                "Population percent should be 0-100"
+            );
+            assert!(
+                bin.event_rate >= 0.0 && bin.event_rate <= 1.0,
+                "Event rate should be 0-1"
+            );
         }
     }
 
@@ -1505,24 +1945,57 @@ mod tests {
         }.unwrap();
 
         let target_values: Vec<Option<i32>> = vec![
-            Some(0), Some(0), Some(1), Some(1), Some(0),
-            Some(1), Some(0), Some(1), Some(0), Some(1)
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
         ];
         let weights = vec![1.0; 10];
 
-        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile, &weights);
-        assert!(result.is_ok(), "Should analyze numeric feature with missing values");
+        let result = analyze_single_numeric_feature(
+            &df,
+            "feature",
+            &target_values,
+            5,
+            BinningStrategy::Quantile,
+            &weights,
+        );
+        assert!(
+            result.is_ok(),
+            "Should analyze numeric feature with missing values"
+        );
 
         let analysis = result.unwrap();
 
         // Should have a missing bin
-        assert!(analysis.missing_bin.is_some(), "Should have a MISSING bin for null values");
+        assert!(
+            analysis.missing_bin.is_some(),
+            "Should have a MISSING bin for null values"
+        );
 
         let missing_bin = analysis.missing_bin.unwrap();
-        assert!((missing_bin.count - 2.0).abs() < 0.01, "Missing bin should contain 2 samples");
-        assert!((missing_bin.events - 1.0).abs() < 0.01, "Missing bin should have 1 event");
-        assert!((missing_bin.non_events - 1.0).abs() < 0.01, "Missing bin should have 1 non-event");
-        assert!(missing_bin.population_pct > 0.0, "Missing bin should have positive population percentage");
+        assert!(
+            (missing_bin.count - 2.0).abs() < 0.01,
+            "Missing bin should contain 2 samples"
+        );
+        assert!(
+            (missing_bin.events - 1.0).abs() < 0.01,
+            "Missing bin should have 1 event"
+        );
+        assert!(
+            (missing_bin.non_events - 1.0).abs() < 0.01,
+            "Missing bin should have 1 non-event"
+        );
+        assert!(
+            missing_bin.population_pct > 0.0,
+            "Missing bin should have positive population percentage"
+        );
 
         // IV should include missing bin contribution
         assert!(analysis.iv >= 0.0, "IV should be non-negative");
@@ -1537,23 +2010,54 @@ mod tests {
         }.unwrap();
 
         let target_values: Vec<Option<i32>> = vec![
-            Some(0), Some(0), Some(1), Some(1), Some(0),
-            Some(1), Some(0), Some(1), Some(0), Some(1)
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
         ];
         let weights = vec![1.0; 10];
 
-        let result = analyze_categorical_feature(&df, "category", &target_values, 1, &weights);
-        assert!(result.is_ok(), "Should analyze categorical feature with missing values");
+        let result = analyze_categorical_feature(
+            &df,
+            "category",
+            &target_values,
+            1,
+            &weights,
+            BinningStrategy::Quantile,
+            5,
+        );
+        assert!(
+            result.is_ok(),
+            "Should analyze categorical feature with missing values"
+        );
 
         let analysis = result.unwrap();
 
         // Should have a missing bin
-        assert!(analysis.missing_bin.is_some(), "Should have a MISSING bin for null values");
+        assert!(
+            analysis.missing_bin.is_some(),
+            "Should have a MISSING bin for null values"
+        );
 
         let missing_bin = analysis.missing_bin.unwrap();
-        assert!((missing_bin.count - 2.0).abs() < 0.01, "Missing bin should contain 2 samples");
-        assert!((missing_bin.events - 1.0).abs() < 0.01, "Missing bin should have 1 event");
-        assert!((missing_bin.non_events - 1.0).abs() < 0.01, "Missing bin should have 1 non-event");
+        assert!(
+            (missing_bin.count - 2.0).abs() < 0.01,
+            "Missing bin should contain 2 samples"
+        );
+        assert!(
+            (missing_bin.events - 1.0).abs() < 0.01,
+            "Missing bin should have 1 event"
+        );
+        assert!(
+            (missing_bin.non_events - 1.0).abs() < 0.01,
+            "Missing bin should have 1 non-event"
+        );
 
         // IV should include missing bin contribution
         assert!(analysis.iv >= 0.0, "IV should be non-negative");
@@ -1565,21 +2069,43 @@ mod tests {
         let df = df! {
             "target" => [0i32, 0, 1, 1, 0, 1, 0, 1, 0, 1],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
-        }.unwrap();
+        }
+        .unwrap();
 
         let target_values: Vec<Option<i32>> = vec![
-            Some(0), Some(0), Some(1), Some(1), Some(0),
-            Some(1), Some(0), Some(1), Some(0), Some(1)
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
         ];
         let weights = vec![1.0; 10];
 
-        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile, &weights);
-        assert!(result.is_ok(), "Should analyze numeric feature without missing values");
+        let result = analyze_single_numeric_feature(
+            &df,
+            "feature",
+            &target_values,
+            5,
+            BinningStrategy::Quantile,
+            &weights,
+        );
+        assert!(
+            result.is_ok(),
+            "Should analyze numeric feature without missing values"
+        );
 
         let analysis = result.unwrap();
 
         // Should NOT have a missing bin
-        assert!(analysis.missing_bin.is_none(), "Should not have MISSING bin when no null values");
+        assert!(
+            analysis.missing_bin.is_none(),
+            "Should not have MISSING bin when no null values"
+        );
     }
 
     #[test]
@@ -1593,13 +2119,29 @@ mod tests {
         // Two records have None target (these should be dropped)
         // Two records have None feature (these should go to MISSING bin)
         let target_values: Vec<Option<i32>> = vec![
-            Some(0), Some(0), Some(1), None, Some(0),  // 4th record has invalid target
-            Some(1), Some(0), Some(1), None, Some(1),  // 9th record has invalid target
-            Some(0), Some(1)
+            Some(0),
+            Some(0),
+            Some(1),
+            None,
+            Some(0), // 4th record has invalid target
+            Some(1),
+            Some(0),
+            Some(1),
+            None,
+            Some(1), // 9th record has invalid target
+            Some(0),
+            Some(1),
         ];
         let weights = vec![1.0; 12];
 
-        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile, &weights);
+        let result = analyze_single_numeric_feature(
+            &df,
+            "feature",
+            &target_values,
+            5,
+            BinningStrategy::Quantile,
+            &weights,
+        );
         assert!(result.is_ok(), "Should analyze feature");
 
         let analysis = result.unwrap();
@@ -1609,7 +2151,10 @@ mod tests {
 
         let missing_bin = analysis.missing_bin.unwrap();
         // Only the 3rd row (target=Some(1)) and 5th row (target=Some(0)) have null features with valid targets
-        assert!((missing_bin.count - 2.0).abs() < 0.01, "Missing bin should contain 2 samples (from rows with valid targets)");
+        assert!(
+            (missing_bin.count - 2.0).abs() < 0.01,
+            "Missing bin should contain 2 samples (from rows with valid targets)"
+        );
     }
 
     #[test]
@@ -1618,14 +2163,21 @@ mod tests {
         let df = df! {
             "target" => [0i32, 0, 1, 1, 0, 1],
             "feature" => [None::<f64>, None, None, None, None, None],
-        }.unwrap();
+        }
+        .unwrap();
 
-        let target_values: Vec<Option<i32>> = vec![
-            Some(0), Some(0), Some(1), Some(1), Some(0), Some(1)
-        ];
+        let target_values: Vec<Option<i32>> =
+            vec![Some(0), Some(0), Some(1), Some(1), Some(0), Some(1)];
         let weights = vec![1.0; 6];
 
-        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile, &weights);
+        let result = analyze_single_numeric_feature(
+            &df,
+            "feature",
+            &target_values,
+            5,
+            BinningStrategy::Quantile,
+            &weights,
+        );
         assert!(result.is_ok(), "Should handle all-missing feature values");
 
         let analysis = result.unwrap();
@@ -1635,9 +2187,18 @@ mod tests {
         assert!(analysis.bins.is_empty(), "Should have no regular bins");
 
         let missing_bin = analysis.missing_bin.unwrap();
-        assert!((missing_bin.count - 6.0).abs() < 0.01, "Missing bin should contain all 6 samples");
-        assert!((missing_bin.events - 3.0).abs() < 0.01, "Missing bin should have 3 events");
-        assert!((missing_bin.non_events - 3.0).abs() < 0.01, "Missing bin should have 3 non-events");
+        assert!(
+            (missing_bin.count - 6.0).abs() < 0.01,
+            "Missing bin should contain all 6 samples"
+        );
+        assert!(
+            (missing_bin.events - 3.0).abs() < 0.01,
+            "Missing bin should have 3 events"
+        );
+        assert!(
+            (missing_bin.non_events - 3.0).abs() < 0.01,
+            "Missing bin should have 3 non-events"
+        );
     }
 
     #[test]
@@ -1651,21 +2212,45 @@ mod tests {
         // Missing feature values: rows 3, 4, 5 with targets 1, 1, 0
         // So missing_events = 2, missing_non_events = 1
         let target_values: Vec<Option<i32>> = vec![
-            Some(0), Some(0), Some(1), Some(1), Some(0),
-            Some(1), Some(0), Some(1), Some(1), Some(1)
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(1),
         ];
         let weights = vec![1.0; 10];
 
-        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile, &weights);
+        let result = analyze_single_numeric_feature(
+            &df,
+            "feature",
+            &target_values,
+            5,
+            BinningStrategy::Quantile,
+            &weights,
+        );
         assert!(result.is_ok(), "Should analyze feature");
 
         let analysis = result.unwrap();
         assert!(analysis.missing_bin.is_some(), "Should have MISSING bin");
 
         let missing_bin = analysis.missing_bin.unwrap();
-        assert!((missing_bin.events - 2.0).abs() < 0.01, "Missing bin should have 2 events");
-        assert!((missing_bin.non_events - 1.0).abs() < 0.01, "Missing bin should have 1 non-event");
-        assert!(missing_bin.iv_contribution >= 0.0, "IV contribution should be non-negative");
+        assert!(
+            (missing_bin.events - 2.0).abs() < 0.01,
+            "Missing bin should have 2 events"
+        );
+        assert!(
+            (missing_bin.non_events - 1.0).abs() < 0.01,
+            "Missing bin should have 1 non-event"
+        );
+        assert!(
+            missing_bin.iv_contribution >= 0.0,
+            "IV contribution should be non-negative"
+        );
 
         // WoE should reflect higher event rate in missing bin
         // (WoE sign depends on overall event/non-event distribution)
@@ -1680,20 +2265,225 @@ mod tests {
         }.unwrap();
 
         let target_values: Vec<Option<i32>> = vec![
-            Some(0), Some(0), Some(1), Some(1), Some(0),
-            Some(1), Some(0), Some(1), Some(0), Some(1)
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
+            Some(0),
+            Some(1),
         ];
         let weights = vec![1.0; 10];
 
-        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile, &weights);
+        let result = analyze_single_numeric_feature(
+            &df,
+            "feature",
+            &target_values,
+            5,
+            BinningStrategy::Quantile,
+            &weights,
+        );
         assert!(result.is_ok(), "Should analyze feature");
 
         let analysis = result.unwrap();
 
         // Gini should be calculated including missing bin
         // It should be in valid range [-1, 1]
-        assert!(analysis.gini >= -1.0 && analysis.gini <= 1.0,
-            "Gini should be in valid range, got {}", analysis.gini);
+        assert!(
+            analysis.gini >= -1.0 && analysis.gini <= 1.0,
+            "Gini should be in valid range, got {}",
+            analysis.gini
+        );
+    }
+
+    #[test]
+    fn test_categorical_cart_binning_basic() {
+        // Create categorical data with clear event rate separation
+        let df = df! {
+            "target" => [0i32, 0, 0, 0, 0, 1, 1, 1, 1, 1,
+                         0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
+            "category" => ["A", "A", "A", "A", "B", "B", "B", "C", "C", "C",
+                           "A", "A", "A", "B", "B", "B", "C", "C", "C", "C"],
+        }
+        .unwrap();
+
+        // A has low event rate, B has medium, C has high
+        let target_values: Vec<Option<i32>> = vec![
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(1),
+        ];
+        let weights = vec![1.0; 20];
+
+        let result = analyze_categorical_feature(
+            &df,
+            "category",
+            &target_values,
+            1,
+            &weights,
+            BinningStrategy::Cart,
+            2,
+        );
+        assert!(result.is_ok(), "CART categorical analysis should succeed");
+
+        let analysis = result.unwrap();
+
+        // Should have at most 2 bins
+        assert!(
+            analysis.categories.len() <= 2,
+            "Should have at most 2 bins, got {}",
+            analysis.categories.len()
+        );
+
+        // Check that IV and Gini are valid
+        assert!(analysis.iv >= 0.0, "IV should be non-negative");
+        assert!(
+            analysis.gini >= -1.0 && analysis.gini <= 1.0,
+            "Gini should be in valid range"
+        );
+    }
+
+    #[test]
+    fn test_categorical_cart_fewer_categories_than_bins() {
+        // Fewer categories than requested bins
+        let df = df! {
+            "target" => [0i32, 0, 1, 1],
+            "category" => ["A", "A", "B", "B"],
+        }
+        .unwrap();
+
+        let target_values: Vec<Option<i32>> = vec![Some(0), Some(0), Some(1), Some(1)];
+        let weights = vec![1.0; 4];
+
+        let result = analyze_categorical_feature(
+            &df,
+            "category",
+            &target_values,
+            1,
+            &weights,
+            BinningStrategy::Cart,
+            10, // Request 10 bins but only 2 categories
+        );
+        assert!(result.is_ok());
+
+        let analysis = result.unwrap();
+        assert!(
+            analysis.categories.len() <= 2,
+            "Cannot have more bins than categories"
+        );
+    }
+
+    #[test]
+    fn test_categorical_cart_preserves_other() {
+        // Test that OTHER category is preserved as separate bin
+        let df = df! {
+            "target" => [0i32, 0, 1, 1, 0, 1, 0, 1, 0, 1],
+            "category" => ["A", "A", "A", "A", "B", "B", "C", "C", "D", "E"],
+        }
+        .unwrap();
+
+        // D and E have only 1 sample each, should become OTHER
+        let target_values: Vec<Option<i32>> = (0..10).map(|i| Some(i % 2)).collect();
+        let weights = vec![1.0; 10];
+
+        let result = analyze_categorical_feature(
+            &df,
+            "category",
+            &target_values,
+            2,
+            &weights, // min 2 samples per category
+            BinningStrategy::Cart,
+            3,
+        );
+        assert!(result.is_ok());
+
+        let analysis = result.unwrap();
+
+        // Should have OTHER category
+        let has_other = analysis.categories.iter().any(|c| c.category == "OTHER");
+        assert!(has_other, "Should have OTHER category for rare values");
+    }
+
+    #[test]
+    fn test_categorical_quantile_vs_cart() {
+        // Compare Quantile and CART results
+        let df = df! {
+            "target" => [0i32, 0, 0, 1, 1, 1, 0, 0, 1, 1],
+            "category" => ["X", "X", "Y", "Y", "Y", "Z", "Z", "Z", "W", "W"],
+        }
+        .unwrap();
+
+        let target_values: Vec<Option<i32>> = vec![
+            Some(0),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+            Some(1),
+            Some(0),
+            Some(0),
+            Some(1),
+            Some(1),
+        ];
+        let weights = vec![1.0; 10];
+
+        // Test Quantile strategy
+        let result_quantile = analyze_categorical_feature(
+            &df,
+            "category",
+            &target_values,
+            1,
+            &weights,
+            BinningStrategy::Quantile,
+            3,
+        );
+        assert!(result_quantile.is_ok());
+        let quantile_analysis = result_quantile.unwrap();
+
+        // Test CART strategy
+        let result_cart = analyze_categorical_feature(
+            &df,
+            "category",
+            &target_values,
+            1,
+            &weights,
+            BinningStrategy::Cart,
+            3,
+        );
+        assert!(result_cart.is_ok());
+        let cart_analysis = result_cart.unwrap();
+
+        // Both should have valid IV/Gini
+        assert!(
+            quantile_analysis.iv >= 0.0,
+            "Quantile IV should be non-negative"
+        );
+        assert!(cart_analysis.iv >= 0.0, "CART IV should be non-negative");
+
+        // CART might produce fewer bins when optimal
+        assert!(
+            cart_analysis.categories.len() <= 3,
+            "CART should respect num_bins limit"
+        );
     }
 }
-

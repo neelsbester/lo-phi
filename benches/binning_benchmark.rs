@@ -14,7 +14,9 @@ fn generate_test_dataframe(n_rows: usize, n_features: usize, seed: u64) -> DataF
     let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
 
     // Create target column (binary)
-    let target: Vec<i32> = (0..n_rows).map(|_| if rng.gen::<f64>() > 0.7 { 1 } else { 0 }).collect();
+    let target: Vec<i32> = (0..n_rows)
+        .map(|_| if rng.gen::<f64>() > 0.7 { 1 } else { 0 })
+        .collect();
 
     // Create feature columns with varying characteristics
     let mut columns: Vec<Column> = vec![Column::new("target".into(), target.clone())];
@@ -25,9 +27,7 @@ fn generate_test_dataframe(n_rows: usize, n_features: usize, seed: u64) -> DataF
         let values: Vec<f64> = match feature_type {
             0 => {
                 // Normal distribution - good for quantile binning
-                (0..n_rows)
-                    .map(|_| rng.gen::<f64>() * 100.0)
-                    .collect()
+                (0..n_rows).map(|_| rng.gen::<f64>() * 100.0).collect()
             }
             1 => {
                 // Skewed distribution - may favor CART
@@ -116,39 +116,31 @@ fn benchmark_single_feature(c: &mut Criterion) {
         let df = generate_test_dataframe(n_rows, 1, 42);
         group.throughput(Throughput::Elements(n_rows as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("quantile", n_rows),
-            &df,
-            |b, df| {
-                b.iter(|| {
-                    let _ = analyze_features_iv(
-                        black_box(df),
-                        black_box("target"),
-                        black_box(10),
-                        black_box(None),
-                        black_box(BinningStrategy::Quantile),
-                        black_box(None),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("quantile", n_rows), &df, |b, df| {
+            b.iter(|| {
+                let _ = analyze_features_iv(
+                    black_box(df),
+                    black_box("target"),
+                    black_box(10),
+                    black_box(None),
+                    black_box(BinningStrategy::Quantile),
+                    black_box(None),
+                );
+            });
+        });
 
-        group.bench_with_input(
-            BenchmarkId::new("cart", n_rows),
-            &df,
-            |b, df| {
-                b.iter(|| {
-                    let _ = analyze_features_iv(
-                        black_box(df),
-                        black_box("target"),
-                        black_box(10),
-                        black_box(None),
-                        black_box(BinningStrategy::Cart),
-                        black_box(None),
-                    );
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("cart", n_rows), &df, |b, df| {
+            b.iter(|| {
+                let _ = analyze_features_iv(
+                    black_box(df),
+                    black_box("target"),
+                    black_box(10),
+                    black_box(None),
+                    black_box(BinningStrategy::Cart),
+                    black_box(None),
+                );
+            });
+        });
     }
 
     group.finish();
@@ -207,4 +199,3 @@ criterion_group!(
     benchmark_bin_counts,
 );
 criterion_main!(benches);
-

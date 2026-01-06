@@ -28,15 +28,13 @@ pub fn find_correlated_pairs(
     weights: &[f64],
     weight_column: Option<&str>,
 ) -> Result<Vec<CorrelatedPair>> {
-
     // Get numeric columns only - cast all to Float64 for correlation calculation
     // Exclude the weight column as it's metadata, not a feature
     let numeric_cols: Vec<String> = df
         .get_columns()
         .iter()
         .filter(|col| {
-            col.dtype().is_primitive_numeric()
-                && Some(col.name().as_str()) != weight_column
+            col.dtype().is_primitive_numeric() && Some(col.name().as_str()) != weight_column
         })
         .map(|col| col.name().to_string())
         .collect();
@@ -224,4 +222,3 @@ pub fn select_features_to_drop(pairs: &[CorrelatedPair], target_column: &str) ->
 
     to_drop
 }
-

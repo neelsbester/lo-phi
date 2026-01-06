@@ -12,7 +12,8 @@ fn create_string_target_dataframe() -> DataFrame {
                        1.1, 2.1, 1.2, 2.2, 1.3, 2.3, 1.4, 2.4, 1.5, 2.5],
         "feature2" => [5.0f64, 4.0, 3.0, 6.0, 5.0, 4.0, 3.0, 6.0, 5.0, 4.0,
                        5.5, 4.5, 3.5, 6.5, 5.2, 4.2, 3.2, 6.2, 5.8, 4.8],
-    }.unwrap()
+    }
+    .unwrap()
 }
 
 /// Create a DataFrame with multi-value target (good, bad, unknown)
@@ -30,7 +31,8 @@ fn create_multivalue_target_dataframe() -> DataFrame {
                        3.5, 7.5, 5.5, 4.5, 6.5, 5.5,
                        3.2, 7.2, 5.2, 4.2, 6.2, 5.2,
                        3.8, 7.8],
-    }.unwrap()
+    }
+    .unwrap()
 }
 
 /// Create a DataFrame with numeric non-binary target (1, 2, 3)
@@ -41,7 +43,8 @@ fn create_numeric_nonbinary_target_dataframe() -> DataFrame {
                        1.1, 5.1, 8.1, 1.3, 5.3, 8.3, 1.4, 5.4],
         "feature2" => [2.0f64, 4.0, 6.0, 2.5, 4.5, 6.5, 2.2, 4.2, 6.2, 2.8, 4.8, 6.8,
                        2.1, 4.1, 6.1, 2.3, 4.3, 6.3, 2.4, 4.4],
-    }.unwrap()
+    }
+    .unwrap()
 }
 
 #[test]
@@ -49,8 +52,9 @@ fn test_analyze_binary_target_returns_already_binary() {
     let df = df! {
         "target" => [0i32, 1, 0, 1, 0, 1],
         "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
-    }.unwrap();
-    
+    }
+    .unwrap();
+
     let result = analyze_target_column(&df, "target").unwrap();
     assert!(matches!(result, TargetAnalysis::AlreadyBinary));
 }
@@ -60,8 +64,9 @@ fn test_analyze_float_binary_target_returns_already_binary() {
     let df = df! {
         "target" => [0.0f64, 1.0, 0.0, 1.0],
         "feature" => [1.0f64, 2.0, 3.0, 4.0],
-    }.unwrap();
-    
+    }
+    .unwrap();
+
     let result = analyze_target_column(&df, "target").unwrap();
     assert!(matches!(result, TargetAnalysis::AlreadyBinary));
 }
@@ -69,7 +74,7 @@ fn test_analyze_float_binary_target_returns_already_binary() {
 #[test]
 fn test_analyze_string_target_needs_mapping() {
     let df = create_string_target_dataframe();
-    
+
     let result = analyze_target_column(&df, "target").unwrap();
     match result {
         TargetAnalysis::NeedsMapping { unique_values } => {
@@ -84,7 +89,7 @@ fn test_analyze_string_target_needs_mapping() {
 #[test]
 fn test_analyze_multivalue_target_needs_mapping() {
     let df = create_multivalue_target_dataframe();
-    
+
     let result = analyze_target_column(&df, "target").unwrap();
     match result {
         TargetAnalysis::NeedsMapping { unique_values } => {
@@ -100,7 +105,7 @@ fn test_analyze_multivalue_target_needs_mapping() {
 #[test]
 fn test_analyze_numeric_nonbinary_target_needs_mapping() {
     let df = create_numeric_nonbinary_target_dataframe();
-    
+
     let result = analyze_target_column(&df, "target").unwrap();
     match result {
         TargetAnalysis::NeedsMapping { unique_values } => {
@@ -117,9 +122,9 @@ fn test_analyze_numeric_nonbinary_target_needs_mapping() {
 fn test_create_target_mask_string_values() {
     let df = create_string_target_dataframe();
     let mapping = TargetMapping::new("B".to_string(), "G".to_string());
-    
+
     let mask = create_target_mask(&df, "target", &mapping).unwrap();
-    
+
     // "G" should map to 0, "B" should map to 1
     assert_eq!(mask[0], Some(0)); // G
     assert_eq!(mask[1], Some(1)); // B
@@ -131,13 +136,13 @@ fn test_create_target_mask_string_values() {
 fn test_create_target_mask_with_ignored_values() {
     let df = create_multivalue_target_dataframe();
     let mapping = TargetMapping::new("bad".to_string(), "good".to_string());
-    
+
     let mask = create_target_mask(&df, "target", &mapping).unwrap();
-    
+
     // First 3 values: "good", "bad", "unknown"
     assert_eq!(mask[0], Some(0)); // good -> 0
     assert_eq!(mask[1], Some(1)); // bad -> 1
-    assert_eq!(mask[2], None);    // unknown -> ignored
+    assert_eq!(mask[2], None); // unknown -> ignored
 }
 
 #[test]
@@ -147,15 +152,31 @@ fn test_iv_analysis_with_string_target_mapping() {
     let weights = vec![1.0; df.height()];
 
     // Should not error with mapping provided
-    let result = analyze_features_iv(&df, "target", 5, Some(&mapping), BinningStrategy::Quantile, None, &weights, None);
-    assert!(result.is_ok(), "IV analysis should succeed with target mapping");
+    let result = analyze_features_iv(
+        &df,
+        "target",
+        5,
+        Some(&mapping),
+        BinningStrategy::Quantile,
+        None,
+        &weights,
+        None,
+    );
+    assert!(
+        result.is_ok(),
+        "IV analysis should succeed with target mapping"
+    );
 
     let analyses = result.unwrap();
     assert_eq!(analyses.len(), 2, "Should analyze 2 features");
 
     // Check that all features have valid Gini values
     for analysis in &analyses {
-        assert!(analysis.gini.is_finite(), "Gini should be finite for {}", analysis.feature_name);
+        assert!(
+            analysis.gini.is_finite(),
+            "Gini should be finite for {}",
+            analysis.feature_name
+        );
     }
 }
 
@@ -166,8 +187,20 @@ fn test_iv_analysis_with_multivalue_target_ignores_unknown() {
     let weights = vec![1.0; df.height()];
 
     // Should analyze only rows with "good" or "bad", ignoring "unknown"
-    let result = analyze_features_iv(&df, "target", 5, Some(&mapping), BinningStrategy::Quantile, None, &weights, None);
-    assert!(result.is_ok(), "IV analysis should succeed, ignoring unknown values");
+    let result = analyze_features_iv(
+        &df,
+        "target",
+        5,
+        Some(&mapping),
+        BinningStrategy::Quantile,
+        None,
+        &weights,
+        None,
+    );
+    assert!(
+        result.is_ok(),
+        "IV analysis should succeed, ignoring unknown values"
+    );
 
     let analyses = result.unwrap();
     assert!(!analyses.is_empty(), "Should have analysis results");
@@ -180,12 +213,25 @@ fn test_iv_analysis_without_mapping_on_binary_target() {
                      0, 0, 0, 0, 0, 1, 1, 1, 1, 1],
         "feature" => [1.0f64, 1.0, 1.0, 2.0, 2.0, 8.0, 9.0, 9.0, 10.0, 10.0,
                       1.5, 1.5, 2.0, 2.5, 3.0, 7.0, 8.0, 8.5, 9.0, 9.5],
-    }.unwrap();
+    }
+    .unwrap();
     let weights = vec![1.0; 20];
 
     // Should work without mapping for binary target
-    let result = analyze_features_iv(&df, "target", 5, None, BinningStrategy::Quantile, None, &weights, None);
-    assert!(result.is_ok(), "IV analysis should succeed for binary target without mapping");
+    let result = analyze_features_iv(
+        &df,
+        "target",
+        5,
+        None,
+        BinningStrategy::Quantile,
+        None,
+        &weights,
+        None,
+    );
+    assert!(
+        result.is_ok(),
+        "IV analysis should succeed for binary target without mapping"
+    );
 }
 
 #[test]
@@ -200,8 +246,9 @@ fn test_analyze_empty_target_fails() {
     let df = df! {
         "target" => Vec::<i32>::new(),
         "feature" => Vec::<f64>::new(),
-    }.unwrap();
-    
+    }
+    .unwrap();
+
     let result = analyze_target_column(&df, "target");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("empty"));
@@ -212,8 +259,9 @@ fn test_analyze_all_null_target_fails() {
     let df = df! {
         "target" => [None::<String>, None, None],
         "feature" => [1.0f64, 2.0, 3.0],
-    }.unwrap();
-    
+    }
+    .unwrap();
+
     let result = analyze_target_column(&df, "target");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("null"));
@@ -224,10 +272,10 @@ fn test_analyze_nonexistent_target_fails() {
     let df = df! {
         "other_col" => [0i32, 1, 0, 1],
         "feature" => [1.0f64, 2.0, 3.0, 4.0],
-    }.unwrap();
-    
+    }
+    .unwrap();
+
     let result = analyze_target_column(&df, "target");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
-

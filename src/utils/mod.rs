@@ -5,4 +5,3 @@ pub mod styling;
 
 pub use progress::*;
 pub use styling::*;
-

@@ -41,7 +41,12 @@ fn format_duration(duration: std::time::Duration) -> String {
 /// # Performance Notes
 /// - **Streaming mode (default)**: Uses `sink_parquet()` for memory efficiency. Single-threaded.
 /// - **Fast mode (`--fast`)**: Loads entire dataset into memory, parallelizes across all cores.
-pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usize, fast: bool) -> Result<()> {
+pub fn run_convert(
+    input: &Path,
+    output: Option<&Path>,
+    infer_schema_length: usize,
+    fast: bool,
+) -> Result<()> {
     let total_start = Instant::now();
 
     // Determine output path
@@ -57,8 +62,12 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
         }
     };
 
-    let mode_str = if fast { "fast (in-memory, multi-core)" } else { "streaming (low memory)" };
-    
+    let mode_str = if fast {
+        "fast (in-memory, multi-core)"
+    } else {
+        "streaming (low memory)"
+    };
+
     println!(
         "\n {} Converting CSV to Parquet  {}",
         style("◆").cyan().bold(),
@@ -68,7 +77,12 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
     println!("   Output: {}", style(output_path.display()).dim());
     println!(
         "   Schema inference: {} rows",
-        style(if infer_schema_length == 0 { "full scan".to_string() } else { infer_schema_length.to_string() }).dim()
+        style(if infer_schema_length == 0 {
+            "full scan".to_string()
+        } else {
+            infer_schema_length.to_string()
+        })
+        .dim()
     );
     println!("   Mode: {}", style(mode_str).yellow());
     println!();
@@ -89,7 +103,7 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
 
     if fast {
         // === FAST MODE: In-memory conversion with parallelization ===
-        
+
         // Step 1: Create LazyFrame from CSV
         println!(
             "   {} [{}] Initializing CSV reader...",
@@ -100,7 +114,7 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
         let spinner = create_spinner("Initializing CSV reader...");
         let lf = LazyCsvReader::new(input)
             .with_infer_schema_length(schema_length)
-            .with_rechunk(true)  // Rechunk for better parallel performance
+            .with_rechunk(true) // Rechunk for better parallel performance
             .finish()
             .with_context(|| format!("Failed to read CSV file: {}", input.display()))?;
         init_time = step_start.elapsed();
@@ -138,7 +152,8 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
         );
         let step_start = Instant::now();
         let spinner = create_spinner("Loading dataset into memory...");
-        let mut df = lf.collect()
+        let mut df = lf
+            .collect()
             .with_context(|| "Failed to load dataset into memory")?;
         load_time = step_start.elapsed();
         spinner.finish_with_message(format!(
@@ -156,10 +171,10 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
         );
         let step_start = Instant::now();
         let spinner = create_spinner("Writing Parquet file...");
-        
+
         let file = std::fs::File::create(&output_path)
             .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
-        
+
         ParquetWriter::new(file)
             .with_compression(ParquetCompression::Snappy)
             .with_statistics(StatisticsOptions::full())
@@ -174,11 +189,10 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
             style(timestamp()).dim(),
             style(format_duration(write_time)).cyan()
         ));
-
     } else {
         // === STREAMING MODE: Memory-efficient but single-threaded ===
         load_time = std::time::Duration::ZERO; // No separate load step in streaming mode
-        
+
         // Step 1: Create LazyFrame from CSV
         println!(
             "   {} [{}] Initializing CSV reader...",
@@ -190,7 +204,7 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
         let lf = LazyCsvReader::new(input)
             .with_infer_schema_length(schema_length)
             .with_low_memory(true) // Reduces memory pressure for large files
-            .with_rechunk(false)   // No rechunking needed for streaming
+            .with_rechunk(false) // No rechunking needed for streaming
             .finish()
             .with_context(|| format!("Failed to read CSV file: {}", input.display()))?;
         init_time = step_start.elapsed();
@@ -227,7 +241,8 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
             style(timestamp()).dim()
         );
         let step_start = Instant::now();
-        let spinner = create_spinner("Streaming to Parquet (this may take a while for large files)...");
+        let spinner =
+            create_spinner("Streaming to Parquet (this may take a while for large files)...");
 
         // Configure Parquet write options for optimal performance
         let parquet_options = ParquetWriteOptions {
@@ -251,7 +266,9 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
 
     // Show file size comparison
     let input_size_bytes = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
-    let output_size_bytes = std::fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0);
+    let output_size_bytes = std::fs::metadata(&output_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
     let input_size = input_size_bytes as f64 / (1024.0 * 1024.0);
     let output_size = output_size_bytes as f64 / (1024.0 * 1024.0);
 
@@ -291,16 +308,10 @@ pub fn run_convert(input: &Path, output: Option<&Path>, infer_schema_length: usi
         "      {}",
         style(format!("Total:   {}", format_duration(total_time))).bold()
     );
-    println!(
-        "      Throughput: {:.1} MB/s",
-        throughput_mb_s
-    );
+    println!("      Throughput: {:.1} MB/s", throughput_mb_s);
 
     println!();
-    println!(
-        " {} Conversion complete!",
-        style("✓").green().bold()
-    );
+    println!(" {} Conversion complete!", style("✓").green().bold());
 
     Ok(())
 }

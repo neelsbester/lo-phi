@@ -66,11 +66,7 @@ pub fn analyze_target_column(df: &DataFrame, target: &str) -> Result<TargetAnaly
     if target_col.dtype().is_primitive_numeric() {
         let float_col = target_col.cast(&DataType::Float64)?;
         let unique = float_col.unique()?;
-        let unique_values: Vec<f64> = unique
-            .f64()?
-            .into_iter()
-            .filter_map(|v| v)
-            .collect();
+        let unique_values: Vec<f64> = unique.f64()?.into_iter().filter_map(|v| v).collect();
 
         // Check if all values are 0.0 or 1.0
         let is_binary = unique_values.len() <= 2
@@ -96,15 +92,13 @@ pub fn analyze_target_column(df: &DataFrame, target: &str) -> Result<TargetAnaly
 /// Get unique values from a column as strings
 fn get_unique_values_as_strings(col: &Column) -> Result<Vec<String>> {
     let unique = col.unique()?;
-    
+
     let values: Vec<String> = match unique.dtype() {
-        DataType::String => {
-            unique
-                .str()?
-                .into_iter()
-                .filter_map(|v| v.map(|s| s.to_string()))
-                .collect()
-        }
+        DataType::String => unique
+            .str()?
+            .into_iter()
+            .filter_map(|v| v.map(|s| s.to_string()))
+            .collect(),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
             let cast = unique.cast(&DataType::Int64)?;
             cast.i64()?
@@ -126,13 +120,11 @@ fn get_unique_values_as_strings(col: &Column) -> Result<Vec<String>> {
                 .filter_map(|v| v.map(|n| format!("{}", n)))
                 .collect()
         }
-        DataType::Boolean => {
-            unique
-                .bool()?
-                .into_iter()
-                .filter_map(|v| v.map(|b| b.to_string()))
-                .collect()
-        }
+        DataType::Boolean => unique
+            .bool()?
+            .into_iter()
+            .filter_map(|v| v.map(|b| b.to_string()))
+            .collect(),
         _ => {
             // For other types, try to cast to string
             let cast = unique.cast(&DataType::String)?;
@@ -150,7 +142,7 @@ fn get_unique_values_as_strings(col: &Column) -> Result<Vec<String>> {
 }
 
 /// Create a binary target mask based on the mapping
-/// 
+///
 /// Returns a Vec<Option<i32>> where:
 /// - Some(1) for event values
 /// - Some(0) for non-event values
@@ -165,7 +157,7 @@ pub fn create_target_mask(
         .with_context(|| format!("Target column '{}' not found", target))?;
 
     let string_values = column_to_string_vec(target_col)?;
-    
+
     let mask: Vec<Option<i32>> = string_values
         .iter()
         .map(|v| match v {
@@ -181,12 +173,11 @@ pub fn create_target_mask(
 /// Convert a column to a Vec of Option<String> for comparison
 fn column_to_string_vec(col: &Column) -> Result<Vec<Option<String>>> {
     let values: Vec<Option<String>> = match col.dtype() {
-        DataType::String => {
-            col.str()?
-                .into_iter()
-                .map(|v| v.map(|s| s.to_string()))
-                .collect()
-        }
+        DataType::String => col
+            .str()?
+            .into_iter()
+            .map(|v| v.map(|s| s.to_string()))
+            .collect(),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
             let cast = col.cast(&DataType::Int64)?;
             cast.i64()?
@@ -208,12 +199,11 @@ fn column_to_string_vec(col: &Column) -> Result<Vec<Option<String>>> {
                 .map(|v| v.map(|n| format!("{}", n)))
                 .collect()
         }
-        DataType::Boolean => {
-            col.bool()?
-                .into_iter()
-                .map(|v| v.map(|b| b.to_string()))
-                .collect()
-        }
+        DataType::Boolean => col
+            .bool()?
+            .into_iter()
+            .map(|v| v.map(|b| b.to_string()))
+            .collect(),
         _ => {
             // For other types, try to cast to string
             let cast = col.cast(&DataType::String)?;
@@ -234,11 +224,11 @@ pub fn count_mapped_records(
     mapping: &TargetMapping,
 ) -> Result<(usize, usize, usize)> {
     let mask = create_target_mask(df, target, mapping)?;
-    
+
     let events = mask.iter().filter(|v| **v == Some(1)).count();
     let non_events = mask.iter().filter(|v| **v == Some(0)).count();
     let ignored = mask.iter().filter(|v| v.is_none()).count();
-    
+
     Ok((events, non_events, ignored))
 }
 
@@ -251,8 +241,9 @@ mod tests {
         let df = df! {
             "target" => [0i32, 1, 0, 1, 0, 1],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = analyze_target_column(&df, "target").unwrap();
         assert!(matches!(result, TargetAnalysis::AlreadyBinary));
     }
@@ -262,8 +253,9 @@ mod tests {
         let df = df! {
             "target" => [0.0f64, 1.0, 0.0, 1.0],
             "feature" => [1.0f64, 2.0, 3.0, 4.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = analyze_target_column(&df, "target").unwrap();
         assert!(matches!(result, TargetAnalysis::AlreadyBinary));
     }
@@ -273,8 +265,9 @@ mod tests {
         let df = df! {
             "target" => ["G", "B", "G", "B", "G"],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = analyze_target_column(&df, "target").unwrap();
         match result {
             TargetAnalysis::NeedsMapping { unique_values } => {
@@ -291,8 +284,9 @@ mod tests {
         let df = df! {
             "target" => ["good", "bad", "unknown", "good", "bad"],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = analyze_target_column(&df, "target").unwrap();
         match result {
             TargetAnalysis::NeedsMapping { unique_values } => {
@@ -310,8 +304,9 @@ mod tests {
         let df = df! {
             "target" => [1i32, 2, 3, 1, 2, 3],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = analyze_target_column(&df, "target").unwrap();
         match result {
             TargetAnalysis::NeedsMapping { unique_values } => {
@@ -326,11 +321,12 @@ mod tests {
         let df = df! {
             "target" => ["G", "B", "G", "B", "X"],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let mapping = TargetMapping::new("B".to_string(), "G".to_string());
         let mask = create_target_mask(&df, "target", &mapping).unwrap();
-        
+
         assert_eq!(mask, vec![Some(0), Some(1), Some(0), Some(1), None]);
     }
 
@@ -339,14 +335,15 @@ mod tests {
         let df = df! {
             "target" => ["G", "B", "G", "B", "X", "X"],
             "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let mapping = TargetMapping::new("B".to_string(), "G".to_string());
         let (events, non_events, ignored) = count_mapped_records(&df, "target", &mapping).unwrap();
-        
-        assert_eq!(events, 2);      // "B" values
-        assert_eq!(non_events, 2);  // "G" values
-        assert_eq!(ignored, 2);     // "X" values
+
+        assert_eq!(events, 2); // "B" values
+        assert_eq!(non_events, 2); // "G" values
+        assert_eq!(ignored, 2); // "X" values
     }
 
     #[test]
@@ -354,8 +351,9 @@ mod tests {
         let df = df! {
             "target" => Vec::<i32>::new(),
             "feature" => Vec::<f64>::new(),
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = analyze_target_column(&df, "target");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
@@ -366,11 +364,11 @@ mod tests {
         let df = df! {
             "target" => [None::<String>, None, None],
             "feature" => [1.0f64, 2.0, 3.0],
-        }.unwrap();
-        
+        }
+        .unwrap();
+
         let result = analyze_target_column(&df, "target");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("null"));
     }
 }
-

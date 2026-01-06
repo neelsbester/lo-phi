@@ -31,10 +31,7 @@ pub fn print_banner(version: &str) {
         style("φ").magenta().bold(),
         style("Feature Reduction as simple as phi").dim()
     );
-    println!(
-        "    {}",
-        style(format!("v{}", version)).dim()
-    );
+    println!("    {}", style(format!("v{}", version)).dim());
     println!("    {}", style("━".repeat(50)).dim());
     println!();
 }
@@ -50,7 +47,7 @@ pub fn print_config(
 ) {
     let box_width = 56;
     let line = "─".repeat(box_width - 2);
-    
+
     println!("    ┌{}┐", line);
     println!(
         "    │ {}{}│",
@@ -68,11 +65,7 @@ pub fn print_config(
         TARGET,
         truncate_string(target, 38)
     );
-    println!(
-        "    │  {} Output: {:<39}│",
-        SAVE,
-        truncate_path(output, 38)
-    );
+    println!("    │  {} Output: {:<39}│", SAVE, truncate_path(output, 38));
     println!("    ├{}┤", line);
     println!(
         "    │  {} Missing threshold:     {:<24}│",
@@ -107,7 +100,11 @@ pub fn print_step_header(step_num: u8, title: &str) {
 
 /// Print a success message
 pub fn print_success(message: &str) {
-    println!("    {} {}", style("✓").green().bold(), style(message).green());
+    println!(
+        "    {} {}",
+        style("✓").green().bold(),
+        style(message).green()
+    );
 }
 
 /// Print an info message
@@ -177,4 +174,3 @@ fn truncate_string(s: &str, max_len: usize) -> String {
         format!("...{}", &s[s.len() - max_len + 3..])
     }
 }
-
