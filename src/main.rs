@@ -276,10 +276,9 @@ fn main() -> Result<()> {
     print_step_header(3, "Correlation Analysis");
 
     let step_start = Instant::now();
-    let spinner = create_spinner("Calculating correlations...");
     let correlated_pairs = find_correlated_pairs(&df, correlation_threshold)?;
     let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &target);
-    finish_with_success(&spinner, "Correlation analysis complete");
+    print_success("Correlation analysis complete");
 
     if correlated_pairs.is_empty() {
         print_info("No highly correlated feature pairs found");

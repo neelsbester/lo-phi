@@ -4,8 +4,6 @@ use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use polars::prelude::*;
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 /// Represents a correlated pair of features
 #[derive(Debug, Clone)]
@@ -51,7 +49,7 @@ pub fn find_correlated_pairs(df: &DataFrame, threshold: f64) -> Result<Vec<Corre
     // Calculate total number of pairs for progress bar (upper triangle)
     let total_pairs = (num_cols * (num_cols - 1)) / 2;
 
-    // Create progress bar
+    // Create progress bar with steady tick for smooth rendering
     let pb = ProgressBar::new(total_pairs as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -61,14 +59,12 @@ pub fn find_correlated_pairs(df: &DataFrame, threshold: f64) -> Result<Vec<Corre
             .unwrap()
             .progress_chars("=>-"),
     );
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
     // Generate all pairs (indices for upper triangle)
     let pairs: Vec<(usize, usize)> = (0..num_cols)
         .flat_map(|i| ((i + 1)..num_cols).map(move |j| (i, j)))
         .collect();
-
-    // Atomic counter for progress updates
-    let progress_counter = Arc::new(AtomicU64::new(0));
 
     // Process pairs in parallel using Rayon
     let correlated_pairs: Vec<CorrelatedPair> = pairs
@@ -79,11 +75,8 @@ pub fn find_correlated_pairs(df: &DataFrame, threshold: f64) -> Result<Vec<Corre
 
             let corr = compute_pearson_correlation(col1, col2);
 
-            // Update progress periodically
-            let count = progress_counter.fetch_add(1, Ordering::Relaxed);
-            if count % 1000 == 0 || count == (total_pairs as u64 - 1) {
-                pb.set_position(count + 1);
-            }
+            // Update progress - inc() is thread-safe, steady_tick handles smooth rendering
+            pb.inc(1);
 
             corr.and_then(|c| {
                 if c.abs() > threshold && !c.is_nan() {
