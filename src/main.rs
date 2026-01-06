@@ -14,11 +14,11 @@ use anyhow::Result;
 use clap::Parser;
 use console::style;
 
-use cli::{run_config_menu, Cli, Commands, Config, ConfigResult};
+use cli::{run_config_menu, run_target_mapping_selector, Cli, Commands, Config, ConfigResult, TargetMappingResult};
 use pipeline::{
-    analyze_features_iv, analyze_missing_values, find_correlated_pairs, get_column_names,
-    get_features_above_threshold, get_low_gini_features, load_dataset_with_progress,
-    select_features_to_drop,
+    analyze_features_iv, analyze_missing_values, analyze_target_column, find_correlated_pairs,
+    get_column_names, get_features_above_threshold, get_low_gini_features,
+    load_dataset_with_progress, select_features_to_drop, TargetAnalysis, TargetMapping,
 };
 use report::{export_gini_analysis, ReductionSummary};
 use utils::{
@@ -49,14 +49,23 @@ fn main() -> Result<()> {
     // Derive output path from input if not provided
     let output_path = cli.output_path().unwrap();
 
+    // Build initial target mapping from CLI args if provided
+    let cli_target_mapping = match (&cli.event_value, &cli.non_event_value) {
+        (Some(event), Some(non_event)) => Some(TargetMapping::new(event.clone(), non_event.clone())),
+        (Some(_), None) | (None, Some(_)) => {
+            anyhow::bail!("Both --event-value and --non-event-value must be provided together")
+        }
+        (None, None) => None,
+    };
+
     // Determine final config values - either from interactive menu or CLI defaults
-    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold, columns_to_drop) = if cli.no_confirm {
+    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold, columns_to_drop, mut target_mapping) = if cli.no_confirm {
         // Skip interactive menu when --no-confirm is set
         // Target is required in non-interactive mode
         let target = cli.target.clone().ok_or_else(|| {
             anyhow::anyhow!("Target column is required when using --no-confirm. Use -t/--target to specify.")
         })?;
-        (target, cli.missing_threshold, cli.gini_threshold, cli.gini_bins, cli.correlation_threshold, cli.drop_columns.clone())
+        (target, cli.missing_threshold, cli.gini_threshold, cli.gini_bins, cli.correlation_threshold, cli.drop_columns.clone(), cli_target_mapping)
     } else {
         // Load column names for interactive selection
         let columns = get_column_names(input)?;
@@ -70,6 +79,7 @@ fn main() -> Result<()> {
             gini_threshold: cli.gini_threshold,
             correlation_threshold: cli.correlation_threshold,
             columns_to_drop: cli.drop_columns.clone(),
+            target_mapping: cli_target_mapping.clone(),
         };
 
         match run_config_menu(config, columns)? {
@@ -77,7 +87,8 @@ fn main() -> Result<()> {
                 let target = cfg.target.ok_or_else(|| {
                     anyhow::anyhow!("Target column must be selected before proceeding")
                 })?;
-                (target, cfg.missing_threshold, cfg.gini_threshold, cli.gini_bins, cfg.correlation_threshold, cfg.columns_to_drop)
+                // Use config's target_mapping if set (from CLI), otherwise None (will be determined after loading data)
+                (target, cfg.missing_threshold, cfg.gini_threshold, cli.gini_bins, cfg.correlation_threshold, cfg.columns_to_drop, cfg.target_mapping)
             }
             ConfigResult::Quit => {
                 println!("Cancelled by user.");
@@ -145,6 +156,59 @@ fn main() -> Result<()> {
         );
     }
 
+    // Analyze target column to determine if mapping is needed
+    if target_mapping.is_none() {
+        match analyze_target_column(&df, &target)? {
+            TargetAnalysis::AlreadyBinary => {
+                // No mapping needed - target is already 0/1
+            }
+            TargetAnalysis::NeedsMapping { unique_values } => {
+                if cli.no_confirm {
+                    // In non-interactive mode, we need CLI args for mapping
+                    anyhow::bail!(
+                        "Target column '{}' is not binary (0/1). Found {} unique values: {:?}\n\
+                         Use --event-value and --non-event-value to specify which values map to 1 and 0.",
+                        target,
+                        unique_values.len(),
+                        unique_values
+                    );
+                }
+                
+                // Show interactive selector for event/non-event values
+                println!();
+                println!("   {} Target column '{}' is not binary (0/1)", style("⚠").yellow(), target);
+                println!("     Found {} unique values: {:?}", unique_values.len(), &unique_values[..unique_values.len().min(5)]);
+                if unique_values.len() > 5 {
+                    println!("     ... and {} more", unique_values.len() - 5);
+                }
+                println!();
+                
+                match run_target_mapping_selector(unique_values)? {
+                    TargetMappingResult::Selected(mapping) => {
+                        println!("   {} Target mapping configured: '{}' → 1 (event), '{}' → 0 (non-event)",
+                            style("✓").green(),
+                            mapping.event_value,
+                            mapping.non_event_value
+                        );
+                        target_mapping = Some(mapping);
+                    }
+                    TargetMappingResult::Cancelled => {
+                        println!("Cancelled by user.");
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    } else {
+        // Mapping was provided via CLI - validate it
+        let mapping = target_mapping.as_ref().unwrap();
+        println!("   {} Using target mapping: '{}' → 1, '{}' → 0",
+            style("✓").green(),
+            mapping.event_value,
+            mapping.non_event_value
+        );
+    }
+
     // Step 2: Missing value analysis
     // NOTE: All analysis functions now take &DataFrame to avoid repeated collection
     print_step_header(1, "Missing Value Analysis");
@@ -181,7 +245,7 @@ fn main() -> Result<()> {
     print_step_header(2, "Univariate Gini Analysis");
 
     let step_start = Instant::now();
-    let gini_analyses = analyze_features_iv(&df, &target, gini_bins)?;
+    let gini_analyses = analyze_features_iv(&df, &target, gini_bins, target_mapping.as_ref())?;
     let features_to_drop_gini = get_low_gini_features(&gini_analyses, gini_threshold);
 
     // Export Gini analysis to JSON for later inspection

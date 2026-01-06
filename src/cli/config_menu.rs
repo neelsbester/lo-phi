@@ -18,6 +18,8 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
+use crate::pipeline::TargetMapping;
+
 /// Configuration values that can be customized
 #[derive(Clone)]
 pub struct Config {
@@ -28,6 +30,8 @@ pub struct Config {
     pub gini_threshold: f64,
     pub correlation_threshold: f64,
     pub columns_to_drop: Vec<String>,
+    /// Optional mapping for non-binary target columns
+    pub target_mapping: Option<TargetMapping>,
 }
 
 /// The current state of the menu
@@ -45,6 +49,17 @@ enum MenuState {
         filtered: Vec<usize>,
         selected: usize,
         checked: HashSet<usize>,
+    },
+    /// Select which value represents EVENT (1)
+    SelectEventValue {
+        unique_values: Vec<String>,
+        selected: usize,
+    },
+    /// Select which value represents NON-EVENT (0)
+    SelectNonEventValue {
+        unique_values: Vec<String>,
+        selected: usize,
+        event_value: String,
     },
     EditMissing {
         input: String,
@@ -79,6 +94,350 @@ pub fn run_config_menu(config: Config, columns: Vec<String>) -> Result<ConfigRes
     stdout().execute(LeaveAlternateScreen)?;
 
     result
+}
+
+/// Result of target mapping selection
+pub enum TargetMappingResult {
+    /// User selected event and non-event values
+    Selected(TargetMapping),
+    /// User cancelled selection
+    Cancelled,
+}
+
+/// Run target mapping selector as a standalone TUI
+/// 
+/// This is called from main.rs after loading data and analyzing the target column
+/// when the target column is not already binary 0/1.
+pub fn run_target_mapping_selector(unique_values: Vec<String>) -> Result<TargetMappingResult> {
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+
+    let result = run_mapping_loop(&mut terminal, unique_values);
+
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+
+    result
+}
+
+fn run_mapping_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    unique_values: Vec<String>,
+) -> Result<TargetMappingResult> {
+    let mut state = MappingState::SelectEvent {
+        unique_values: unique_values.clone(),
+        selected: 0,
+    };
+
+    loop {
+        terminal.draw(|frame| {
+            draw_mapping_ui(frame, &state);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match &mut state {
+                MappingState::SelectEvent {
+                    unique_values,
+                    selected,
+                } => match key.code {
+                    KeyCode::Enter => {
+                        if !unique_values.is_empty() {
+                            let event_value = unique_values[*selected].clone();
+                            let remaining: Vec<String> = unique_values
+                                .iter()
+                                .filter(|v| *v != &event_value)
+                                .cloned()
+                                .collect();
+                            state = MappingState::SelectNonEvent {
+                                unique_values: remaining,
+                                selected: 0,
+                                event_value,
+                            };
+                        }
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                        return Ok(TargetMappingResult::Cancelled);
+                    }
+                    KeyCode::Up => {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected + 1 < unique_values.len() {
+                            *selected += 1;
+                        }
+                    }
+                    _ => {}
+                },
+                MappingState::SelectNonEvent {
+                    unique_values,
+                    selected,
+                    event_value,
+                } => match key.code {
+                    KeyCode::Enter => {
+                        if !unique_values.is_empty() {
+                            let non_event_value = unique_values[*selected].clone();
+                            return Ok(TargetMappingResult::Selected(TargetMapping::new(
+                                event_value.clone(),
+                                non_event_value,
+                            )));
+                        }
+                    }
+                    KeyCode::Esc => {
+                        // Go back to event selection
+                        let mut all_values = unique_values.clone();
+                        all_values.push(event_value.clone());
+                        all_values.sort();
+                        state = MappingState::SelectEvent {
+                            unique_values: all_values,
+                            selected: 0,
+                        };
+                    }
+                    KeyCode::Up => {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected + 1 < unique_values.len() {
+                            *selected += 1;
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+    }
+}
+
+/// Internal state for the standalone mapping selector
+enum MappingState {
+    SelectEvent {
+        unique_values: Vec<String>,
+        selected: usize,
+    },
+    SelectNonEvent {
+        unique_values: Vec<String>,
+        selected: usize,
+        event_value: String,
+    },
+}
+
+fn draw_mapping_ui(frame: &mut Frame, state: &MappingState) {
+    let area = frame.area();
+
+    // Draw a centered info box first
+    let info_width = 55u16;
+    let info_height = 5u16;
+    let info_x = area.width.saturating_sub(info_width) / 2;
+    let info_y = area.height.saturating_sub(25) / 2;
+
+    let info_area = Rect::new(
+        info_x,
+        info_y,
+        info_width.min(area.width),
+        info_height,
+    );
+
+    frame.render_widget(Clear, info_area);
+    
+    let info_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Target Mapping Required ")
+        .title_style(Style::default().fg(Color::Cyan).bold());
+
+    let info_content = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Target column is not binary (0/1).", Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Please select event and non-event values.", Style::default().fg(Color::DarkGray)),
+        ]),
+    ])
+    .block(info_block);
+
+    frame.render_widget(info_content, info_area);
+
+    // Draw the selector below the info box
+    match state {
+        MappingState::SelectEvent { unique_values, selected } => {
+            draw_standalone_event_selector(frame, unique_values, *selected, info_y + info_height + 1);
+        }
+        MappingState::SelectNonEvent { unique_values, selected, event_value } => {
+            draw_standalone_non_event_selector(frame, unique_values, *selected, event_value, info_y + info_height + 1);
+        }
+    }
+}
+
+fn draw_standalone_event_selector(
+    frame: &mut Frame,
+    unique_values: &[String],
+    selected: usize,
+    y_offset: u16,
+) {
+    let area = frame.area();
+
+    let popup_width = 50u16;
+    let popup_height = 16u16;
+    let x = area.width.saturating_sub(popup_width) / 2;
+
+    let popup_area = Rect::new(
+        x,
+        y_offset,
+        popup_width.min(area.width),
+        popup_height.min(area.height.saturating_sub(y_offset)),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green))
+        .title(" Select EVENT Value (1) ")
+        .title_style(Style::default().fg(Color::Green).bold());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let desc = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("  Select the value that represents ", Style::default().fg(Color::DarkGray)),
+            Span::styled("EVENT (1)", Style::default().fg(Color::Green).bold()),
+        ]),
+    ]);
+    frame.render_widget(desc, chunks[0]);
+
+    let max_visible = (chunks[1].height as usize).saturating_sub(0);
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = unique_values
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, value)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(Color::Green).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", value)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    let help_text = Line::from(vec![
+        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc/Q", Style::default().fg(Color::Cyan)),
+        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(help_text), chunks[2]);
+}
+
+fn draw_standalone_non_event_selector(
+    frame: &mut Frame,
+    unique_values: &[String],
+    selected: usize,
+    event_value: &str,
+    y_offset: u16,
+) {
+    let area = frame.area();
+
+    let popup_width = 50u16;
+    let popup_height = 16u16;
+    let x = area.width.saturating_sub(popup_width) / 2;
+
+    let popup_area = Rect::new(
+        x,
+        y_offset,
+        popup_width.min(area.width),
+        popup_height.min(area.height.saturating_sub(y_offset)),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Select NON-EVENT Value (0) ")
+        .title_style(Style::default().fg(Color::Yellow).bold());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let desc = Paragraph::new(vec![
+        Line::from(vec![
+            Span::styled("  Event (1): ", Style::default().fg(Color::DarkGray)),
+            Span::styled(event_value, Style::default().fg(Color::Green).bold()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Select the value for ", Style::default().fg(Color::DarkGray)),
+            Span::styled("NON-EVENT (0)", Style::default().fg(Color::Yellow).bold()),
+        ]),
+    ]);
+    frame.render_widget(desc, chunks[0]);
+
+    let max_visible = (chunks[1].height as usize).saturating_sub(0);
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = unique_values
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, value)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(Color::Yellow).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", value)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    let help_text = Line::from(vec![
+        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::styled(" back", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(help_text), chunks[2]);
 }
 
 fn run_menu_loop(
@@ -229,6 +588,81 @@ fn run_menu_loop(
                         search.push(c);
                         update_filtered(search, columns, filtered);
                         *selected = 0;
+                    }
+                    _ => {}
+                },
+                MenuState::SelectEventValue {
+                    unique_values,
+                    selected,
+                } => match key.code {
+                    KeyCode::Enter => {
+                        if !unique_values.is_empty() {
+                            let event_value = unique_values[*selected].clone();
+                            // Move to non-event selection, excluding the chosen event value
+                            let remaining: Vec<String> = unique_values
+                                .iter()
+                                .filter(|v| *v != &event_value)
+                                .cloned()
+                                .collect();
+                            state = MenuState::SelectNonEventValue {
+                                unique_values: remaining,
+                                selected: 0,
+                                event_value,
+                            };
+                        }
+                    }
+                    KeyCode::Esc => {
+                        // Cancel - clear target mapping and go back to main
+                        config.target_mapping = None;
+                        state = MenuState::Main;
+                    }
+                    KeyCode::Up => {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected + 1 < unique_values.len() {
+                            *selected += 1;
+                        }
+                    }
+                    _ => {}
+                },
+                MenuState::SelectNonEventValue {
+                    unique_values,
+                    selected,
+                    event_value,
+                } => match key.code {
+                    KeyCode::Enter => {
+                        if !unique_values.is_empty() {
+                            let non_event_value = unique_values[*selected].clone();
+                            // Create the target mapping
+                            config.target_mapping = Some(TargetMapping::new(
+                                event_value.clone(),
+                                non_event_value,
+                            ));
+                            state = MenuState::Main;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        // Go back to event selection
+                        let mut all_values = unique_values.clone();
+                        all_values.push(event_value.clone());
+                        all_values.sort();
+                        state = MenuState::SelectEventValue {
+                            unique_values: all_values,
+                            selected: 0,
+                        };
+                    }
+                    KeyCode::Up => {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected + 1 < unique_values.len() {
+                            *selected += 1;
+                        }
                     }
                     _ => {}
                 },
@@ -427,6 +861,19 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
         } => {
             draw_columns_to_drop_selector(frame, search, columns, filtered, *selected, checked);
         }
+        MenuState::SelectEventValue {
+            unique_values,
+            selected,
+        } => {
+            draw_event_value_selector(frame, unique_values, *selected);
+        }
+        MenuState::SelectNonEventValue {
+            unique_values,
+            selected,
+            event_value,
+        } => {
+            draw_non_event_value_selector(frame, unique_values, *selected, event_value);
+        }
         MenuState::EditMissing { input }
         | MenuState::EditGini { input }
         | MenuState::EditCorrelation { input } => {
@@ -469,6 +916,15 @@ fn build_content(config: &Config, state: &MenuState, width: usize, height: usize
         Span::styled("  Target: ", Style::default().fg(Color::DarkGray)),
         Span::styled(target_display, target_style),
     ]));
+
+    // Show target mapping if configured
+    if let Some(mapping) = &config.target_mapping {
+        lines.push(Line::from(vec![
+            Span::styled("          ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("→ {} = 1, {} = 0", mapping.event_value, mapping.non_event_value), 
+                Style::default().fg(Color::DarkGray).italic()),
+        ]));
+    }
 
     let output_path = truncate_path_start(&config.output.display().to_string(), max_path_len);
     lines.push(Line::from(vec![
@@ -899,4 +1355,213 @@ fn draw_edit_popup(frame: &mut Frame, state: &MenuState, input: &str) {
 
     let paragraph = Paragraph::new(content);
     frame.render_widget(paragraph, inner);
+}
+
+/// Draw the event value selector popup
+fn draw_event_value_selector(
+    frame: &mut Frame,
+    unique_values: &[String],
+    selected: usize,
+) {
+    let area = frame.area();
+
+    let popup_width = 50u16;
+    let popup_height = 16u16;
+    let x = area.width.saturating_sub(popup_width) / 2;
+    let y = area.height.saturating_sub(popup_height) / 2;
+
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green))
+        .title(" Select EVENT Value (1) ")
+        .title_style(Style::default().fg(Color::Green).bold());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Split inner area into description and list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    // Description
+    let desc = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Select the value that represents ", Style::default().fg(Color::DarkGray)),
+            Span::styled("EVENT (1)", Style::default().fg(Color::Green).bold()),
+        ]),
+    ]);
+    frame.render_widget(desc, chunks[0]);
+
+    // Value list
+    let max_visible = (chunks[1].height as usize).saturating_sub(0);
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = unique_values
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, value)| {
+            let style = if i == selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", value)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    // Help text
+    let help_text = Line::from(vec![
+        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(help_text), chunks[2]);
+
+    // Count indicator
+    if !unique_values.is_empty() {
+        let count_text = format!(" {}/{} ", selected + 1, unique_values.len());
+        let text_len = count_text.len();
+        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_area = Rect::new(
+            popup_area.x + popup_area.width - text_len as u16 - 1,
+            popup_area.y + popup_area.height - 1,
+            text_len as u16,
+            1,
+        );
+        frame.render_widget(Paragraph::new(count_span), count_area);
+    }
+}
+
+/// Draw the non-event value selector popup
+fn draw_non_event_value_selector(
+    frame: &mut Frame,
+    unique_values: &[String],
+    selected: usize,
+    event_value: &str,
+) {
+    let area = frame.area();
+
+    let popup_width = 50u16;
+    let popup_height = 16u16;
+    let x = area.width.saturating_sub(popup_width) / 2;
+    let y = area.height.saturating_sub(popup_height) / 2;
+
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .title(" Select NON-EVENT Value (0) ")
+        .title_style(Style::default().fg(Color::Yellow).bold());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Split inner area into description and list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    // Description showing the already selected event value
+    let desc = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Event (1): ", Style::default().fg(Color::DarkGray)),
+            Span::styled(event_value, Style::default().fg(Color::Green).bold()),
+        ]),
+        Line::from(vec![
+            Span::styled("  Select the value for ", Style::default().fg(Color::DarkGray)),
+            Span::styled("NON-EVENT (0)", Style::default().fg(Color::Yellow).bold()),
+        ]),
+    ]);
+    frame.render_widget(desc, chunks[0]);
+
+    // Value list
+    let max_visible = (chunks[1].height as usize).saturating_sub(0);
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = unique_values
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, value)| {
+            let style = if i == selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", value)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    // Help text
+    let help_text = Line::from(vec![
+        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::styled(" back", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(help_text), chunks[2]);
+
+    // Count indicator
+    if !unique_values.is_empty() {
+        let count_text = format!(" {}/{} ", selected + 1, unique_values.len());
+        let text_len = count_text.len();
+        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_area = Rect::new(
+            popup_area.x + popup_area.width - text_len as u16 - 1,
+            popup_area.y + popup_area.height - 1,
+            text_len as u16,
+            1,
+        );
+        frame.render_widget(Paragraph::new(count_span), count_area);
+    }
 }

@@ -11,6 +11,8 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use super::target::{create_target_mask, TargetMapping};
+
 /// Number of initial quantile pre-bins before merging
 const PRE_BIN_COUNT: usize = 50;
 
@@ -56,8 +58,9 @@ pub struct IvAnalysis {
 ///
 /// # Arguments
 /// * `df` - Reference to the DataFrame (avoids re-collecting from LazyFrame)
-/// * `target` - Name of the binary target column (must contain 0 and 1)
+/// * `target` - Name of the binary target column (must contain 0 and 1, or be mapped via target_mapping)
 /// * `num_bins` - Target number of bins after merging
+/// * `target_mapping` - Optional mapping for non-binary target columns
 ///
 /// # Returns
 /// Vector of IvAnalysis for each numeric feature, sorted by IV descending
@@ -65,18 +68,24 @@ pub fn analyze_features_iv(
     df: &DataFrame,
     target: &str,
     num_bins: usize,
+    target_mapping: Option<&TargetMapping>,
 ) -> Result<Vec<IvAnalysis>> {
 
-    // Validate target column
-    validate_binary_target(&df, target)?;
-
-    // Get target values as i32
-    let target_col = df.column(target)?;
-    let target_values: Vec<i32> = target_col
-        .cast(&DataType::Int32)?
-        .i32()?
-        .into_no_null_iter()
-        .collect();
+    // Get target values based on whether we have a mapping
+    let target_values: Vec<Option<i32>> = if let Some(mapping) = target_mapping {
+        // Use the mapping to convert target values
+        create_target_mask(df, target, mapping)?
+    } else {
+        // Validate binary target and get values directly
+        validate_binary_target(df, target)?;
+        
+        let target_col = df.column(target)?;
+        target_col
+            .cast(&DataType::Int32)?
+            .i32()?
+            .into_iter()
+            .collect()
+    };
 
     // Get numeric columns (excluding target)
     let numeric_cols: Vec<String> = df
@@ -194,7 +203,7 @@ fn validate_binary_target(df: &DataFrame, target: &str) -> Result<()> {
 fn analyze_single_feature(
     df: &DataFrame,
     col_name: &str,
-    target_values: &[i32],
+    target_values: &[Option<i32>],
     num_bins: usize,
 ) -> Result<IvAnalysis> {
     let col = df.column(col_name)?;
@@ -202,10 +211,18 @@ fn analyze_single_feature(
     let values = float_col.f64()?;
 
     // Collect non-null value/target pairs
+    // Filter out:
+    // - Feature values that are null
+    // - Target values that are None (not matching event or non-event in mapping)
     let mut pairs: Vec<(f64, i32)> = values
         .iter()
         .zip(target_values.iter())
-        .filter_map(|(v, &t)| v.map(|val| (val, t)))
+        .filter_map(|(v, t)| {
+            match (v, t) {
+                (Some(val), Some(target)) => Some((val, *target)),
+                _ => None, // Skip if feature is null OR target doesn't match mapping
+            }
+        })
         .collect();
 
     if pairs.len() < MIN_BIN_SAMPLES * 2 {

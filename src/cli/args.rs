@@ -20,6 +20,16 @@ pub struct Cli {
     #[arg(short, long)]
     pub target: Option<String>,
 
+    /// Value in target column that represents EVENT (maps to 1).
+    /// Required with --non-event-value when target is not binary 0/1.
+    #[arg(long)]
+    pub event_value: Option<String>,
+
+    /// Value in target column that represents NON-EVENT (maps to 0).
+    /// Required with --event-value when target is not binary 0/1.
+    #[arg(long)]
+    pub non_event_value: Option<String>,
+
     /// Output file path (CSV or Parquet, determined by extension).
     /// Defaults to input directory with '_reduced' suffix (e.g., data.csv → data_reduced.csv)
     #[arg(short, long)]

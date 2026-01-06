@@ -47,7 +47,8 @@ lophi/
 │   │   ├── loader.rs       # CSV/Parquet loading with progress
 │   │   ├── missing.rs      # Missing value analysis and reduction
 │   │   ├── correlation.rs  # Correlation-based reduction
-│   │   └── iv.rs           # Information Value / Gini analysis (WoE binning)
+│   │   ├── iv.rs           # Information Value / Gini analysis (WoE binning)
+│   │   └── target.rs       # Target column analysis and mapping
 │   ├── report/
 │   │   ├── mod.rs          # Report module exports
 │   │   ├── summary.rs      # Reduction summary with timing info
@@ -61,7 +62,8 @@ lophi/
 │   ├── test_correlation.rs # Correlation module tests
 │   ├── test_loader.rs      # Data loading tests
 │   ├── test_missing.rs     # Missing value analysis tests
-│   └── test_pipeline.rs    # End-to-end pipeline tests
+│   ├── test_pipeline.rs    # End-to-end pipeline tests
+│   └── test_target_mapping.rs  # Target column mapping tests
 ├── scripts/
 │   └── generate_test_data.py  # Python script for synthetic test data
 └── test_data/              # Generated test datasets (CSV + Parquet)
@@ -88,6 +90,13 @@ lophi --input data.parquet \
   --correlation-threshold 0.95 \
   --drop-columns "col1,col2,col3" \
   --no-confirm
+
+# Non-binary target (e.g., "G"/"B" or "good"/"bad")
+lophi --input data.csv \
+  --target status \
+  --event-value "B" \
+  --non-event-value "G" \
+  --no-confirm
 ```
 
 ### CLI Arguments
@@ -96,6 +105,8 @@ lophi --input data.parquet \
 |----------|-------|---------|-------------|
 | `--input` | `-i` | *required* | Input file path (CSV or Parquet) |
 | `--target` | `-t` | *interactive* | Target column name (preserved during reduction) |
+| `--event-value` | | *interactive* | Value representing EVENT (1) in target column |
+| `--non-event-value` | | *interactive* | Value representing NON-EVENT (0) in target column |
 | `--output` | `-o` | `{input}_reduced.{ext}` | Output file path |
 | `--missing-threshold` | | `0.3` | Drop features with missing values above this ratio |
 | `--gini-threshold` | | `0.05` | Drop features with Gini coefficient below this value |
@@ -167,11 +178,25 @@ lophi convert input.csv --output custom_name.parquet
 - Laplace smoothing to avoid log(0) in WoE calculation
 - AUC-based Gini using Mann-Whitney U statistic
 
-### Binary Target Validation
-- Handles both integer (0/1) and float (0.0/1.0) target columns
+### Target Column Handling
+- **Binary targets (0/1)**: Automatically detected and used directly
+- **Non-binary targets**: Interactive selection or CLI arguments for event/non-event mapping
+- Supports string values (e.g., "G"/"B", "good"/"bad") with user-defined mapping
+- Supports numeric non-binary values (e.g., 1/2/3) with selective mapping
+- Multi-value targets: Only selected event and non-event values are used in analysis; other records are preserved in output but ignored during Gini/IV calculation
 - Floating-point tolerance (1e-9) for schema conversion edge cases
-- Clear error messages for empty, all-null, or non-binary targets
-- Robust handling of CSV→Parquet type inference differences
+- Clear error messages for empty, all-null, or missing target columns
+
+### Target Mapping Flow
+1. After loading data, target column is analyzed for unique values
+2. If values are binary 0/1 → proceed directly
+3. If values are non-binary:
+   - **Interactive mode**: TUI selector prompts for event and non-event values
+   - **CLI mode**: Requires `--event-value` and `--non-event-value` arguments
+4. During IV/Gini analysis:
+   - Rows with event value are treated as 1
+   - Rows with non-event value are treated as 0
+   - Rows with other values are ignored in analysis but preserved in output
 
 ### Correlation Strategy
 - Pearson correlation on numeric columns only
