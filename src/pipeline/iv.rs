@@ -431,6 +431,7 @@ fn create_woe_bin_from_pairs(
 /// * `binning_strategy` - Strategy for creating initial bins (Quantile or Cart)
 /// * `min_category_samples` - Minimum samples per category before merging into "OTHER"
 /// * `weights` - Sample weights for weighted analysis
+/// * `weight_column` - Optional name of the weight column to exclude from analysis
 ///
 /// # Returns
 /// Vector of IvAnalysis for each feature, sorted by IV descending
@@ -442,6 +443,7 @@ pub fn analyze_features_iv(
     binning_strategy: BinningStrategy,
     min_category_samples: Option<usize>,
     weights: &[f64],
+    weight_column: Option<&str>,
 ) -> Result<Vec<IvAnalysis>> {
     let min_cat_samples = min_category_samples.unwrap_or(DEFAULT_MIN_CATEGORY_SAMPLES);
 
@@ -461,21 +463,26 @@ pub fn analyze_features_iv(
             .collect()
     };
 
-    // Get numeric columns (excluding target)
+    // Get numeric columns (excluding target and weight column)
     let numeric_cols: Vec<String> = df
         .get_columns()
         .iter()
-        .filter(|col| col.dtype().is_primitive_numeric() && col.name() != target)
+        .filter(|col| {
+            col.dtype().is_primitive_numeric()
+                && col.name() != target
+                && Some(col.name().as_str()) != weight_column
+        })
         .map(|col| col.name().to_string())
         .collect();
 
-    // Get categorical columns (String/Utf8 types, excluding target)
+    // Get categorical columns (String/Utf8 types, excluding target and weight column)
     let categorical_cols: Vec<String> = df
         .get_columns()
         .iter()
         .filter(|col| {
             matches!(col.dtype(), DataType::String | DataType::Categorical(_, _))
                 && col.name() != target
+                && Some(col.name().as_str()) != weight_column
         })
         .map(|col| col.name().to_string())
         .collect();

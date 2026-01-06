@@ -48,6 +48,18 @@ pub fn get_weights(df: &DataFrame, weight_column: Option<&str>) -> Result<Vec<f6
             for opt_val in ca.iter() {
                 match opt_val {
                     Some(w) => {
+                        if w.is_nan() {
+                            bail!(
+                                "Weight column '{}' contains NaN value. All weights must be valid numbers.",
+                                col_name
+                            );
+                        }
+                        if w.is_infinite() {
+                            bail!(
+                                "Weight column '{}' contains infinite value. All weights must be finite.",
+                                col_name
+                            );
+                        }
                         if w < 0.0 {
                             bail!(
                                 "Weight column '{}' contains negative value: {}. All weights must be non-negative.",
@@ -170,5 +182,41 @@ mod tests {
     fn test_total_weight() {
         let weights = vec![1.0, 2.0, 0.5, 1.5];
         assert!((total_weight(&weights) - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_nan_weight_errors() {
+        let df = df! {
+            "feature" => [1.0, 2.0, 3.0],
+            "weight" => [1.0, f64::NAN, 2.0],
+        }
+        .unwrap();
+        let result = get_weights(&df, Some("weight"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("NaN"));
+    }
+
+    #[test]
+    fn test_infinite_weight_errors() {
+        let df = df! {
+            "feature" => [1.0, 2.0, 3.0],
+            "weight" => [1.0, f64::INFINITY, 2.0],
+        }
+        .unwrap();
+        let result = get_weights(&df, Some("weight"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("infinite"));
+    }
+
+    #[test]
+    fn test_neg_infinite_weight_errors() {
+        let df = df! {
+            "feature" => [1.0, 2.0, 3.0],
+            "weight" => [1.0, f64::NEG_INFINITY, 2.0],
+        }
+        .unwrap();
+        let result = get_weights(&df, Some("weight"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("infinite"));
     }
 }

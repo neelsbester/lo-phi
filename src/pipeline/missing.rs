@@ -11,7 +11,12 @@ use polars::prelude::*;
 /// # Arguments
 /// * `df` - Reference to the DataFrame
 /// * `weights` - Sample weights (one per row). Use equal weights for unweighted analysis.
-pub fn analyze_missing_values(df: &DataFrame, weights: &[f64]) -> Result<Vec<(String, f64)>> {
+/// * `weight_column` - Optional name of the weight column to exclude from analysis
+pub fn analyze_missing_values(
+    df: &DataFrame,
+    weights: &[f64],
+    weight_column: Option<&str>,
+) -> Result<Vec<(String, f64)>> {
     // Handle empty DataFrame
     if df.height() == 0 {
         return Ok(Vec::new());
@@ -26,6 +31,11 @@ pub fn analyze_missing_values(df: &DataFrame, weights: &[f64]) -> Result<Vec<(St
     let mut missing_ratios: Vec<(String, f64)> = Vec::new();
 
     for col_name in df.get_column_names() {
+        // Skip the weight column - it's metadata, not a feature
+        if Some(col_name.as_str()) == weight_column {
+            continue;
+        }
+
         let column = df.column(col_name)?;
 
         // Calculate weighted null count by iterating through values

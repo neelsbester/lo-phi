@@ -105,10 +105,16 @@ fn load_parquet(path: &Path) -> Result<DataFrame> {
         ..Default::default()
     };
 
-    LazyFrame::scan_parquet(path, args)
+    let mut df = LazyFrame::scan_parquet(path, args)
         .with_context(|| format!("Failed to scan Parquet file: {}", path.display()))?
         .collect()
-        .with_context(|| format!("Failed to collect Parquet file: {}", path.display()))
+        .with_context(|| format!("Failed to collect Parquet file: {}", path.display()))?;
+
+    // Rechunk to consolidate row groups into a single contiguous chunk.
+    // This ensures consistent iteration when zipping with weight vectors downstream.
+    // Without this, Parquet files with multiple row groups can cause chunk mismatch panics.
+    df.rechunk_mut();
+    Ok(df)
 }
 
 /// Load dataset with progress bar and return DataFrame with statistics

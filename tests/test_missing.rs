@@ -15,7 +15,7 @@ fn test_analyze_missing_values_basic() {
     }.unwrap();
     let weights = vec![1.0; 5];
 
-    let ratios = analyze_missing_values(&df, &weights).unwrap();
+    let ratios = analyze_missing_values(&df, &weights, None).unwrap();
     
     // Convert to HashMap for easier lookup
     let ratio_map: std::collections::HashMap<_, _> = ratios.into_iter().collect();
@@ -47,7 +47,7 @@ fn test_analyze_missing_values_sorted_descending() {
     let df = common::create_missing_test_dataframe();
     let weights = vec![1.0; df.height()];
 
-    let ratios = analyze_missing_values(&df, &weights).unwrap();
+    let ratios = analyze_missing_values(&df, &weights, None).unwrap();
     
     // Verify sorted descending by missing ratio
     for i in 0..ratios.len() - 1 {
@@ -97,7 +97,7 @@ fn test_get_features_threshold_boundary() {
 fn test_empty_dataframe() {
     let df = DataFrame::empty();
     let weights: Vec<f64> = vec![];
-    let ratios = analyze_missing_values(&df, &weights).unwrap();
+    let ratios = analyze_missing_values(&df, &weights, None).unwrap();
     assert!(ratios.is_empty(), "Empty DataFrame should produce empty ratios");
 }
 
@@ -110,7 +110,7 @@ fn test_no_missing_values() {
     }.unwrap();
     let weights = vec![1.0; 3];
 
-    let ratios = analyze_missing_values(&df, &weights).unwrap();
+    let ratios = analyze_missing_values(&df, &weights, None).unwrap();
     
     for (col_name, ratio) in &ratios {
         assert_eq!(
@@ -155,7 +155,7 @@ fn test_with_integer_columns() {
     }.unwrap();
     let weights = vec![1.0; 5];
 
-    let ratios = analyze_missing_values(&df, &weights).unwrap();
+    let ratios = analyze_missing_values(&df, &weights, None).unwrap();
     let ratio_map: std::collections::HashMap<_, _> = ratios.into_iter().collect();
     
     // int_col: 2/5 = 40% missing
@@ -169,5 +169,84 @@ fn test_with_integer_columns() {
         (ratio_map["float_col"] - 0.0).abs() < 0.001,
         "float_col should have 0% missing"
     );
+}
+
+#[test]
+fn test_weighted_missing_ratio() {
+    // Test that weighted missing ratio is correctly calculated
+    // Row 0: value=1.0, weight=1.0 (not missing)
+    // Row 1: value=null, weight=3.0 (missing, weight 3.0)
+    // Row 2: value=3.0, weight=1.0 (not missing)
+    // Row 3: value=null, weight=1.0 (missing, weight 1.0)
+    // Row 4: value=5.0, weight=4.0 (not missing)
+    //
+    // Total weight = 1+3+1+1+4 = 10
+    // Weighted null count = 3+1 = 4
+    // Weighted missing ratio = 4/10 = 0.4
+    let df = df! {
+        "feature" => [Some(1.0f64), None, Some(3.0), None, Some(5.0)],
+    }.unwrap();
+    let weights = vec![1.0, 3.0, 1.0, 1.0, 4.0];
+
+    let ratios = analyze_missing_values(&df, &weights, None).unwrap();
+    let ratio_map: std::collections::HashMap<_, _> = ratios.into_iter().collect();
+    
+    assert!(
+        (ratio_map["feature"] - 0.4).abs() < 0.001,
+        "Weighted missing ratio should be 0.4, got {}",
+        ratio_map["feature"]
+    );
+}
+
+#[test]
+fn test_weighted_missing_ratio_vs_unweighted() {
+    // With uniform weights of 1.0, weighted ratio should equal unweighted ratio
+    // 2 nulls out of 5 rows = 40% missing
+    let df = df! {
+        "feature" => [Some(1.0f64), None, Some(3.0), None, Some(5.0)],
+    }.unwrap();
+    
+    // Uniform weights
+    let uniform_weights = vec![1.0; 5];
+    let ratios_uniform = analyze_missing_values(&df, &uniform_weights, None).unwrap();
+    let ratio_uniform = ratios_uniform.iter().find(|(n, _)| n == "feature").unwrap().1;
+    
+    // Non-uniform weights that give same result as unweighted
+    // If all nulls have same total weight as all non-nulls proportionally
+    // Nulls at index 1,3: if we want 40% missing, nulls need 40% of total weight
+    let weighted_weights = vec![2.0, 2.0, 2.0, 2.0, 2.0]; // Still uniform, just scaled
+    let ratios_weighted = analyze_missing_values(&df, &weighted_weights, None).unwrap();
+    let ratio_weighted = ratios_weighted.iter().find(|(n, _)| n == "feature").unwrap().1;
+    
+    assert!(
+        (ratio_uniform - ratio_weighted).abs() < 0.001,
+        "Uniform weights should produce same ratio regardless of scale: {} vs {}",
+        ratio_uniform, ratio_weighted
+    );
+}
+
+#[test]
+fn test_weight_column_excluded_from_analysis() {
+    // When weight_column is specified, it should be excluded from the results
+    let df = df! {
+        "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+        "weight" => [1.0f64, 2.0, 0.5, 1.5, 1.0],
+    }.unwrap();
+    let weights = vec![1.0, 2.0, 0.5, 1.5, 1.0];
+
+    // Without exclusion - weight column should be in results
+    let ratios_included = analyze_missing_values(&df, &weights, None).unwrap();
+    assert!(
+        ratios_included.iter().any(|(name, _)| name == "weight"),
+        "Weight column should be included when not excluded"
+    );
+
+    // With exclusion - weight column should NOT be in results
+    let ratios_excluded = analyze_missing_values(&df, &weights, Some("weight")).unwrap();
+    assert!(
+        !ratios_excluded.iter().any(|(name, _)| name == "weight"),
+        "Weight column should be excluded when specified"
+    );
+    assert_eq!(ratios_excluded.len(), 1, "Should only have 'feature' column");
 }
 

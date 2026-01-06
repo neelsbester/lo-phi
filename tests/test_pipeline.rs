@@ -19,7 +19,7 @@ fn test_full_pipeline_reduces_features() {
     let weights = vec![1.0; df.height()];
 
     // Step 1: Missing value analysis (should drop feature_missing at 80% missing)
-    let missing_ratios = analyze_missing_values(&df, &weights).unwrap();
+    let missing_ratios = analyze_missing_values(&df, &weights, None).unwrap();
     let missing_drops = get_features_above_threshold(&missing_ratios, 0.3, "target");
 
     assert!(
@@ -31,7 +31,7 @@ fn test_full_pipeline_reduces_features() {
 
     // Step 2: Correlation analysis (should drop one of feature_good/feature_corr)
     let weights = vec![1.0; df.height()];
-    let pairs = find_correlated_pairs(&df, 0.95, &weights).unwrap();
+    let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
     let corr_drops = select_features_to_drop(&pairs, "target");
     df = df.drop_many(&corr_drops);
 
@@ -78,7 +78,7 @@ fn test_pipeline_handles_all_numeric_dataset() {
     assert_eq!(cols, 3);
 
     // All numeric - missing analysis should find no issues
-    let missing = analyze_missing_values(&df, &weights).unwrap();
+    let missing = analyze_missing_values(&df, &weights, None).unwrap();
     assert!(
         missing.iter().all(|(_, ratio)| *ratio == 0.0),
         "All-numeric complete dataset should have no missing values"
@@ -99,12 +99,12 @@ fn test_pipeline_with_no_reductions_needed() {
     let weights = vec![1.0; df.height()];
 
     // Missing - none above 30%
-    let missing_ratios = analyze_missing_values(&df, &weights).unwrap();
+    let missing_ratios = analyze_missing_values(&df, &weights, None).unwrap();
     let missing_drops = get_features_above_threshold(&missing_ratios, 0.3, "target");
     assert!(missing_drops.is_empty(), "No features should be dropped for missing values");
 
     // Correlation - check that no pairs exceed 0.95 threshold among non-target columns
-    let pairs = find_correlated_pairs(&df, 0.95, &weights).unwrap();
+    let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
     // Filter to only pairs between our independent features
     let feature_pairs: Vec<_> = pairs.iter()
         .filter(|p| p.feature1 != "target" && p.feature2 != "target")
@@ -129,7 +129,7 @@ fn test_pipeline_missing_then_correlation() {
     let cols_initial = df.width();
 
     // Step 1: Missing
-    let missing_ratios = analyze_missing_values(&df, &weights).unwrap();
+    let missing_ratios = analyze_missing_values(&df, &weights, None).unwrap();
     let missing_drops = get_features_above_threshold(&missing_ratios, 0.3, "target");
     let missing_drop_count = missing_drops.len();
     df = df.drop_many(&missing_drops);
@@ -142,7 +142,7 @@ fn test_pipeline_missing_then_correlation() {
 
     // Step 2: Correlation (should still work after missing step)
     let weights = vec![1.0; df.height()];
-    let pairs = find_correlated_pairs(&df, 0.95, &weights).unwrap();
+    let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
     let corr_drops = select_features_to_drop(&pairs, "target");
     let corr_drop_count = corr_drops.len();
     df = df.drop_many(&corr_drops);
@@ -181,7 +181,7 @@ fn test_pipeline_with_highly_correlated_pair() {
 
     // Columns a and b are perfectly correlated (b = 2*a)
     // Columns a and c are negatively correlated
-    let pairs = find_correlated_pairs(&df, 0.95, &weights).unwrap();
+    let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
 
     assert!(!pairs.is_empty(), "Should find correlated pairs");
 
@@ -225,10 +225,10 @@ fn test_pipeline_large_dataset() {
     assert_eq!(cols, 21); // 20 features + 1 target
 
     // Should complete without errors
-    let missing_ratios = analyze_missing_values(&df, &weights).unwrap();
+    let missing_ratios = analyze_missing_values(&df, &weights, None).unwrap();
     assert_eq!(missing_ratios.len(), 21);
 
-    let pairs = find_correlated_pairs(&df, 0.95, &weights).unwrap();
+    let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
     // Random data unlikely to have high correlations, but this shouldn't error
     let _ = select_features_to_drop(&pairs, "target");
 }
@@ -255,8 +255,8 @@ fn test_csv_and_parquet_produce_same_results() {
     // Same missing analysis results
     let weights_csv = vec![1.0; df_csv.height()];
     let weights_parquet = vec![1.0; df_parquet.height()];
-    let missing_csv = analyze_missing_values(&df_csv, &weights_csv).unwrap();
-    let missing_parquet = analyze_missing_values(&df_parquet, &weights_parquet).unwrap();
+    let missing_csv = analyze_missing_values(&df_csv, &weights_csv, None).unwrap();
+    let missing_parquet = analyze_missing_values(&df_parquet, &weights_parquet, None).unwrap();
 
     for ((name_csv, ratio_csv), (name_parquet, ratio_parquet)) in
         missing_csv.iter().zip(missing_parquet.iter())

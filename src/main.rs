@@ -225,7 +225,7 @@ fn main() -> Result<()> {
 
     let step_start = Instant::now();
     let spinner = create_spinner("Analyzing missing values...");
-    let missing_ratios = analyze_missing_values(&df, &weights)?;
+    let missing_ratios = analyze_missing_values(&df, &weights, weight_column.as_deref())?;
     let features_to_drop_missing = get_features_above_threshold(
         &missing_ratios,
         missing_threshold,
@@ -268,6 +268,7 @@ fn main() -> Result<()> {
         binning_strategy,
         Some(cli.min_category_samples),
         &weights,
+        weight_column.as_deref(),
     )?;
     let features_to_drop_gini = get_low_gini_features(&gini_analyses, gini_threshold);
 
@@ -308,7 +309,7 @@ fn main() -> Result<()> {
     print_step_header(3, "Correlation Analysis");
 
     let step_start = Instant::now();
-    let correlated_pairs = find_correlated_pairs(&df, correlation_threshold, &weights)?;
+    let correlated_pairs = find_correlated_pairs(&df, correlation_threshold, &weights, weight_column.as_deref())?;
     let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &target);
     print_success("Correlation analysis complete");
 

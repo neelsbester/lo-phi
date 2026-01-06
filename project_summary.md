@@ -48,7 +48,8 @@ lophi/
 │   │   ├── missing.rs      # Missing value analysis and reduction
 │   │   ├── correlation.rs  # Correlation-based reduction
 │   │   ├── iv.rs           # Information Value / Gini analysis (WoE binning)
-│   │   └── target.rs       # Target column analysis and mapping
+│   │   ├── target.rs       # Target column analysis and mapping
+│   │   └── weights.rs      # Sample weight extraction and validation
 │   ├── report/
 │   │   ├── mod.rs          # Report module exports
 │   │   ├── summary.rs      # Reduction summary with timing info
@@ -115,6 +116,7 @@ lophi --input data.csv \
 | `--min-category-samples` | | `5` | Min samples per category before merging to "OTHER" |
 | `--correlation-threshold` | | `0.95` | Drop one feature from pairs above this correlation |
 | `--drop-columns` | | *none* | Comma-separated list of columns to drop before analysis |
+| `--weight-column` | `-w` | *none* | Column containing sample weights for weighted analysis |
 | `--no-confirm` | | `false` | Skip interactive configuration menu |
 | `--infer-schema-length` | | `10000` | Rows to use for CSV schema inference |
 
@@ -232,6 +234,31 @@ lophi convert input.csv --output custom_name.parquet
 - Pearson correlation on numeric columns only
 - Processes upper triangle of correlation matrix
 - Drop selection: features appearing in more pairs are dropped first
+
+### Sample Weights
+Lo-phi supports weighted analysis through the `--weight-column` option:
+
+**Usage:**
+```bash
+lophi --input data.csv --target target --weight-column sample_weight --no-confirm
+```
+
+**How Weights Affect Analysis:**
+- **Missing Value Analysis**: Uses weighted missing ratio (`weighted_null_count / total_weight`) instead of unweighted ratio
+- **Gini/IV Analysis**: WoE bins, IV contributions, and Gini coefficients calculated using weighted event/non-event counts
+- **Correlation Analysis**: Weighted Pearson correlation using weighted Welford's algorithm
+
+**Weight Column Behavior:**
+- The weight column is automatically **excluded from feature analysis** (not treated as a feature)
+- Zero weights effectively exclude samples from calculations
+- Negative weights cause an error
+- NaN or infinite weights cause an error
+- Null weights default to 1.0 with a warning
+
+**Validation:**
+- Column must exist in the dataset
+- Column must be numeric (castable to Float64)
+- All values must be non-negative, finite, and not NaN
 
 ## Development Workflow
 

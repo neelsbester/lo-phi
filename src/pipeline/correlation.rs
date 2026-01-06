@@ -21,17 +21,23 @@ pub struct CorrelatedPair {
 /// * `df` - Reference to the DataFrame (avoids re-collecting from LazyFrame)
 /// * `threshold` - Correlation threshold above which pairs are considered highly correlated
 /// * `weights` - Sample weights for weighted correlation calculation
+/// * `weight_column` - Optional name of the weight column to exclude from analysis
 pub fn find_correlated_pairs(
     df: &DataFrame,
     threshold: f64,
     weights: &[f64],
+    weight_column: Option<&str>,
 ) -> Result<Vec<CorrelatedPair>> {
 
     // Get numeric columns only - cast all to Float64 for correlation calculation
+    // Exclude the weight column as it's metadata, not a feature
     let numeric_cols: Vec<String> = df
         .get_columns()
         .iter()
-        .filter(|col| col.dtype().is_primitive_numeric())
+        .filter(|col| {
+            col.dtype().is_primitive_numeric()
+                && Some(col.name().as_str()) != weight_column
+        })
         .map(|col| col.name().to_string())
         .collect();
 

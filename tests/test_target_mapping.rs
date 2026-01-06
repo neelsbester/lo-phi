@@ -147,7 +147,7 @@ fn test_iv_analysis_with_string_target_mapping() {
     let weights = vec![1.0; df.height()];
 
     // Should not error with mapping provided
-    let result = analyze_features_iv(&df, "target", 5, Some(&mapping), BinningStrategy::Quantile, None, &weights);
+    let result = analyze_features_iv(&df, "target", 5, Some(&mapping), BinningStrategy::Quantile, None, &weights, None);
     assert!(result.is_ok(), "IV analysis should succeed with target mapping");
 
     let analyses = result.unwrap();
@@ -166,7 +166,7 @@ fn test_iv_analysis_with_multivalue_target_ignores_unknown() {
     let weights = vec![1.0; df.height()];
 
     // Should analyze only rows with "good" or "bad", ignoring "unknown"
-    let result = analyze_features_iv(&df, "target", 5, Some(&mapping), BinningStrategy::Quantile, None, &weights);
+    let result = analyze_features_iv(&df, "target", 5, Some(&mapping), BinningStrategy::Quantile, None, &weights, None);
     assert!(result.is_ok(), "IV analysis should succeed, ignoring unknown values");
 
     let analyses = result.unwrap();
@@ -184,7 +184,7 @@ fn test_iv_analysis_without_mapping_on_binary_target() {
     let weights = vec![1.0; 20];
 
     // Should work without mapping for binary target
-    let result = analyze_features_iv(&df, "target", 5, None, BinningStrategy::Quantile, None, &weights);
+    let result = analyze_features_iv(&df, "target", 5, None, BinningStrategy::Quantile, None, &weights, None);
     assert!(result.is_ok(), "IV analysis should succeed for binary target without mapping");
 }
 
