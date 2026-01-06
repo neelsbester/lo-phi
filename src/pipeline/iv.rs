@@ -762,6 +762,10 @@ pub fn analyze_features_iv(
         .collect();
 
     // Process categorical features in parallel
+    // Note: For categorical CART, we use a fixed small min_samples (1) because the pairs array
+    // in find_categorical_cart_splits has at most 2 entries per category (not one per sample).
+    // The percentage-based cart_min_samples would be too restrictive for categoricals.
+    let categorical_cart_min_samples = 1;
     let categorical_analyses: Vec<IvAnalysis> = categorical_cols
         .par_iter()
         .filter_map(|col_name| {
@@ -770,7 +774,7 @@ pub fn analyze_features_iv(
                 col_name,
                 &target_values,
                 min_cat_samples,
-                cart_min_samples,
+                categorical_cart_min_samples,
                 &weights_arc,
                 binning_strategy,
                 num_bins,
