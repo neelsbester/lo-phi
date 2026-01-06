@@ -17,7 +17,7 @@ use console::style;
 use cli::{run_config_menu, run_target_mapping_selector, Cli, Commands, Config, ConfigResult, TargetMappingResult};
 use pipeline::{
     analyze_features_iv, analyze_missing_values, analyze_target_column, find_correlated_pairs,
-    get_column_names, get_features_above_threshold, get_low_gini_features,
+    get_column_names, get_features_above_threshold, get_low_gini_features, get_weights,
     load_dataset_with_progress, select_features_to_drop, BinningStrategy, TargetAnalysis, TargetMapping,
 };
 use report::{export_gini_analysis_enhanced, ExportParams, ReductionSummary};
@@ -59,13 +59,13 @@ fn main() -> Result<()> {
     };
 
     // Determine final config values - either from interactive menu or CLI defaults
-    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold, columns_to_drop, mut target_mapping) = if cli.no_confirm {
+    let (target, missing_threshold, gini_threshold, gini_bins, correlation_threshold, columns_to_drop, mut target_mapping, weight_column) = if cli.no_confirm {
         // Skip interactive menu when --no-confirm is set
         // Target is required in non-interactive mode
         let target = cli.target.clone().ok_or_else(|| {
             anyhow::anyhow!("Target column is required when using --no-confirm. Use -t/--target to specify.")
         })?;
-        (target, cli.missing_threshold, cli.gini_threshold, cli.gini_bins, cli.correlation_threshold, cli.drop_columns.clone(), cli_target_mapping)
+        (target, cli.missing_threshold, cli.gini_threshold, cli.gini_bins, cli.correlation_threshold, cli.drop_columns.clone(), cli_target_mapping, cli.weight_column.clone())
     } else {
         // Load column names for interactive selection
         let columns = get_column_names(input)?;
@@ -80,6 +80,7 @@ fn main() -> Result<()> {
             correlation_threshold: cli.correlation_threshold,
             columns_to_drop: cli.drop_columns.clone(),
             target_mapping: cli_target_mapping.clone(),
+            weight_column: cli.weight_column.clone(),
         };
 
         match run_config_menu(config, columns)? {
@@ -88,7 +89,7 @@ fn main() -> Result<()> {
                     anyhow::anyhow!("Target column must be selected before proceeding")
                 })?;
                 // Use config's target_mapping if set (from CLI), otherwise None (will be determined after loading data)
-                (target, cfg.missing_threshold, cfg.gini_threshold, cli.gini_bins, cfg.correlation_threshold, cfg.columns_to_drop, cfg.target_mapping)
+                (target, cfg.missing_threshold, cfg.gini_threshold, cli.gini_bins, cfg.correlation_threshold, cfg.columns_to_drop, cfg.target_mapping, cfg.weight_column)
             }
             ConfigResult::Quit => {
                 println!("Cancelled by user.");
@@ -156,6 +157,15 @@ fn main() -> Result<()> {
         );
     }
 
+    // Extract sample weights (defaults to equal weights of 1.0 if no weight column specified)
+    let weights = get_weights(&df, weight_column.as_deref())?;
+    if weight_column.is_some() {
+        print_success(&format!(
+            "Using weight column: '{}'",
+            weight_column.as_ref().unwrap()
+        ));
+    }
+
     // Analyze target column to determine if mapping is needed
     if target_mapping.is_none() {
         match analyze_target_column(&df, &target)? {
@@ -215,7 +225,7 @@ fn main() -> Result<()> {
 
     let step_start = Instant::now();
     let spinner = create_spinner("Analyzing missing values...");
-    let missing_ratios = analyze_missing_values(&df)?;
+    let missing_ratios = analyze_missing_values(&df, &weights)?;
     let features_to_drop_missing = get_features_above_threshold(
         &missing_ratios,
         missing_threshold,
@@ -257,6 +267,7 @@ fn main() -> Result<()> {
         target_mapping.as_ref(),
         binning_strategy,
         Some(cli.min_category_samples),
+        &weights,
     )?;
     let features_to_drop_gini = get_low_gini_features(&gini_analyses, gini_threshold);
 
@@ -265,6 +276,7 @@ fn main() -> Result<()> {
     let export_params = ExportParams {
         input_file: input.to_str().unwrap_or("unknown"),
         target_column: &target,
+        weight_column: weight_column.as_deref(),
         binning_strategy,
         num_bins: gini_bins,
         gini_threshold,
@@ -296,7 +308,7 @@ fn main() -> Result<()> {
     print_step_header(3, "Correlation Analysis");
 
     let step_start = Instant::now();
-    let correlated_pairs = find_correlated_pairs(&df, correlation_threshold)?;
+    let correlated_pairs = find_correlated_pairs(&df, correlation_threshold, &weights)?;
     let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &target);
     print_success("Correlation analysis complete");
 

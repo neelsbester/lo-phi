@@ -30,6 +30,12 @@ pub struct Cli {
     #[arg(long)]
     pub non_event_value: Option<String>,
 
+    /// Column containing sample weights for weighted analysis.
+    /// When specified, all calculations (missing ratio, IV/Gini, correlation)
+    /// use weighted statistics. Default: equal weights of 1.0 for all rows.
+    #[arg(short = 'w', long)]
+    pub weight_column: Option<String>,
+
     /// Output file path (CSV or Parquet, determined by extension).
     /// Defaults to input directory with '_reduced' suffix (e.g., data.csv → data_reduced.csv)
     #[arg(short, long)]

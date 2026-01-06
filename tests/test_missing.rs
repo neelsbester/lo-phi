@@ -13,8 +13,9 @@ fn test_analyze_missing_values_basic() {
         "col_partial_missing" => [Some(1.0f64), Some(2.0), None, None, Some(5.0)],
         "col_all_missing" => [None::<f64>, None, None, None, None],
     }.unwrap();
-    
-    let ratios = analyze_missing_values(&df).unwrap();
+    let weights = vec![1.0; 5];
+
+    let ratios = analyze_missing_values(&df, &weights).unwrap();
     
     // Convert to HashMap for easier lookup
     let ratio_map: std::collections::HashMap<_, _> = ratios.into_iter().collect();
@@ -44,8 +45,9 @@ fn test_analyze_missing_values_basic() {
 #[test]
 fn test_analyze_missing_values_sorted_descending() {
     let df = common::create_missing_test_dataframe();
-    
-    let ratios = analyze_missing_values(&df).unwrap();
+    let weights = vec![1.0; df.height()];
+
+    let ratios = analyze_missing_values(&df, &weights).unwrap();
     
     // Verify sorted descending by missing ratio
     for i in 0..ratios.len() - 1 {
@@ -94,7 +96,8 @@ fn test_get_features_threshold_boundary() {
 #[test]
 fn test_empty_dataframe() {
     let df = DataFrame::empty();
-    let ratios = analyze_missing_values(&df).unwrap();
+    let weights: Vec<f64> = vec![];
+    let ratios = analyze_missing_values(&df, &weights).unwrap();
     assert!(ratios.is_empty(), "Empty DataFrame should produce empty ratios");
 }
 
@@ -105,8 +108,9 @@ fn test_no_missing_values() {
         "b" => [4i32, 5, 6],
         "c" => [7i32, 8, 9],
     }.unwrap();
-    
-    let ratios = analyze_missing_values(&df).unwrap();
+    let weights = vec![1.0; 3];
+
+    let ratios = analyze_missing_values(&df, &weights).unwrap();
     
     for (col_name, ratio) in &ratios {
         assert_eq!(
@@ -149,8 +153,9 @@ fn test_with_integer_columns() {
         "int_col" => [Some(1i32), None, Some(3), Some(4), None],
         "float_col" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
     }.unwrap();
-    
-    let ratios = analyze_missing_values(&df).unwrap();
+    let weights = vec![1.0; 5];
+
+    let ratios = analyze_missing_values(&df, &weights).unwrap();
     let ratio_map: std::collections::HashMap<_, _> = ratios.into_iter().collect();
     
     // int_col: 2/5 = 40% missing

@@ -32,6 +32,8 @@ pub struct Config {
     pub columns_to_drop: Vec<String>,
     /// Optional mapping for non-binary target columns
     pub target_mapping: Option<TargetMapping>,
+    /// Optional column containing sample weights
+    pub weight_column: Option<String>,
 }
 
 /// The current state of the menu

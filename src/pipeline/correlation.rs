@@ -4,6 +4,7 @@ use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use polars::prelude::*;
 use rayon::prelude::*;
+use std::sync::Arc;
 
 /// Represents a correlated pair of features
 #[derive(Debug, Clone)]
@@ -14,12 +15,17 @@ pub struct CorrelatedPair {
 }
 
 /// Calculate correlations between numeric columns and find highly correlated pairs
-/// Uses Polars' optimized pearson correlation with parallel processing via Rayon
+/// Uses weighted Pearson correlation with parallel processing via Rayon
 ///
 /// # Arguments
 /// * `df` - Reference to the DataFrame (avoids re-collecting from LazyFrame)
 /// * `threshold` - Correlation threshold above which pairs are considered highly correlated
-pub fn find_correlated_pairs(df: &DataFrame, threshold: f64) -> Result<Vec<CorrelatedPair>> {
+/// * `weights` - Sample weights for weighted correlation calculation
+pub fn find_correlated_pairs(
+    df: &DataFrame,
+    threshold: f64,
+    weights: &[f64],
+) -> Result<Vec<CorrelatedPair>> {
 
     // Get numeric columns only - cast all to Float64 for correlation calculation
     let numeric_cols: Vec<String> = df
@@ -66,6 +72,9 @@ pub fn find_correlated_pairs(df: &DataFrame, threshold: f64) -> Result<Vec<Corre
         .flat_map(|i| ((i + 1)..num_cols).map(move |j| (i, j)))
         .collect();
 
+    // Wrap weights in Arc for efficient sharing across threads
+    let weights_arc = Arc::new(weights.to_vec());
+
     // Process pairs in parallel using Rayon
     let correlated_pairs: Vec<CorrelatedPair> = pairs
         .par_iter()
@@ -73,7 +82,7 @@ pub fn find_correlated_pairs(df: &DataFrame, threshold: f64) -> Result<Vec<Corre
             let (col1_name, col1) = &float_columns[*i];
             let (col2_name, col2) = &float_columns[*j];
 
-            let corr = compute_pearson_correlation(col1, col2);
+            let corr = compute_weighted_pearson_correlation(col1, col2, &weights_arc);
 
             // Update progress - inc() is thread-safe, steady_tick handles smooth rendering
             pb.inc(1);
@@ -110,50 +119,59 @@ pub fn find_correlated_pairs(df: &DataFrame, threshold: f64) -> Result<Vec<Corre
     Ok(sorted_pairs)
 }
 
-/// Compute Pearson correlation using Polars' optimized single-pass algorithm
-fn compute_pearson_correlation(s1: &Column, s2: &Column) -> Option<f64> {
+/// Compute weighted Pearson correlation using weighted Welford's algorithm
+///
+/// Uses a single-pass algorithm for numerical stability with sample weights.
+/// When all weights are equal, this produces identical results to unweighted correlation.
+fn compute_weighted_pearson_correlation(s1: &Column, s2: &Column, weights: &[f64]) -> Option<f64> {
     let ca1 = s1.f64().ok()?;
     let ca2 = s2.f64().ok()?;
 
     let n = ca1.len();
-    if n == 0 || n != ca2.len() {
+    if n == 0 || n != ca2.len() || n != weights.len() {
         return None;
     }
 
-    // Single-pass Welford-style algorithm for numerical stability
+    // Single-pass weighted Welford algorithm for numerical stability
+    let mut sum_w = 0.0;
     let mut mean_x = 0.0;
     let mut mean_y = 0.0;
     let mut var_x = 0.0;
     let mut var_y = 0.0;
     let mut cov_xy = 0.0;
-    let mut count = 0.0;
 
-    for (x, y) in ca1.iter().zip(ca2.iter()) {
+    for ((x, y), &w) in ca1.iter().zip(ca2.iter()).zip(weights.iter()) {
         if let (Some(x), Some(y)) = (x, y) {
-            count += 1.0;
+            if w <= 0.0 {
+                continue; // Skip zero or negative weights
+            }
+            sum_w += w;
             let dx = x - mean_x;
             let dy = y - mean_y;
-            mean_x += dx / count;
-            mean_y += dy / count;
-            // Update variances and covariance using Welford's method
-            var_x += dx * (x - mean_x);
-            var_y += dy * (y - mean_y);
-            cov_xy += dx * (y - mean_y);
+            mean_x += (w / sum_w) * dx;
+            mean_y += (w / sum_w) * dy;
+            // Update variances and covariance using weighted Welford's method
+            var_x += w * dx * (x - mean_x);
+            var_y += w * dy * (y - mean_y);
+            cov_xy += w * dx * (y - mean_y);
         }
     }
 
-    if count < 2.0 {
+    // Need at least 2 samples worth of weight
+    if sum_w <= 0.0 {
         return None;
     }
 
-    let std_x = (var_x / (count - 1.0)).sqrt();
-    let std_y = (var_y / (count - 1.0)).sqrt();
+    // Use population variance (divided by sum_w, not sum_w - 1) for weighted case
+    // This is the standard approach for weighted Pearson correlation
+    let std_x = (var_x / sum_w).sqrt();
+    let std_y = (var_y / sum_w).sqrt();
 
     if std_x == 0.0 || std_y == 0.0 {
         return None;
     }
 
-    Some(cov_xy / ((count - 1.0) * std_x * std_y))
+    Some(cov_xy / (sum_w * std_x * std_y))
 }
 
 /// Determine which features to drop from correlated pairs

@@ -9,8 +9,9 @@ mod common;
 #[test]
 fn test_find_perfectly_correlated_pair() {
     let df = common::create_correlation_test_dataframe();
-    
-    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
+    let weights = vec![1.0; df.height()];
+
+    let pairs = find_correlated_pairs(&df, 0.9, &weights).unwrap();
     
     // Should find a-b correlation (perfect positive)
     let ab_pair = pairs.iter().find(|p| 
@@ -29,9 +30,10 @@ fn test_find_perfectly_correlated_pair() {
 #[test]
 fn test_find_negative_correlation() {
     let df = common::create_correlation_test_dataframe();
-    
+    let weights = vec![1.0; df.height()];
+
     // Use lower threshold to catch negative correlation
-    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
+    let pairs = find_correlated_pairs(&df, 0.9, &weights).unwrap();
     
     // Should find a-c correlation (perfect negative)
     let ac_pair = pairs.iter().find(|p| 
@@ -53,8 +55,9 @@ fn test_no_correlation_found_high_threshold() {
         "a" => [1.0f64, 5.0, 2.0, 8.0, 3.0, 7.0, 4.0, 6.0, 9.0, 0.0],
         "b" => [9.0f64, 2.0, 7.0, 1.0, 6.0, 3.0, 8.0, 4.0, 0.0, 5.0],
     }.unwrap();
-    
-    let pairs = find_correlated_pairs(&df, 0.95).unwrap();
+    let weights = vec![1.0; 10];
+
+    let pairs = find_correlated_pairs(&df, 0.95, &weights).unwrap();
     
     assert!(pairs.is_empty(), "Random data should have no highly correlated pairs at 0.95 threshold");
 }
@@ -157,9 +160,10 @@ fn test_single_column_dataframe() {
     let df = df! {
         "only_col" => [1.0f64, 2.0, 3.0],
     }.unwrap();
-    
-    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
-    
+    let weights = vec![1.0; 3];
+
+    let pairs = find_correlated_pairs(&df, 0.9, &weights).unwrap();
+
     assert!(pairs.is_empty(), "Single column cannot correlate with itself");
 }
 
@@ -169,9 +173,10 @@ fn test_two_identical_columns() {
         "col_a" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
         "col_b" => [1.0f64, 2.0, 3.0, 4.0, 5.0], // Identical to col_a
     }.unwrap();
-    
-    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
-    
+    let weights = vec![1.0; 5];
+
+    let pairs = find_correlated_pairs(&df, 0.9, &weights).unwrap();
+
     assert!(!pairs.is_empty(), "Identical columns should be correlated");
     assert!(
         pairs[0].correlation.abs() > 0.999,
@@ -186,8 +191,9 @@ fn test_sorted_by_correlation_descending() {
         "b" => [1.1f64, 2.1, 3.1, 4.1, 5.1, 6.1, 7.1, 8.1, 9.1, 10.1], // Very high correlation
         "c" => [1.5f64, 2.3, 3.1, 4.2, 5.0, 6.1, 7.3, 8.0, 9.2, 10.1], // Slightly less correlated
     }.unwrap();
-    
-    let pairs = find_correlated_pairs(&df, 0.9).unwrap();
+    let weights = vec![1.0; 10];
+
+    let pairs = find_correlated_pairs(&df, 0.9, &weights).unwrap();
     
     // Verify sorted by absolute correlation descending
     for i in 0..pairs.len().saturating_sub(1) {
@@ -213,8 +219,9 @@ fn test_non_numeric_columns_ignored() {
         "numeric" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
         "string_col" => ["a", "b", "c", "d", "e"],
     }.unwrap();
-    
-    let pairs = find_correlated_pairs(&df, 0.5).unwrap();
+    let weights = vec![1.0; 5];
+
+    let pairs = find_correlated_pairs(&df, 0.5, &weights).unwrap();
     
     // Should not find any pairs involving string columns
     for pair in &pairs {

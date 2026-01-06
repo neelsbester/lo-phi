@@ -19,6 +19,9 @@ pub struct AnalysisMetadata {
     pub input_file: String,
     /// Target column name
     pub target_column: String,
+    /// Weight column name (if used)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight_column: Option<String>,
     /// Binning strategy used
     pub binning_strategy: String,
     /// Number of bins
@@ -73,6 +76,7 @@ pub struct GiniAnalysisExport {
 pub struct ExportParams<'a> {
     pub input_file: &'a str,
     pub target_column: &'a str,
+    pub weight_column: Option<&'a str>,
     pub binning_strategy: BinningStrategy,
     pub num_bins: usize,
     pub gini_threshold: f64,
@@ -136,6 +140,7 @@ pub fn export_gini_analysis_enhanced(
             lophi_version: env!("CARGO_PKG_VERSION").to_string(),
             input_file: params.input_file.to_string(),
             target_column: params.target_column.to_string(),
+            weight_column: params.weight_column.map(|s| s.to_string()),
             binning_strategy: params.binning_strategy.to_string(),
             num_bins: params.num_bins,
             gini_threshold: params.gini_threshold,

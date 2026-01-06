@@ -3,30 +3,46 @@
 use anyhow::Result;
 use polars::prelude::*;
 
-/// Analyze missing values in the dataset using Polars expressions
-/// 
+/// Analyze missing values in the dataset with optional sample weights.
+///
+/// When weights are provided, calculates the weighted missing ratio:
+/// `weighted_null_count / total_weight` instead of `null_count / row_count`
+///
 /// # Arguments
-/// * `df` - Reference to the DataFrame (avoids re-collecting from LazyFrame)
-pub fn analyze_missing_values(df: &DataFrame) -> Result<Vec<(String, f64)>> {
-    let row_count = df.height() as f64;
+/// * `df` - Reference to the DataFrame
+/// * `weights` - Sample weights (one per row). Use equal weights for unweighted analysis.
+pub fn analyze_missing_values(df: &DataFrame, weights: &[f64]) -> Result<Vec<(String, f64)>> {
+    // Handle empty DataFrame
+    if df.height() == 0 {
+        return Ok(Vec::new());
+    }
 
-    // Use Polars to compute null counts for all columns at once
-    // No need to clone - we use a reference and create a new lazy frame
-    let null_counts = df
-        .clone()
-        .lazy()
-        .select([all().null_count()])
-        .collect()?;
+    let total_weight: f64 = weights.iter().sum();
+
+    if total_weight == 0.0 {
+        anyhow::bail!("Total weight is zero - cannot compute missing ratios");
+    }
 
     let mut missing_ratios: Vec<(String, f64)> = Vec::new();
 
     for col_name in df.get_column_names() {
-        let null_count = null_counts
-            .column(col_name)?
-            .u32()?
-            .get(0)
-            .unwrap_or(0) as f64;
-        let missing_ratio = null_count / row_count;
+        let column = df.column(col_name)?;
+
+        // Calculate weighted null count by iterating through values
+        let weighted_null_count: f64 = column
+            .as_materialized_series()
+            .iter()
+            .zip(weights.iter())
+            .filter_map(|(val, &w)| {
+                if val.is_null() {
+                    Some(w)
+                } else {
+                    None
+                }
+            })
+            .sum();
+
+        let missing_ratio = weighted_null_count / total_weight;
         missing_ratios.push((col_name.to_string(), missing_ratio));
     }
 
