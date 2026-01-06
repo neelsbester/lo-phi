@@ -206,8 +206,12 @@ lophi convert input.csv --output custom_name.parquet
 - Gini calculated using category WoE values (including MISSING bin)
 
 **Common:**
+- **WoE Convention**: Uses `ln(%bad/%good)` formula where:
+  - WoE > 0 indicates higher risk (more events/defaults)
+  - WoE < 0 indicates lower risk (fewer events/defaults)
+  - This is intuitive for credit scoring: higher WoE = higher risk
 - Laplace smoothing to avoid log(0) in WoE calculation
-- AUC-based Gini using Mann-Whitney U statistic
+- AUC-based Gini using Mann-Whitney U statistic (positive Gini = good discrimination)
 - Enhanced bin statistics: count, population_pct, event_rate
 
 ### Target Column Handling

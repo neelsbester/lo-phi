@@ -977,6 +977,11 @@ fn create_quantile_prebins(
 }
 
 /// Calculate WoE and IV contribution for a bin
+/// 
+/// Uses the ln(%bad/%good) convention where:
+/// - WoE > 0 indicates higher risk (more events/defaults)
+/// - WoE < 0 indicates lower risk (fewer events/defaults)
+/// This is intuitive for credit scoring where higher WoE = higher risk.
 fn calculate_woe_iv(
     events: f64,
     non_events: f64,
@@ -987,8 +992,9 @@ fn calculate_woe_iv(
     let dist_events = (events + SMOOTHING) / (total_events + SMOOTHING);
     let dist_non_events = (non_events + SMOOTHING) / (total_non_events + SMOOTHING);
 
-    let woe = (dist_non_events / dist_events).ln();
-    let iv_contrib = (dist_non_events - dist_events) * woe;
+    // WoE = ln(%bad / %good) - higher WoE means higher risk
+    let woe = (dist_events / dist_non_events).ln();
+    let iv_contrib = (dist_events - dist_non_events) * woe;
 
     (woe, iv_contrib)
 }
