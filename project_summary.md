@@ -189,10 +189,19 @@ lophi convert input.csv --output custom_name.parquet
   - Produces bins aligned with natural data boundaries
   - More effective for features with non-linear relationships
 
+**Missing Value Handling:**
+- Missing/null feature values are placed in a dedicated **MISSING bin** (not dropped)
+- The MISSING bin has its own WoE and IV contribution calculated
+- Only records with invalid/unmapped target values are excluded from analysis
+- This allows understanding the predictive power of "missingness" itself
+- Gini calculation includes samples from the MISSING bin
+- Exported JSON includes missing bin statistics when present
+
 **Categorical Feature Support:**
 - Groups categories and calculates WoE/IV per category
+- Null/missing category values go to a separate MISSING bin
 - Rare categories (< `--min-category-samples`) merged into "OTHER"
-- Gini calculated using category WoE values
+- Gini calculated using category WoE values (including MISSING bin)
 
 **Common:**
 - Laplace smoothing to avoid log(0) in WoE calculation

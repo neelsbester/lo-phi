@@ -108,6 +108,25 @@ pub struct WoeBin {
     pub event_rate: f64,
 }
 
+/// A bin for missing/null values with WoE statistics
+#[derive(Debug, Clone, Serialize)]
+pub struct MissingBin {
+    /// Count of events (target = 1) with missing feature values
+    pub events: usize,
+    /// Count of non-events (target = 0) with missing feature values
+    pub non_events: usize,
+    /// Weight of Evidence for missing values
+    pub woe: f64,
+    /// Contribution to total IV from missing values
+    pub iv_contribution: f64,
+    /// Total samples with missing values
+    pub count: usize,
+    /// Percentage of total population with missing values
+    pub population_pct: f64,
+    /// Event rate (events / count)
+    pub event_rate: f64,
+}
+
 /// Complete IV analysis results for a single feature
 #[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]  // Fields may be used for reporting/debugging
@@ -122,6 +141,9 @@ pub struct IvAnalysis {
     /// Categories with WoE statistics (for categorical features)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<CategoricalWoeBin>,
+    /// Missing value bin (for features with null values)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing_bin: Option<MissingBin>,
     /// Total Information Value
     pub iv: f64,
     /// Gini coefficient calculated on WoE-encoded values
@@ -586,6 +608,9 @@ fn validate_binary_target(df: &DataFrame, target: &str) -> Result<()> {
 }
 
 /// Analyze a single numeric feature and calculate its IV
+/// 
+/// Missing feature values are placed in a dedicated MISSING bin rather than being dropped.
+/// Only records with invalid/unmapped target values are excluded from the analysis.
 fn analyze_single_numeric_feature(
     df: &DataFrame,
     col_name: &str,
@@ -597,32 +622,47 @@ fn analyze_single_numeric_feature(
     let float_col = col.cast(&DataType::Float64)?;
     let values = float_col.f64()?;
 
-    // Collect non-null value/target pairs
-    // Filter out:
-    // - Feature values that are null
-    // - Target values that are None (not matching event or non-event in mapping)
-    let mut pairs: Vec<(f64, i32)> = values
-        .iter()
-        .zip(target_values.iter())
-        .filter_map(|(v, t)| {
-            match (v, t) {
-                (Some(val), Some(target)) => Some((val, *target)),
-                _ => None, // Skip if feature is null OR target doesn't match mapping
-            }
-        })
-        .collect();
+    // Separate non-null value/target pairs and missing value targets
+    // Only filter out records where target is None (not matching event or non-event in mapping)
+    let mut pairs: Vec<(f64, i32)> = Vec::new();
+    let mut missing_events: usize = 0;
+    let mut missing_non_events: usize = 0;
 
-    if pairs.len() < MIN_BIN_SAMPLES * 2 {
-        anyhow::bail!("Insufficient non-null values for feature '{}'", col_name);
+    for (v, t) in values.iter().zip(target_values.iter()) {
+        match (v, t) {
+            (Some(val), Some(target)) => {
+                // Non-null feature value with valid target
+                pairs.push((val, *target));
+            }
+            (None, Some(target)) => {
+                // Missing feature value with valid target -> goes to MISSING bin
+                if *target == 1 {
+                    missing_events += 1;
+                } else {
+                    missing_non_events += 1;
+                }
+            }
+            (_, None) => {
+                // Invalid/unmapped target -> skip this record entirely
+            }
+        }
     }
 
-    // Sort by value for binning
-    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let missing_count = missing_events + missing_non_events;
+    let total_valid_records = pairs.len() + missing_count;
 
-    // Count total events and non-events
-    let total_events: usize = pairs.iter().filter(|(_, t)| *t == 1).count();
-    let total_non_events: usize = pairs.len() - total_events;
-    let total_samples = pairs.len();
+    // Need at least some valid records to proceed
+    if total_valid_records < MIN_BIN_SAMPLES {
+        anyhow::bail!("Insufficient valid records for feature '{}'", col_name);
+    }
+
+    // Count total events and non-events (including missing bin)
+    let non_missing_events: usize = pairs.iter().filter(|(_, t)| *t == 1).count();
+    let non_missing_non_events: usize = pairs.len() - non_missing_events;
+    
+    let total_events = non_missing_events + missing_events;
+    let total_non_events = non_missing_non_events + missing_non_events;
+    let total_samples = total_valid_records;
 
     if total_events == 0 || total_non_events == 0 {
         anyhow::bail!(
@@ -631,7 +671,45 @@ fn analyze_single_numeric_feature(
         );
     }
 
-    // Phase 1: Create initial pre-bins based on strategy
+    // Create MISSING bin if there are missing values
+    let missing_bin = if missing_count > 0 {
+        let (woe, iv_contrib) = calculate_woe_iv(missing_events, missing_non_events, total_events, total_non_events);
+        Some(MissingBin {
+            events: missing_events,
+            non_events: missing_non_events,
+            woe,
+            iv_contribution: iv_contrib,
+            count: missing_count,
+            population_pct: missing_count as f64 / total_samples as f64 * 100.0,
+            event_rate: if missing_count > 0 { missing_events as f64 / missing_count as f64 } else { 0.0 },
+        })
+    } else {
+        None
+    };
+
+    // If all values are missing or too few non-missing values for binning,
+    // return early with just the missing bin
+    if pairs.len() < MIN_BIN_SAMPLES * 2 {
+        let iv = missing_bin.as_ref().map(|b| b.iv_contribution).unwrap_or(0.0);
+        // With only missing bin and insufficient non-missing values for binning,
+        // Gini is 0 as there's no discrimination possible
+        let gini = 0.0;
+        
+        return Ok(IvAnalysis {
+            feature_name: col_name.to_string(),
+            feature_type: FeatureType::Numeric,
+            bins: Vec::new(),
+            categories: Vec::new(),
+            missing_bin,
+            iv,
+            gini,
+        });
+    }
+
+    // Sort by value for binning
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Phase 1: Create initial pre-bins based on strategy (for non-missing values)
     let pre_bins = match binning_strategy {
         BinningStrategy::Quantile => {
             create_quantile_prebins(&pairs, PRE_BIN_COUNT, total_events, total_non_events, total_samples)
@@ -652,23 +730,29 @@ fn analyze_single_numeric_feature(
         }
     };
 
-    // Calculate total IV
-    let iv: f64 = final_bins.iter().map(|b| b.iv_contribution).sum();
+    // Calculate total IV (including missing bin contribution)
+    let bins_iv: f64 = final_bins.iter().map(|b| b.iv_contribution).sum();
+    let missing_iv: f64 = missing_bin.as_ref().map(|b| b.iv_contribution).unwrap_or(0.0);
+    let iv = bins_iv + missing_iv;
 
-    // Calculate Gini on WoE-encoded values
-    let gini = calculate_gini_on_woe(&pairs, &final_bins, target_values.len());
+    // Calculate Gini on WoE-encoded values (including missing bin)
+    let gini = calculate_gini_on_woe_with_missing(&pairs, &final_bins, &missing_bin, missing_events, missing_non_events);
 
     Ok(IvAnalysis {
         feature_name: col_name.to_string(),
         feature_type: FeatureType::Numeric,
         bins: final_bins,
         categories: Vec::new(),
+        missing_bin,
         iv,
         gini,
     })
 }
 
 /// Analyze a categorical feature and calculate its IV
+/// 
+/// Missing feature values are placed in a dedicated MISSING bin rather than being dropped.
+/// Only records with invalid/unmapped target values are excluded from the analysis.
 fn analyze_categorical_feature(
     df: &DataFrame,
     col_name: &str,
@@ -681,28 +765,51 @@ fn analyze_categorical_feature(
     let string_col = col.cast(&DataType::String)?;
     let values = string_col.str()?;
 
-    // Collect category/target pairs with counts
+    // Collect category/target pairs with counts, including MISSING for null values
     let mut category_stats: std::collections::HashMap<String, (usize, usize)> = std::collections::HashMap::new();
+    let mut missing_events: usize = 0;
+    let mut missing_non_events: usize = 0;
     
     for (val, target) in values.iter().zip(target_values.iter()) {
-        if let (Some(cat), Some(t)) = (val, target) {
-            let entry = category_stats.entry(cat.to_string()).or_insert((0, 0));
-            if *t == 1 {
-                entry.0 += 1; // events
-            } else {
-                entry.1 += 1; // non_events
+        match (val, target) {
+            (Some(cat), Some(t)) => {
+                // Non-null category with valid target
+                let entry = category_stats.entry(cat.to_string()).or_insert((0, 0));
+                if *t == 1 {
+                    entry.0 += 1; // events
+                } else {
+                    entry.1 += 1; // non_events
+                }
+            }
+            (None, Some(t)) => {
+                // Missing category value with valid target -> goes to MISSING bin
+                if *t == 1 {
+                    missing_events += 1;
+                } else {
+                    missing_non_events += 1;
+                }
+            }
+            (_, None) => {
+                // Invalid/unmapped target -> skip this record entirely
             }
         }
     }
 
-    if category_stats.is_empty() {
-        anyhow::bail!("No valid categories found for feature '{}'", col_name);
+    let missing_count = missing_events + missing_non_events;
+    let category_total: usize = category_stats.values().map(|(e, ne)| e + ne).sum();
+    let total_valid_records = category_total + missing_count;
+
+    if total_valid_records == 0 {
+        anyhow::bail!("No valid records found for feature '{}'", col_name);
     }
 
-    // Calculate totals
-    let total_events: usize = category_stats.values().map(|(e, _)| e).sum();
-    let total_non_events: usize = category_stats.values().map(|(_, ne)| ne).sum();
-    let total_samples = total_events + total_non_events;
+    // Calculate totals (including missing)
+    let cat_events: usize = category_stats.values().map(|(e, _)| *e).sum();
+    let cat_non_events: usize = category_stats.values().map(|(_, ne)| *ne).sum();
+    
+    let total_events = cat_events + missing_events;
+    let total_non_events = cat_non_events + missing_non_events;
+    let total_samples = total_valid_records;
 
     if total_events == 0 || total_non_events == 0 {
         anyhow::bail!(
@@ -710,6 +817,22 @@ fn analyze_categorical_feature(
             col_name
         );
     }
+
+    // Create MISSING bin if there are missing values
+    let missing_bin = if missing_count > 0 {
+        let (woe, iv_contrib) = calculate_woe_iv(missing_events, missing_non_events, total_events, total_non_events);
+        Some(MissingBin {
+            events: missing_events,
+            non_events: missing_non_events,
+            woe,
+            iv_contribution: iv_contrib,
+            count: missing_count,
+            population_pct: missing_count as f64 / total_samples as f64 * 100.0,
+            event_rate: if missing_count > 0 { missing_events as f64 / missing_count as f64 } else { 0.0 },
+        })
+    } else {
+        None
+    };
 
     // Merge rare categories into "OTHER"
     let mut other_events = 0usize;
@@ -754,54 +877,23 @@ fn analyze_categorical_feature(
     // Sort by WoE
     categories.sort_by(|a, b| a.woe.partial_cmp(&b.woe).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Calculate total IV
-    let iv: f64 = categories.iter().map(|c| c.iv_contribution).sum();
+    // Calculate total IV (including missing bin contribution)
+    let categories_iv: f64 = categories.iter().map(|c| c.iv_contribution).sum();
+    let missing_iv: f64 = missing_bin.as_ref().map(|b| b.iv_contribution).unwrap_or(0.0);
+    let iv = categories_iv + missing_iv;
 
-    // Calculate Gini using category WoE values
-    let gini = calculate_gini_on_categories(&categories, total_events, total_non_events);
+    // Calculate Gini using category WoE values (including missing bin)
+    let gini = calculate_gini_on_categories_with_missing(&categories, &missing_bin, total_events, total_non_events);
 
     Ok(IvAnalysis {
         feature_name: col_name.to_string(),
         feature_type: FeatureType::Categorical,
         bins: Vec::new(),
         categories,
+        missing_bin,
         iv,
         gini,
     })
-}
-
-/// Calculate Gini coefficient for categorical features using WoE-encoded values
-fn calculate_gini_on_categories(
-    categories: &[CategoricalWoeBin],
-    total_events: usize,
-    total_non_events: usize,
-) -> f64 {
-    if categories.is_empty() || total_events == 0 || total_non_events == 0 {
-        return 0.0;
-    }
-
-    // Create pairs of (WoE, target) for all samples
-    let mut woe_target_pairs: Vec<(f64, i32)> = Vec::new();
-    
-    for cat in categories {
-        // Add events (target = 1)
-        for _ in 0..cat.events {
-            woe_target_pairs.push((cat.woe, 1));
-        }
-        // Add non-events (target = 0)
-        for _ in 0..cat.non_events {
-            woe_target_pairs.push((cat.woe, 0));
-        }
-    }
-
-    // Sort by WoE for AUC calculation
-    woe_target_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Calculate AUC using Mann-Whitney U statistic
-    let auc = calculate_auc(&woe_target_pairs);
-
-    // Gini = 2 * AUC - 1
-    2.0 * auc - 1.0
 }
 
 /// Create initial quantile-based pre-bins
@@ -937,13 +1029,15 @@ fn merge_two_bins(
     }
 }
 
-/// Calculate Gini coefficient on WoE-encoded values using AUC
-fn calculate_gini_on_woe(
+/// Calculate Gini coefficient on WoE-encoded values including missing bin
+fn calculate_gini_on_woe_with_missing(
     sorted_pairs: &[(f64, i32)],
     bins: &[WoeBin],
-    _total_samples: usize,
+    missing_bin: &Option<MissingBin>,
+    missing_events: usize,
+    missing_non_events: usize,
 ) -> f64 {
-    // Encode each value with its bin's WoE
+    // Encode each non-missing value with its bin's WoE
     let mut woe_target_pairs: Vec<(f64, i32)> = sorted_pairs
         .iter()
         .map(|(val, target)| {
@@ -951,6 +1045,72 @@ fn calculate_gini_on_woe(
             (woe, *target)
         })
         .collect();
+
+    // Add missing bin samples with their WoE
+    if let Some(mb) = missing_bin {
+        // Add events from missing bin
+        for _ in 0..missing_events {
+            woe_target_pairs.push((mb.woe, 1));
+        }
+        // Add non-events from missing bin
+        for _ in 0..missing_non_events {
+            woe_target_pairs.push((mb.woe, 0));
+        }
+    }
+
+    if woe_target_pairs.is_empty() {
+        return 0.0;
+    }
+
+    // Sort by WoE for AUC calculation
+    woe_target_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Calculate AUC using Mann-Whitney U statistic
+    let auc = calculate_auc(&woe_target_pairs);
+
+    // Gini = 2 * AUC - 1
+    2.0 * auc - 1.0
+}
+
+/// Calculate Gini coefficient for categorical features including missing bin
+fn calculate_gini_on_categories_with_missing(
+    categories: &[CategoricalWoeBin],
+    missing_bin: &Option<MissingBin>,
+    total_events: usize,
+    total_non_events: usize,
+) -> f64 {
+    if (categories.is_empty() && missing_bin.is_none()) || total_events == 0 || total_non_events == 0 {
+        return 0.0;
+    }
+
+    // Create pairs of (WoE, target) for all samples
+    let mut woe_target_pairs: Vec<(f64, i32)> = Vec::new();
+    
+    // Add category samples
+    for cat in categories {
+        // Add events (target = 1)
+        for _ in 0..cat.events {
+            woe_target_pairs.push((cat.woe, 1));
+        }
+        // Add non-events (target = 0)
+        for _ in 0..cat.non_events {
+            woe_target_pairs.push((cat.woe, 0));
+        }
+    }
+
+    // Add missing bin samples
+    if let Some(mb) = missing_bin {
+        for _ in 0..mb.events {
+            woe_target_pairs.push((mb.woe, 1));
+        }
+        for _ in 0..mb.non_events {
+            woe_target_pairs.push((mb.woe, 0));
+        }
+    }
+
+    if woe_target_pairs.is_empty() {
+        return 0.0;
+    }
 
     // Sort by WoE for AUC calculation
     woe_target_pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -1276,6 +1436,203 @@ mod tests {
             assert!(bin.event_rate >= 0.0 && bin.event_rate <= 1.0,
                 "Event rate should be 0-1");
         }
+    }
+
+    // =========================================================================
+    // Tests for Missing Value Handling
+    // =========================================================================
+
+    #[test]
+    fn test_numeric_feature_with_missing_values() {
+        // Test that numeric feature analysis creates a MISSING bin for null values
+        let df = df! {
+            "target" => [0i32, 0, 1, 1, 0, 1, 0, 1, 0, 1],
+            "feature" => [Some(1.0f64), Some(2.0), None, Some(4.0), None, Some(6.0), Some(7.0), Some(8.0), Some(9.0), Some(10.0)],
+        }.unwrap();
+        
+        let target_values: Vec<Option<i32>> = vec![
+            Some(0), Some(0), Some(1), Some(1), Some(0),
+            Some(1), Some(0), Some(1), Some(0), Some(1)
+        ];
+        
+        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile);
+        assert!(result.is_ok(), "Should analyze numeric feature with missing values");
+        
+        let analysis = result.unwrap();
+        
+        // Should have a missing bin
+        assert!(analysis.missing_bin.is_some(), "Should have a MISSING bin for null values");
+        
+        let missing_bin = analysis.missing_bin.unwrap();
+        assert_eq!(missing_bin.count, 2, "Missing bin should contain 2 samples");
+        assert_eq!(missing_bin.events, 1, "Missing bin should have 1 event");
+        assert_eq!(missing_bin.non_events, 1, "Missing bin should have 1 non-event");
+        assert!(missing_bin.population_pct > 0.0, "Missing bin should have positive population percentage");
+        
+        // IV should include missing bin contribution
+        assert!(analysis.iv >= 0.0, "IV should be non-negative");
+    }
+
+    #[test]
+    fn test_categorical_feature_with_missing_values() {
+        // Test that categorical feature analysis creates a MISSING bin for null values
+        let df = df! {
+            "target" => [0i32, 0, 1, 1, 0, 1, 0, 1, 0, 1],
+            "category" => [Some("A"), Some("A"), None, Some("B"), None, Some("B"), Some("C"), Some("C"), Some("C"), Some("C")],
+        }.unwrap();
+        
+        let target_values: Vec<Option<i32>> = vec![
+            Some(0), Some(0), Some(1), Some(1), Some(0),
+            Some(1), Some(0), Some(1), Some(0), Some(1)
+        ];
+        
+        let result = analyze_categorical_feature(&df, "category", &target_values, 1);
+        assert!(result.is_ok(), "Should analyze categorical feature with missing values");
+        
+        let analysis = result.unwrap();
+        
+        // Should have a missing bin
+        assert!(analysis.missing_bin.is_some(), "Should have a MISSING bin for null values");
+        
+        let missing_bin = analysis.missing_bin.unwrap();
+        assert_eq!(missing_bin.count, 2, "Missing bin should contain 2 samples");
+        assert_eq!(missing_bin.events, 1, "Missing bin should have 1 event");
+        assert_eq!(missing_bin.non_events, 1, "Missing bin should have 1 non-event");
+        
+        // IV should include missing bin contribution
+        assert!(analysis.iv >= 0.0, "IV should be non-negative");
+    }
+
+    #[test]
+    fn test_numeric_feature_no_missing_values() {
+        // Test that numeric feature without missing values has no MISSING bin
+        let df = df! {
+            "target" => [0i32, 0, 1, 1, 0, 1, 0, 1, 0, 1],
+            "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        }.unwrap();
+        
+        let target_values: Vec<Option<i32>> = vec![
+            Some(0), Some(0), Some(1), Some(1), Some(0),
+            Some(1), Some(0), Some(1), Some(0), Some(1)
+        ];
+        
+        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile);
+        assert!(result.is_ok(), "Should analyze numeric feature without missing values");
+        
+        let analysis = result.unwrap();
+        
+        // Should NOT have a missing bin
+        assert!(analysis.missing_bin.is_none(), "Should not have MISSING bin when no null values");
+    }
+
+    #[test]
+    fn test_only_drops_records_with_invalid_target() {
+        // Test that only records with invalid target (None) are dropped, not missing feature values
+        let df = df! {
+            "target" => [0i32, 0, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+            "feature" => [Some(1.0f64), Some(2.0), None, Some(4.0), None, Some(6.0), Some(7.0), Some(8.0), Some(9.0), Some(10.0), Some(11.0), Some(12.0)],
+        }.unwrap();
+        
+        // Two records have None target (these should be dropped)
+        // Two records have None feature (these should go to MISSING bin)
+        let target_values: Vec<Option<i32>> = vec![
+            Some(0), Some(0), Some(1), None, Some(0),  // 4th record has invalid target
+            Some(1), Some(0), Some(1), None, Some(1),  // 9th record has invalid target
+            Some(0), Some(1)
+        ];
+        
+        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile);
+        assert!(result.is_ok(), "Should analyze feature");
+        
+        let analysis = result.unwrap();
+        
+        // Should have a missing bin (only for records where feature is null AND target is valid)
+        assert!(analysis.missing_bin.is_some(), "Should have MISSING bin");
+        
+        let missing_bin = analysis.missing_bin.unwrap();
+        // Only the 3rd row (target=Some(1)) and 5th row (target=Some(0)) have null features with valid targets
+        assert_eq!(missing_bin.count, 2, "Missing bin should contain 2 samples (from rows with valid targets)");
+    }
+
+    #[test]
+    fn test_all_missing_feature_values() {
+        // Test feature where all values are missing (but targets are valid)
+        let df = df! {
+            "target" => [0i32, 0, 1, 1, 0, 1],
+            "feature" => [None::<f64>, None, None, None, None, None],
+        }.unwrap();
+        
+        let target_values: Vec<Option<i32>> = vec![
+            Some(0), Some(0), Some(1), Some(1), Some(0), Some(1)
+        ];
+        
+        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile);
+        assert!(result.is_ok(), "Should handle all-missing feature values");
+        
+        let analysis = result.unwrap();
+        
+        // Should only have missing bin, no regular bins
+        assert!(analysis.missing_bin.is_some(), "Should have MISSING bin");
+        assert!(analysis.bins.is_empty(), "Should have no regular bins");
+        
+        let missing_bin = analysis.missing_bin.unwrap();
+        assert_eq!(missing_bin.count, 6, "Missing bin should contain all 6 samples");
+        assert_eq!(missing_bin.events, 3, "Missing bin should have 3 events");
+        assert_eq!(missing_bin.non_events, 3, "Missing bin should have 3 non-events");
+    }
+
+    #[test]
+    fn test_missing_bin_woe_calculation() {
+        // Test that MISSING bin WoE is calculated correctly
+        let df = df! {
+            "target" => [0i32, 0, 1, 1, 0, 1, 0, 1, 1, 1],
+            "feature" => [Some(1.0f64), Some(2.0), None, None, None, Some(6.0), Some(7.0), Some(8.0), Some(9.0), Some(10.0)],
+        }.unwrap();
+        
+        // Missing feature values: rows 3, 4, 5 with targets 1, 1, 0
+        // So missing_events = 2, missing_non_events = 1
+        let target_values: Vec<Option<i32>> = vec![
+            Some(0), Some(0), Some(1), Some(1), Some(0),
+            Some(1), Some(0), Some(1), Some(1), Some(1)
+        ];
+        
+        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile);
+        assert!(result.is_ok(), "Should analyze feature");
+        
+        let analysis = result.unwrap();
+        assert!(analysis.missing_bin.is_some(), "Should have MISSING bin");
+        
+        let missing_bin = analysis.missing_bin.unwrap();
+        assert_eq!(missing_bin.events, 2, "Missing bin should have 2 events");
+        assert_eq!(missing_bin.non_events, 1, "Missing bin should have 1 non-event");
+        assert!(missing_bin.iv_contribution >= 0.0, "IV contribution should be non-negative");
+        
+        // WoE should reflect higher event rate in missing bin
+        // (WoE sign depends on overall event/non-event distribution)
+    }
+
+    #[test]
+    fn test_gini_includes_missing_bin() {
+        // Test that Gini calculation includes samples from MISSING bin
+        let df = df! {
+            "target" => [0i32, 0, 1, 1, 0, 1, 0, 1, 0, 1],
+            "feature" => [Some(1.0f64), Some(2.0), None, Some(4.0), None, Some(6.0), Some(7.0), Some(8.0), Some(9.0), Some(10.0)],
+        }.unwrap();
+        
+        let target_values: Vec<Option<i32>> = vec![
+            Some(0), Some(0), Some(1), Some(1), Some(0),
+            Some(1), Some(0), Some(1), Some(0), Some(1)
+        ];
+        
+        let result = analyze_single_numeric_feature(&df, "feature", &target_values, 5, BinningStrategy::Quantile);
+        assert!(result.is_ok(), "Should analyze feature");
+        
+        let analysis = result.unwrap();
+        
+        // Gini should be calculated including missing bin
+        // It should be in valid range [-1, 1]
+        assert!(analysis.gini >= -1.0 && analysis.gini <= 1.0, 
+            "Gini should be in valid range, got {}", analysis.gini);
     }
 }
 
