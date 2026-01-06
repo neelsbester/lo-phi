@@ -111,60 +111,6 @@ fn load_parquet(path: &Path) -> Result<DataFrame> {
         .with_context(|| format!("Failed to collect Parquet file: {}", path.display()))
 }
 
-/// Load a dataset from a file (CSV or Parquet based on extension)
-///
-/// # Arguments
-/// * `path` - Path to the input file
-/// * `infer_schema_length` - Number of rows to use for schema inference (CSV only).
-///   A value of 0 means full table scan. Default in Polars is 100, but higher
-///   values help with ambiguous column types.
-///
-/// # Returns
-/// LazyFrame for further processing
-///
-/// # Performance Notes
-/// - **Parquet**: Uses parallel row group reading for multi-core I/O
-/// - **CSV**: I/O is inherently sequential due to format limitations, but parsing
-///   is parallelized. For large datasets, prefer Parquet format.
-pub fn load_dataset(path: &Path, infer_schema_length: usize) -> Result<LazyFrame> {
-    let extension = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-
-    // Convert 0 to None for full table scan, otherwise Some(n)
-    let schema_length = if infer_schema_length == 0 {
-        None
-    } else {
-        Some(infer_schema_length)
-    };
-
-    let lf = match extension.as_str() {
-        "csv" => LazyCsvReader::new(path)
-            .with_infer_schema_length(schema_length)
-            .with_low_memory(true) // Reduces memory pressure for large files
-            .with_rechunk(true) // Consolidates chunks for better performance
-            .finish()
-            .with_context(|| format!("Failed to load CSV file: {}", path.display()))?,
-        "parquet" => {
-            // Enable parallel row group reading for multi-core I/O
-            let args = ScanArgsParquet {
-                parallel: ParallelStrategy::Auto,
-                ..Default::default()
-            };
-            LazyFrame::scan_parquet(path, args)
-                .with_context(|| format!("Failed to load Parquet file: {}", path.display()))?
-        }
-        _ => anyhow::bail!(
-            "Unsupported file format: {}. Supported formats: csv, parquet",
-            extension
-        ),
-    };
-
-    Ok(lf)
-}
-
 /// Load dataset with progress bar and return DataFrame with statistics
 ///
 /// This is the preferred method for loading datasets as it:

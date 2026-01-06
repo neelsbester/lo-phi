@@ -6,5 +6,4 @@ pub mod convert;
 
 pub use args::{Cli, Commands};
 pub use config_menu::{run_config_menu, Config, ConfigResult};
-pub use convert::run_convert;
 

@@ -2,7 +2,7 @@
 
 mod common;
 
-use lophi::cli::run_convert;
+use lophi::cli::convert::run_convert;
 use polars::prelude::*;
 use tempfile::TempDir;
 
