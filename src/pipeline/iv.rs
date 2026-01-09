@@ -11,10 +11,12 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use super::solver::{reconstruct_bins_from_solution, solve_optimal_binning, SolverConfig};
 use super::target::{create_target_mask, TargetMapping};
 
-/// Number of initial quantile pre-bins before merging
-const PRE_BIN_COUNT: usize = 50;
+/// Default number of initial pre-bins before merging (configurable via CLI)
+#[allow(dead_code)]
+const DEFAULT_PREBINS: usize = 20;
 
 /// Minimum samples per bin to avoid unstable WoE estimates
 const MIN_BIN_SAMPLES: usize = 5;
@@ -28,10 +30,10 @@ const DEFAULT_MIN_CATEGORY_SAMPLES: usize = 5;
 /// Binning strategy for pre-bin creation
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub enum BinningStrategy {
-    /// Equal-frequency binning (default) - bins have approximately equal sample counts
-    #[default]
+    /// Equal-frequency binning - bins have approximately equal sample counts
     Quantile,
-    /// CART-style decision tree binning - splits maximize information gain
+    /// CART-style decision tree binning (default) - splits maximize information gain
+    #[default]
     Cart,
 }
 
@@ -406,7 +408,11 @@ fn create_cart_prebins(
             woe,
             iv_contribution: iv_contrib,
             count,
-            population_pct: count / total_samples * 100.0,
+            population_pct: if total_samples > 0.0 {
+                count / total_samples * 100.0
+            } else {
+                0.0
+            },
             event_rate: if count > 0.0 { events / count } else { 0.0 },
         });
     }
@@ -615,7 +621,11 @@ fn create_categorical_cart_bins(
                     woe,
                     iv_contribution,
                     count,
-                    population_pct: count / total_samples * 100.0,
+                    population_pct: if total_samples > 0.0 {
+                count / total_samples * 100.0
+            } else {
+                0.0
+            },
                     event_rate: if count > 0.0 { events / count } else { 0.0 },
                 });
             }
@@ -649,12 +659,14 @@ pub fn analyze_features_iv(
     df: &DataFrame,
     target: &str,
     num_bins: usize,
+    prebins: usize,
     target_mapping: Option<&TargetMapping>,
     binning_strategy: BinningStrategy,
     min_category_samples: Option<usize>,
     cart_min_bin_pct: Option<f64>,
     weights: &[f64],
     weight_column: Option<&str>,
+    solver_config: Option<&SolverConfig>,
 ) -> Result<Vec<IvAnalysis>> {
     let min_cat_samples = min_category_samples.unwrap_or(DEFAULT_MIN_CATEGORY_SAMPLES);
 
@@ -734,6 +746,9 @@ pub fn analyze_features_iv(
     // Wrap weights in Arc for sharing across threads
     let weights_arc = Arc::new(weights.to_vec());
 
+    // Clone solver config for sharing across threads
+    let solver_config_arc = solver_config.map(|c| Arc::new(c.clone()));
+
     // Process numeric features in parallel
     let numeric_analyses: Vec<IvAnalysis> = numeric_cols
         .par_iter()
@@ -743,9 +758,11 @@ pub fn analyze_features_iv(
                 col_name,
                 &target_values,
                 num_bins,
+                prebins,
                 binning_strategy,
                 cart_min_samples,
                 &weights_arc,
+                solver_config_arc.as_deref(),
             );
 
             // Update progress
@@ -778,6 +795,7 @@ pub fn analyze_features_iv(
                 &weights_arc,
                 binning_strategy,
                 num_bins,
+                prebins,
             );
 
             // Update progress
@@ -837,7 +855,7 @@ fn validate_binary_target(df: &DataFrame, target: &str) -> Result<()> {
     let unique_values: Vec<f64> = unique
         .f64()?
         .into_iter()
-        .filter_map(|v| v) // Skip nulls
+        .flatten() // Skip nulls
         .collect();
 
     if unique_values.is_empty() {
@@ -872,9 +890,11 @@ fn analyze_single_numeric_feature(
     col_name: &str,
     target_values: &[Option<i32>],
     num_bins: usize,
+    prebins: usize,
     binning_strategy: BinningStrategy,
     cart_min_bin_samples: usize,
     weights: &[f64],
+    solver_config: Option<&SolverConfig>,
 ) -> Result<IvAnalysis> {
     let col = df.column(col_name)?;
     let float_col = col.cast(&DataType::Float64)?;
@@ -954,7 +974,11 @@ fn analyze_single_numeric_feature(
             woe,
             iv_contribution: iv_contrib,
             count: missing_count,
-            population_pct: missing_count / total_samples * 100.0,
+            population_pct: if total_samples > 0.0 {
+                missing_count / total_samples * 100.0
+            } else {
+                0.0
+            },
             event_rate: if missing_count > 0.0 {
                 missing_events / missing_count
             } else {
@@ -991,17 +1015,18 @@ fn analyze_single_numeric_feature(
     pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // Phase 1: Create initial pre-bins based on strategy (for non-missing values)
+    // Both strategies now create `prebins` initial bins
     let pre_bins = match binning_strategy {
         BinningStrategy::Quantile => create_quantile_prebins(
             &pairs,
-            PRE_BIN_COUNT,
+            prebins,
             total_events,
             total_non_events,
             total_samples,
         ),
         BinningStrategy::Cart => create_cart_prebins(
             &pairs,
-            num_bins,
+            prebins,
             cart_min_bin_samples,
             total_events,
             total_non_events,
@@ -1009,19 +1034,50 @@ fn analyze_single_numeric_feature(
         ),
     };
 
-    // Phase 2: Greedy merge until target bin count (only needed for Quantile strategy)
-    let final_bins = match binning_strategy {
-        BinningStrategy::Quantile => greedy_merge_bins(
-            pre_bins,
-            num_bins,
-            total_events,
-            total_non_events,
-            total_samples,
-        ),
-        BinningStrategy::Cart => {
-            // CART already produces the target number of bins
-            pre_bins
+    // Phase 2: Merge/optimize until target bin count
+    // Use solver if configured, otherwise use greedy merging
+    let final_bins = if pre_bins.len() > num_bins {
+        if let Some(config) = solver_config {
+            // Use solver-based optimal binning
+            match solve_optimal_binning(
+                &pre_bins,
+                num_bins,
+                config,
+                total_events,
+                total_non_events,
+                total_samples,
+            ) {
+                Ok(result) => reconstruct_bins_from_solution(
+                    &pre_bins,
+                    &result,
+                    total_events,
+                    total_non_events,
+                    total_samples,
+                ),
+                Err(_) => {
+                    // Fall back to greedy if solver fails
+                    greedy_merge_bins(
+                        pre_bins,
+                        num_bins,
+                        total_events,
+                        total_non_events,
+                        total_samples,
+                    )
+                }
+            }
+        } else {
+            // Use greedy merging
+            greedy_merge_bins(
+                pre_bins,
+                num_bins,
+                total_events,
+                total_non_events,
+                total_samples,
+            )
         }
+    } else {
+        // If prebins <= num_bins, no merging needed
+        pre_bins
     };
 
     // Calculate total IV (including missing bin contribution)
@@ -1065,6 +1121,7 @@ fn analyze_categorical_feature(
     weights: &[f64],
     binning_strategy: BinningStrategy,
     num_bins: usize,
+    _prebins: usize, // Reserved for solver integration
 ) -> Result<IvAnalysis> {
     let col = df.column(col_name)?;
 
@@ -1147,7 +1204,11 @@ fn analyze_categorical_feature(
             woe,
             iv_contribution: iv_contrib,
             count: missing_count,
-            population_pct: missing_count / total_samples * 100.0,
+            population_pct: if total_samples > 0.0 {
+                missing_count / total_samples * 100.0
+            } else {
+                0.0
+            },
             event_rate: if missing_count > 0.0 {
                 missing_events / missing_count
             } else {
@@ -1196,7 +1257,11 @@ fn analyze_categorical_feature(
                         woe,
                         iv_contribution,
                         count,
-                        population_pct: count / total_samples * 100.0,
+                        population_pct: if total_samples > 0.0 {
+                count / total_samples * 100.0
+            } else {
+                0.0
+            },
                         event_rate: if count > 0.0 { events / count } else { 0.0 },
                     }
                 })
@@ -1264,7 +1329,11 @@ fn analyze_categorical_feature(
                         woe,
                         iv_contribution,
                         count,
-                        population_pct: count / total_samples * 100.0,
+                        population_pct: if total_samples > 0.0 {
+                count / total_samples * 100.0
+            } else {
+                0.0
+            },
                         event_rate: if count > 0.0 {
                             other_events / count
                         } else {
@@ -1321,7 +1390,7 @@ fn create_quantile_prebins(
     total_samples: f64,
 ) -> Vec<WoeBin> {
     let n = sorted_pairs.len();
-    let bin_size = (n + num_prebins - 1) / num_prebins; // Ceiling division
+    let bin_size = n.div_ceil(num_prebins); // Ceiling division
 
     let mut bins = Vec::new();
     let mut start_idx = 0;
@@ -1364,7 +1433,11 @@ fn create_quantile_prebins(
             woe,
             iv_contribution: iv_contrib,
             count,
-            population_pct: count / total_samples * 100.0,
+            population_pct: if total_samples > 0.0 {
+                count / total_samples * 100.0
+            } else {
+                0.0
+            },
             event_rate: if count > 0.0 { events / count } else { 0.0 },
         });
 
@@ -1379,7 +1452,8 @@ fn create_quantile_prebins(
 /// Uses the ln(%bad/%good) convention where:
 /// - WoE > 0 indicates higher risk (more events/defaults)
 /// - WoE < 0 indicates lower risk (fewer events/defaults)
-/// This is intuitive for credit scoring where higher WoE = higher risk.
+///
+///   This is intuitive for credit scoring where higher WoE = higher risk.
 fn calculate_woe_iv(
     events: f64,
     non_events: f64,
@@ -1917,6 +1991,7 @@ mod tests {
             &weights,
             BinningStrategy::Quantile,
             5,
+            20,
         );
         assert!(result.is_ok(), "Should analyze categorical feature");
 
@@ -1984,9 +2059,11 @@ mod tests {
             "feature",
             &target_values,
             5,
+            20,
             BinningStrategy::Quantile,
             5,
             &weights,
+            None,
         );
         assert!(
             result.is_ok(),
@@ -2054,6 +2131,7 @@ mod tests {
             &weights,
             BinningStrategy::Quantile,
             5,
+            20,
         );
         assert!(
             result.is_ok(),
@@ -2114,9 +2192,11 @@ mod tests {
             "feature",
             &target_values,
             5,
+            20,
             BinningStrategy::Quantile,
             5,
             &weights,
+            None,
         );
         assert!(
             result.is_ok(),
@@ -2163,9 +2243,11 @@ mod tests {
             "feature",
             &target_values,
             5,
+            20,
             BinningStrategy::Quantile,
             5,
             &weights,
+            None,
         );
         assert!(result.is_ok(), "Should analyze feature");
 
@@ -2200,9 +2282,11 @@ mod tests {
             "feature",
             &target_values,
             5,
+            20,
             BinningStrategy::Quantile,
             5,
             &weights,
+            None,
         );
         assert!(result.is_ok(), "Should handle all-missing feature values");
 
@@ -2256,9 +2340,11 @@ mod tests {
             "feature",
             &target_values,
             5,
+            20,
             BinningStrategy::Quantile,
             5,
             &weights,
+            None,
         );
         assert!(result.is_ok(), "Should analyze feature");
 
@@ -2310,9 +2396,11 @@ mod tests {
             "feature",
             &target_values,
             5,
+            20,
             BinningStrategy::Quantile,
             5,
             &weights,
+            None,
         );
         assert!(result.is_ok(), "Should analyze feature");
 
@@ -2372,6 +2460,7 @@ mod tests {
             &weights,
             BinningStrategy::Cart,
             2,
+            20,
         );
         assert!(result.is_ok(), "CART categorical analysis should succeed");
 
@@ -2413,6 +2502,7 @@ mod tests {
             &weights,
             BinningStrategy::Cart,
             10, // Request 10 bins but only 2 categories
+            20,
         );
         assert!(result.is_ok());
 
@@ -2445,6 +2535,7 @@ mod tests {
             &weights, // min 2 samples per category
             BinningStrategy::Cart,
             3,
+            20,
         );
         assert!(result.is_ok());
 
@@ -2488,6 +2579,7 @@ mod tests {
             &weights,
             BinningStrategy::Quantile,
             3,
+            20,
         );
         assert!(result_quantile.is_ok());
         let quantile_analysis = result_quantile.unwrap();
@@ -2502,6 +2594,7 @@ mod tests {
             &weights,
             BinningStrategy::Cart,
             3,
+            20,
         );
         assert!(result_cart.is_ok());
         let cart_analysis = result_cart.unwrap();

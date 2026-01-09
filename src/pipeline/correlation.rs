@@ -117,7 +117,7 @@ pub fn find_correlated_pairs(
         b.correlation
             .abs()
             .partial_cmp(&a.correlation.abs())
-            .unwrap()
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     Ok(sorted_pairs)

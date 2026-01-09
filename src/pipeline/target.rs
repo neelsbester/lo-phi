@@ -53,7 +53,7 @@ pub fn analyze_target_column(df: &DataFrame, target: &str) -> Result<TargetAnaly
         .with_context(|| format!("Target column '{}' not found", target))?;
 
     // Check for empty or all-null column first
-    if target_col.len() == 0 {
+    if target_col.is_empty() {
         anyhow::bail!("Target column '{}' is empty", target);
     }
 
@@ -66,7 +66,7 @@ pub fn analyze_target_column(df: &DataFrame, target: &str) -> Result<TargetAnaly
     if target_col.dtype().is_primitive_numeric() {
         let float_col = target_col.cast(&DataType::Float64)?;
         let unique = float_col.unique()?;
-        let unique_values: Vec<f64> = unique.f64()?.into_iter().filter_map(|v| v).collect();
+        let unique_values: Vec<f64> = unique.f64()?.into_iter().flatten().collect();
 
         // Check if all values are 0.0 or 1.0
         let is_binary = unique_values.len() <= 2

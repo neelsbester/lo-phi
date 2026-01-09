@@ -156,11 +156,13 @@ fn test_iv_analysis_with_string_target_mapping() {
         &df,
         "target",
         5,
+        20,
         Some(&mapping),
         BinningStrategy::Quantile,
         None,
         Some(5.0),
         &weights,
+        None,
         None,
     );
     assert!(
@@ -192,11 +194,13 @@ fn test_iv_analysis_with_multivalue_target_ignores_unknown() {
         &df,
         "target",
         5,
+        20,
         Some(&mapping),
         BinningStrategy::Quantile,
         None,
         Some(5.0),
         &weights,
+        None,
         None,
     );
     assert!(
@@ -224,11 +228,13 @@ fn test_iv_analysis_without_mapping_on_binary_target() {
         &df,
         "target",
         5,
+        20,
         None,
         BinningStrategy::Quantile,
         None,
         Some(5.0),
         &weights,
+        None,
         None,
     );
     assert!(
