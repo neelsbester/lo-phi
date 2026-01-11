@@ -51,10 +51,7 @@ pub fn analyze_missing_values(
     }
 
     // Sort by missing ratio descending
-    missing_ratios.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    missing_ratios.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     Ok(missing_ratios)
 }

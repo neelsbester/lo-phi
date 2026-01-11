@@ -1,6 +1,8 @@
 //! Unit tests for correlation analysis
 
-use lophi::pipeline::{find_correlated_pairs, select_features_to_drop, CorrelatedPair};
+use lophi::pipeline::{
+    find_correlated_pairs, find_correlated_pairs_matrix, select_features_to_drop, CorrelatedPair,
+};
 use polars::prelude::*;
 
 #[path = "common/mod.rs"]
@@ -340,5 +342,106 @@ fn test_zero_weights_excluded_from_correlation() {
         pairs[0].correlation.abs() > 0.99,
         "With outliers zero-weighted, correlation should be ~1, got {}",
         pairs[0].correlation
+    );
+}
+
+/// Verify that pairwise and matrix methods produce equivalent results
+#[test]
+fn test_matrix_pairwise_equivalence() {
+    // Create a dataframe with known correlations
+    let df = df! {
+        "a" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        "b" => [2.0f64, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0],  // b = 2*a, perfect correlation
+        "c" => [10.0f64, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0],       // c = -a + 11, perfect negative
+        "d" => [1.5f64, 2.3, 3.7, 4.1, 5.8, 6.2, 7.9, 8.4, 9.1, 10.5],       // noisy positive correlation
+    }
+    .unwrap();
+
+    let weights = vec![1.0; df.height()];
+    let threshold = 0.8;
+
+    let pairs_pairwise = find_correlated_pairs(&df, threshold, &weights, None).unwrap();
+    let pairs_matrix = find_correlated_pairs_matrix(&df, threshold, &weights, None).unwrap();
+
+    // Both methods should find the same number of pairs
+    assert_eq!(
+        pairs_pairwise.len(),
+        pairs_matrix.len(),
+        "Both methods should find the same number of pairs: pairwise={}, matrix={}",
+        pairs_pairwise.len(),
+        pairs_matrix.len()
+    );
+
+    // Compare correlation values (allow small numerical differences)
+    for pair_pw in &pairs_pairwise {
+        let matching = pairs_matrix.iter().find(|p| {
+            (p.feature1 == pair_pw.feature1 && p.feature2 == pair_pw.feature2)
+                || (p.feature1 == pair_pw.feature2 && p.feature2 == pair_pw.feature1)
+        });
+
+        assert!(
+            matching.is_some(),
+            "Matrix method should find pair ({}, {})",
+            pair_pw.feature1,
+            pair_pw.feature2
+        );
+
+        let pair_mat = matching.unwrap();
+        let diff = (pair_pw.correlation - pair_mat.correlation).abs();
+        assert!(
+            diff < 0.01,
+            "Correlation values should match (tolerance 0.01): pairwise={:.4}, matrix={:.4}, diff={:.6}",
+            pair_pw.correlation,
+            pair_mat.correlation,
+            diff
+        );
+    }
+}
+
+/// Test matrix method with larger dataset
+#[test]
+fn test_matrix_method_larger_dataset() {
+    // Create a larger dataframe to test matrix method performance path
+    let n = 100;
+    let a: Vec<f64> = (0..n).map(|i| i as f64).collect();
+    let b: Vec<f64> = a.iter().map(|x| x * 2.0 + 1.0).collect();
+    let c: Vec<f64> = a.iter().map(|x| -x + 100.0).collect();
+
+    let df = df! {
+        "a" => &a,
+        "b" => &b,
+        "c" => &c,
+    }
+    .unwrap();
+
+    let weights = vec![1.0; df.height()];
+
+    let pairs = find_correlated_pairs_matrix(&df, 0.9, &weights, None).unwrap();
+
+    // Should find a-b (positive) and a-c (negative) correlations
+    assert!(
+        pairs.len() >= 2,
+        "Should find at least 2 correlated pairs, found {}",
+        pairs.len()
+    );
+
+    // Verify a-b correlation is close to 1.0
+    let ab_pair = pairs.iter().find(|p| {
+        (p.feature1 == "a" && p.feature2 == "b") || (p.feature1 == "b" && p.feature2 == "a")
+    });
+    assert!(ab_pair.is_some(), "Should find a-b correlation");
+    assert!(
+        ab_pair.unwrap().correlation.abs() > 0.99,
+        "a-b correlation should be ~1.0"
+    );
+
+    // Verify a-c correlation is close to -1.0
+    let ac_pair = pairs.iter().find(|p| {
+        (p.feature1 == "a" && p.feature2 == "c") || (p.feature1 == "c" && p.feature2 == "a")
+    });
+    assert!(ac_pair.is_some(), "Should find a-c correlation");
+    assert!(
+        ac_pair.unwrap().correlation < -0.99,
+        "a-c correlation should be ~-1.0"
     );
 }

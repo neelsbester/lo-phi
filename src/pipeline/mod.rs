@@ -13,8 +13,8 @@ pub use iv::*;
 pub use loader::*;
 pub use missing::*;
 pub use solver::{
-    CategoryStats, MonotonicityConstraint, SolverConfig, SolverResult,
     reconstruct_bins_from_solution, solve_categorical_optimal_binning, solve_optimal_binning,
+    CategoryStats, MonotonicityConstraint, SolverConfig, SolverResult,
 };
 pub use target::*;
 pub use weights::*;

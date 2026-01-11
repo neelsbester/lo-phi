@@ -101,7 +101,13 @@ pub fn reconstruct_bins_from_solution(
     total_non_events: f64,
     total_samples: f64,
 ) -> Vec<WoeBin> {
-    model::reconstruct_bins(prebins, result, total_events, total_non_events, total_samples)
+    model::reconstruct_bins(
+        prebins,
+        result,
+        total_events,
+        total_non_events,
+        total_samples,
+    )
 }
 
 /// Category statistics for categorical binning

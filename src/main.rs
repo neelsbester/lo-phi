@@ -19,7 +19,7 @@ use cli::{
     TargetMappingResult,
 };
 use pipeline::{
-    analyze_features_iv, analyze_missing_values, analyze_target_column, find_correlated_pairs,
+    analyze_features_iv, analyze_missing_values, analyze_target_column, find_correlated_pairs_auto,
     get_column_names, get_features_above_threshold, get_low_gini_features, get_weights,
     load_dataset_with_progress, select_features_to_drop, BinningStrategy, MonotonicityConstraint,
     SolverConfig, TargetAnalysis, TargetMapping,
@@ -86,29 +86,13 @@ fn main() -> Result<()> {
         load_and_prepare_dataset(input, &config.columns_to_drop, cli.infer_schema_length)?;
 
     // Validate target and setup weights
-    let weights = validate_target_and_weights(
-        &df,
-        &mut config,
-        cli.no_confirm,
-    )?;
+    let weights = validate_target_and_weights(&df, &mut config, cli.no_confirm)?;
 
     // Run missing value analysis
-    run_missing_analysis(
-        &mut df,
-        &config,
-        &weights,
-        &mut summary,
-    )?;
+    run_missing_analysis(&mut df, &config, &weights, &mut summary)?;
 
     // Run Gini/IV analysis
-    run_gini_analysis(
-        &df,
-        &config,
-        &cli,
-        input,
-        &weights,
-        &mut summary,
-    )?;
+    run_gini_analysis(&df, &config, &cli, input, &weights, &mut summary)?;
 
     // Update df after Gini drops
     if !summary.dropped_gini.is_empty() {
@@ -116,12 +100,7 @@ fn main() -> Result<()> {
     }
 
     // Run correlation analysis
-    run_correlation_analysis(
-        &mut df,
-        &config,
-        &weights,
-        &mut summary,
-    )?;
+    run_correlation_analysis(&mut df, &config, &weights, &mut summary)?;
 
     // Save results
     save_results(&mut df, &output_path, &mut summary)?;
@@ -216,11 +195,9 @@ fn load_and_prepare_dataset(
     columns_to_drop: &[String],
     infer_schema_length: usize,
 ) -> Result<(polars::prelude::DataFrame, usize, ReductionSummary)> {
-
     let step_start = Instant::now();
     println!(); // Blank line before progress bar
-    let (mut df, rows, cols, memory_mb) =
-        load_dataset_with_progress(input, infer_schema_length)?;
+    let (mut df, rows, cols, memory_mb) = load_dataset_with_progress(input, infer_schema_length)?;
     print_success("Dataset loaded");
 
     // Display statistics
@@ -361,7 +338,6 @@ fn run_missing_analysis(
     weights: &[f64],
     summary: &mut ReductionSummary,
 ) -> Result<()> {
-
     print_step_header(1, "Missing Value Analysis");
 
     let step_start = Instant::now();
@@ -496,11 +472,10 @@ fn run_correlation_analysis(
     weights: &[f64],
     summary: &mut ReductionSummary,
 ) -> Result<()> {
-
     print_step_header(3, "Correlation Analysis");
 
     let step_start = Instant::now();
-    let correlated_pairs = find_correlated_pairs(
+    let correlated_pairs = find_correlated_pairs_auto(
         df,
         config.correlation_threshold,
         weights,

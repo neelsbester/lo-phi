@@ -316,9 +316,7 @@ fn test_cart_categorical_binning() {
     assert!(!analyses.is_empty(), "Should analyze categorical features");
 
     // Find the category analysis
-    let category_analysis = analyses
-        .iter()
-        .find(|a| a.feature_name == "category");
+    let category_analysis = analyses.iter().find(|a| a.feature_name == "category");
 
     assert!(
         category_analysis.is_some(),
@@ -387,7 +385,7 @@ fn test_cart_categorical_with_many_categories() {
         20,
         None,
         BinningStrategy::Cart,
-        Some(5), // Min 5 samples per category
+        Some(5),   // Min 5 samples per category
         Some(5.0), // 5% minimum bin size
         &weights,
         None,

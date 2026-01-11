@@ -6,11 +6,16 @@
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use good_lp::{constraint, default_solver, variable, Expression, ProblemVariables, Solution, SolverModel, Variable};
+use good_lp::{
+    constraint, default_solver, variable, Expression, ProblemVariables, Solution, SolverModel,
+    Variable,
+};
 
 use super::super::iv::WoeBin;
 use super::monotonicity::MonotonicityConstraint;
-use super::precompute::{get_precomputed_bin, precompute_categorical_iv_matrix, precompute_iv_matrix, PrecomputedBin};
+use super::precompute::{
+    get_precomputed_bin, precompute_categorical_iv_matrix, precompute_iv_matrix, PrecomputedBin,
+};
 use super::{CategoryStats, SolverConfig, SolverResult};
 
 /// Smoothing constant for WoE calculation
@@ -172,10 +177,7 @@ fn solve_with_monotonicity(
     let mut problem = vars.maximise(objective).using(default_solver);
 
     // Constraint 1: Exactly K bins
-    let bin_count: Expression = z
-        .iter()
-        .flat_map(|row| row.iter().filter_map(|v| *v))
-        .sum();
+    let bin_count: Expression = z.iter().flat_map(|row| row.iter().filter_map(|v| *v)).sum();
     problem = problem.with(constraint!(bin_count == k as f64));
 
     // Constraint 2: Each prebin must be in exactly one final bin
@@ -349,7 +351,8 @@ pub fn solve_categorical_binning(
         let total_iv: f64 = sorted_categories
             .iter()
             .map(|c| {
-                let (_, iv) = calculate_woe_iv(c.events, c.non_events, total_events, total_non_events);
+                let (_, iv) =
+                    calculate_woe_iv(c.events, c.non_events, total_events, total_non_events);
                 iv
             })
             .sum();
@@ -363,7 +366,8 @@ pub fn solve_categorical_binning(
     }
 
     // Precompute IV for all possible category groupings
-    let iv_matrix = precompute_categorical_iv_matrix(sorted_categories, total_events, total_non_events);
+    let iv_matrix =
+        precompute_categorical_iv_matrix(sorted_categories, total_events, total_non_events);
 
     // Solve using the same MIP formulation as numeric binning
     // (categories are already sorted by event rate, so adjacency makes sense)
@@ -400,10 +404,7 @@ pub fn solve_categorical_binning(
     let mut problem = vars.maximise(objective).using(default_solver);
 
     // Constraint: Exactly K bins
-    let bin_count: Expression = z
-        .iter()
-        .flat_map(|row| row.iter().filter_map(|v| *v))
-        .sum();
+    let bin_count: Expression = z.iter().flat_map(|row| row.iter().filter_map(|v| *v)).sum();
     problem = problem.with(constraint!(bin_count == k as f64));
 
     // Constraint: Coverage
@@ -423,7 +424,9 @@ pub fn solve_categorical_binning(
     }
 
     // Solve
-    let solution = problem.solve().context("Failed to solve categorical MIP model")?;
+    let solution = problem
+        .solve()
+        .context("Failed to solve categorical MIP model")?;
 
     // Extract solution
     let mut bin_boundaries: Vec<(usize, usize)> = Vec::new();

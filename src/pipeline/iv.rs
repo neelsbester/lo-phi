@@ -622,10 +622,10 @@ fn create_categorical_cart_bins(
                     iv_contribution,
                     count,
                     population_pct: if total_samples > 0.0 {
-                count / total_samples * 100.0
-            } else {
-                0.0
-            },
+                        count / total_samples * 100.0
+                    } else {
+                        0.0
+                    },
                     event_rate: if count > 0.0 { events / count } else { 0.0 },
                 });
             }
@@ -1258,10 +1258,10 @@ fn analyze_categorical_feature(
                         iv_contribution,
                         count,
                         population_pct: if total_samples > 0.0 {
-                count / total_samples * 100.0
-            } else {
-                0.0
-            },
+                            count / total_samples * 100.0
+                        } else {
+                            0.0
+                        },
                         event_rate: if count > 0.0 { events / count } else { 0.0 },
                     }
                 })
@@ -1330,10 +1330,10 @@ fn analyze_categorical_feature(
                         iv_contribution,
                         count,
                         population_pct: if total_samples > 0.0 {
-                count / total_samples * 100.0
-            } else {
-                0.0
-            },
+                            count / total_samples * 100.0
+                        } else {
+                            0.0
+                        },
                         event_rate: if count > 0.0 {
                             other_events / count
                         } else {

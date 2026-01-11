@@ -75,8 +75,12 @@ pub fn precompute_iv_matrix(
             cumulative_non_events += prebins[j].non_events;
             cumulative_count += prebins[j].count;
 
-            let (woe, iv) =
-                calculate_woe_iv(cumulative_events, cumulative_non_events, total_events, total_non_events);
+            let (woe, iv) = calculate_woe_iv(
+                cumulative_events,
+                cumulative_non_events,
+                total_events,
+                total_non_events,
+            );
 
             row.push(PrecomputedBin {
                 start: i,
@@ -98,7 +102,11 @@ pub fn precompute_iv_matrix(
 ///
 /// Returns the PrecomputedBin for merging prebins[start] through prebins[end].
 #[inline]
-pub fn get_precomputed_bin(matrix: &[Vec<PrecomputedBin>], start: usize, end: usize) -> &PrecomputedBin {
+pub fn get_precomputed_bin(
+    matrix: &[Vec<PrecomputedBin>],
+    start: usize,
+    end: usize,
+) -> &PrecomputedBin {
     &matrix[start][end - start]
 }
 
@@ -124,8 +132,12 @@ pub fn precompute_categorical_iv_matrix(
             cumulative_non_events += categories[j].non_events;
             cumulative_count += categories[j].count;
 
-            let (woe, iv) =
-                calculate_woe_iv(cumulative_events, cumulative_non_events, total_events, total_non_events);
+            let (woe, iv) = calculate_woe_iv(
+                cumulative_events,
+                cumulative_non_events,
+                total_events,
+                total_non_events,
+            );
 
             row.push(PrecomputedBin {
                 start: i,

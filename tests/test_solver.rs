@@ -197,7 +197,10 @@ fn test_solver_auto_monotonicity() {
         Some(&solver_config),
     );
 
-    assert!(result.is_ok(), "Solver with auto monotonicity should succeed");
+    assert!(
+        result.is_ok(),
+        "Solver with auto monotonicity should succeed"
+    );
 
     let analyses = result.unwrap();
     let analysis = &analyses[0];
