@@ -46,7 +46,7 @@ pub struct Cli {
     pub missing_threshold: f64,
 
     /// Correlation threshold - drop one feature from pairs with correlation above this value
-    #[arg(long, default_value = "0.95")]
+    #[arg(long, default_value = "0.40")]
     pub correlation_threshold: f64,
 
     /// Gini threshold - drop features with Gini below this value (calculated via WoE binning)
@@ -58,9 +58,38 @@ pub struct Cli {
     pub gini_bins: usize,
 
     /// Binning strategy for Gini/IV calculation.
-    /// Options: "quantile" (equal-frequency, default) or "cart" (decision tree splits)
-    #[arg(long, default_value = "quantile")]
+    /// Options: "cart" (decision tree splits, default) or "quantile" (equal-frequency)
+    #[arg(long, default_value = "cart")]
     pub binning_strategy: String,
+
+    /// Number of prebins for initial binning before optimization/merging.
+    /// Lower values = faster but less granular. Higher values = more precise but slower solver.
+    #[arg(long, default_value = "20")]
+    pub prebins: usize,
+
+    /// Enable solver-based optimal binning (MIP optimization).
+    /// When enabled, uses mathematical optimization instead of greedy merging.
+    /// Slower but produces globally optimal bin boundaries with optional monotonicity constraints.
+    #[arg(long, default_value = "true")]
+    pub use_solver: bool,
+
+    /// Monotonicity constraint for WoE pattern in binning.
+    /// Options: "none" (default), "ascending", "descending", "peak", "valley", "auto"
+    /// Only applies when --use-solver is enabled.
+    #[arg(long, default_value = "none")]
+    pub monotonicity: String,
+
+    /// Solver timeout in seconds per feature.
+    /// Maximum time allowed for the optimization solver per feature.
+    /// Only applies when --use-solver is enabled.
+    #[arg(long, default_value = "30")]
+    pub solver_timeout: u64,
+
+    /// Solver MIP gap tolerance (0.0 to 1.0).
+    /// Solver stops when optimality gap falls below this threshold.
+    /// Lower values = more precise but slower. Only applies when --use-solver is enabled.
+    #[arg(long, default_value = "0.01", value_parser = validate_solver_gap)]
+    pub solver_gap: f64,
 
     /// Minimum samples per category for categorical features.
     /// Categories with fewer samples are merged into "OTHER".
@@ -71,7 +100,7 @@ pub struct Cli {
     /// Only applies to CART binning strategy; ignored for Quantile.
     /// Example: 5.0 means bins must contain at least 5% of total samples.
     /// Default: 5.0 (5% of total samples)
-    #[arg(long, default_value = "5.0")]
+    #[arg(long, default_value = "5.0", value_parser = validate_cart_min_bin_pct)]
     pub cart_min_bin_pct: f64,
 
     /// Columns to drop before processing (comma-separated).
@@ -114,6 +143,7 @@ pub enum Commands {
     },
 }
 
+#[allow(dead_code)]
 impl Cli {
     /// Get the input path, returning an error if not provided when running the reduce pipeline.
     pub fn input(&self) -> Option<&PathBuf> {
@@ -145,5 +175,37 @@ impl Cli {
         let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
         let stem = input.file_stem().and_then(|s| s.to_str())?;
         Some(parent.join(format!("{}_gini_analysis.json", stem)))
+    }
+}
+
+/// Validator for cart_min_bin_pct parameter
+fn validate_cart_min_bin_pct(s: &str) -> Result<f64, String> {
+    let value: f64 = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
+
+    if !(0.0..=100.0).contains(&value) {
+        Err(format!(
+            "cart_min_bin_pct must be between 0.0 and 100.0, got {}",
+            value
+        ))
+    } else {
+        Ok(value)
+    }
+}
+
+/// Validator for solver_gap parameter
+fn validate_solver_gap(s: &str) -> Result<f64, String> {
+    let value: f64 = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
+
+    if !(0.0..=1.0).contains(&value) {
+        Err(format!(
+            "solver_gap must be between 0.0 and 1.0, got {}",
+            value
+        ))
+    } else {
+        Ok(value)
     }
 }

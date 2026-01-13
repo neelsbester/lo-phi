@@ -1,4 +1,4 @@
-//! Benchmark comparing Quantile vs CART binning strategies
+//! Benchmark comparing Quantile vs CART binning strategies and greedy vs solver optimization
 //!
 //! Run with: cargo bench --bench binning_benchmark
 
@@ -7,7 +7,7 @@ use polars::prelude::*;
 use rand::prelude::*;
 use rand::SeedableRng;
 
-use lophi::pipeline::{analyze_features_iv, BinningStrategy};
+use lophi::pipeline::{analyze_features_iv, BinningStrategy, MonotonicityConstraint, SolverConfig};
 
 /// Generate synthetic data with controlled characteristics
 fn generate_test_dataframe(n_rows: usize, n_features: usize, seed: u64) -> DataFrame {
@@ -65,6 +65,7 @@ fn benchmark_binning_strategies(c: &mut Criterion) {
 
     for (n_rows, n_features) in sizes {
         let df = generate_test_dataframe(n_rows, n_features, 42);
+        let weights = vec![1.0; df.height()];
         group.throughput(Throughput::Elements(n_features as u64));
 
         group.bench_with_input(
@@ -76,8 +77,13 @@ fn benchmark_binning_strategies(c: &mut Criterion) {
                         black_box(df),
                         black_box("target"),
                         black_box(10),
+                        black_box(20),
                         black_box(None),
                         black_box(BinningStrategy::Quantile),
+                        black_box(None),
+                        black_box(None),
+                        black_box(&weights),
+                        black_box(None),
                         black_box(None),
                     );
                 });
@@ -93,8 +99,13 @@ fn benchmark_binning_strategies(c: &mut Criterion) {
                         black_box(df),
                         black_box("target"),
                         black_box(10),
+                        black_box(20),
                         black_box(None),
                         black_box(BinningStrategy::Cart),
+                        black_box(None),
+                        black_box(None),
+                        black_box(&weights),
+                        black_box(None),
                         black_box(None),
                     );
                 });
@@ -114,6 +125,7 @@ fn benchmark_single_feature(c: &mut Criterion) {
     for n_rows in sizes {
         // Single feature dataframe
         let df = generate_test_dataframe(n_rows, 1, 42);
+        let weights = vec![1.0; df.height()];
         group.throughput(Throughput::Elements(n_rows as u64));
 
         group.bench_with_input(BenchmarkId::new("quantile", n_rows), &df, |b, df| {
@@ -122,8 +134,13 @@ fn benchmark_single_feature(c: &mut Criterion) {
                     black_box(df),
                     black_box("target"),
                     black_box(10),
+                    black_box(20),
                     black_box(None),
                     black_box(BinningStrategy::Quantile),
+                    black_box(None),
+                    black_box(None),
+                    black_box(&weights),
+                    black_box(None),
                     black_box(None),
                 );
             });
@@ -135,8 +152,13 @@ fn benchmark_single_feature(c: &mut Criterion) {
                     black_box(df),
                     black_box("target"),
                     black_box(10),
+                    black_box(20),
                     black_box(None),
                     black_box(BinningStrategy::Cart),
+                    black_box(None),
+                    black_box(None),
+                    black_box(&weights),
+                    black_box(None),
                     black_box(None),
                 );
             });
@@ -151,6 +173,7 @@ fn benchmark_bin_counts(c: &mut Criterion) {
     let mut group = c.benchmark_group("bin_count_impact");
 
     let df = generate_test_dataframe(10_000, 10, 42);
+    let weights = vec![1.0; df.height()];
     let bin_counts = [5, 10, 20, 50];
 
     for num_bins in bin_counts {
@@ -163,8 +186,13 @@ fn benchmark_bin_counts(c: &mut Criterion) {
                         black_box(&df),
                         black_box("target"),
                         black_box(num_bins),
+                        black_box(20),
                         black_box(None),
                         black_box(BinningStrategy::Quantile),
+                        black_box(None),
+                        black_box(None),
+                        black_box(&weights),
+                        black_box(None),
                         black_box(None),
                     );
                 });
@@ -180,8 +208,163 @@ fn benchmark_bin_counts(c: &mut Criterion) {
                         black_box(&df),
                         black_box("target"),
                         black_box(num_bins),
+                        black_box(20),
                         black_box(None),
                         black_box(BinningStrategy::Cart),
+                        black_box(None),
+                        black_box(None),
+                        black_box(&weights),
+                        black_box(None),
+                        black_box(None),
+                    );
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+/// Benchmark comparing greedy merge vs MIP solver optimization
+fn benchmark_greedy_vs_solver(c: &mut Criterion) {
+    let mut group = c.benchmark_group("greedy_vs_solver");
+    group.sample_size(20); // Fewer samples due to solver time
+
+    // Smaller sizes for solver benchmarks
+    let sizes = [(1_000, 5), (5_000, 10)];
+
+    let solver_config = SolverConfig {
+        timeout_seconds: 30,
+        gap_tolerance: 0.01,
+        monotonicity: MonotonicityConstraint::None,
+        min_bin_samples: 5,
+    };
+
+    for (n_rows, n_features) in sizes {
+        let df = generate_test_dataframe(n_rows, n_features, 42);
+        let weights = vec![1.0; df.height()];
+        group.throughput(Throughput::Elements(n_features as u64));
+
+        // Greedy (no solver)
+        group.bench_with_input(
+            BenchmarkId::new("greedy", format!("{}x{}", n_rows, n_features)),
+            &df,
+            |b, df| {
+                b.iter(|| {
+                    let _ = analyze_features_iv(
+                        black_box(df),
+                        black_box("target"),
+                        black_box(10),
+                        black_box(20),
+                        black_box(None),
+                        black_box(BinningStrategy::Cart),
+                        black_box(None),
+                        black_box(None),
+                        black_box(&weights),
+                        black_box(None),
+                        black_box(None), // No solver
+                    );
+                });
+            },
+        );
+
+        // MIP Solver
+        group.bench_with_input(
+            BenchmarkId::new("solver", format!("{}x{}", n_rows, n_features)),
+            &df,
+            |b, df| {
+                b.iter(|| {
+                    let _ = analyze_features_iv(
+                        black_box(df),
+                        black_box("target"),
+                        black_box(10),
+                        black_box(20),
+                        black_box(None),
+                        black_box(BinningStrategy::Cart),
+                        black_box(None),
+                        black_box(None),
+                        black_box(&weights),
+                        black_box(None),
+                        black_box(Some(&solver_config)),
+                    );
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+/// Benchmark impact of monotonicity constraints on solver performance
+fn benchmark_monotonicity_impact(c: &mut Criterion) {
+    let mut group = c.benchmark_group("monotonicity_impact");
+    group.sample_size(15); // Fewer samples due to solver time
+
+    let df = generate_test_dataframe(5_000, 5, 42);
+    let weights = vec![1.0; df.height()];
+
+    let monotonicity_variants = [
+        ("none", MonotonicityConstraint::None),
+        ("ascending", MonotonicityConstraint::Ascending),
+        ("descending", MonotonicityConstraint::Descending),
+        ("auto", MonotonicityConstraint::Auto),
+    ];
+
+    for (name, monotonicity) in monotonicity_variants {
+        let config = SolverConfig {
+            timeout_seconds: 30,
+            gap_tolerance: 0.01,
+            monotonicity,
+            min_bin_samples: 5,
+        };
+
+        group.bench_with_input(BenchmarkId::new("solver", name), &config, |b, config| {
+            b.iter(|| {
+                let _ = analyze_features_iv(
+                    black_box(&df),
+                    black_box("target"),
+                    black_box(10),
+                    black_box(20),
+                    black_box(None),
+                    black_box(BinningStrategy::Cart),
+                    black_box(None),
+                    black_box(None),
+                    black_box(&weights),
+                    black_box(None),
+                    black_box(Some(config)),
+                );
+            });
+        });
+    }
+
+    group.finish();
+}
+
+/// Benchmark impact of prebins count on performance
+fn benchmark_prebins_count(c: &mut Criterion) {
+    let mut group = c.benchmark_group("prebins_count");
+
+    let df = generate_test_dataframe(10_000, 10, 42);
+    let weights = vec![1.0; df.height()];
+    let prebin_counts = [10, 20, 50, 100];
+
+    for prebins in prebin_counts {
+        group.bench_with_input(
+            BenchmarkId::new("greedy", prebins),
+            &prebins,
+            |b, &prebins| {
+                b.iter(|| {
+                    let _ = analyze_features_iv(
+                        black_box(&df),
+                        black_box("target"),
+                        black_box(10),
+                        black_box(prebins),
+                        black_box(None),
+                        black_box(BinningStrategy::Cart),
+                        black_box(None),
+                        black_box(None),
+                        black_box(&weights),
+                        black_box(None),
                         black_box(None),
                     );
                 });
@@ -197,5 +380,8 @@ criterion_group!(
     benchmark_binning_strategies,
     benchmark_single_feature,
     benchmark_bin_counts,
+    benchmark_greedy_vs_solver,
+    benchmark_monotonicity_impact,
+    benchmark_prebins_count,
 );
 criterion_main!(benches);

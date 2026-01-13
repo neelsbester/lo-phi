@@ -1,4 +1,5 @@
 //! Shared test utilities and fixture generators
+#![allow(dead_code)]
 
 use polars::prelude::*;
 use std::path::PathBuf;

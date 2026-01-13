@@ -98,7 +98,7 @@ fn test_pipeline_with_no_reductions_needed() {
     .unwrap();
 
     let (_temp_dir, csv_path) = create_temp_csv(&mut df);
-    let (df, _, initial_cols, _) = load_dataset_with_progress(&csv_path, 100).unwrap();
+    let (df, _, _initial_cols, _) = load_dataset_with_progress(&csv_path, 100).unwrap();
     let weights = vec![1.0; df.height()];
 
     // Missing - none above 30%
@@ -280,6 +280,227 @@ fn test_csv_and_parquet_produce_same_results() {
         assert!(
             (ratio_csv - ratio_parquet).abs() < 0.001,
             "Missing ratios should match between CSV and Parquet"
+        );
+    }
+}
+
+#[test]
+fn test_cart_categorical_binning() {
+    // Create dataset with categorical features
+    let df = df! {
+        "target" => [0i32, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1],
+        "category" => ["A", "A", "B", "B", "C", "C", "D", "D", "A", "A", "B", "B", "C", "C", "D", "D", "A", "B", "C", "D"],
+    }
+    .unwrap();
+
+    let weights = vec![1.0; df.height()];
+
+    // Test CART binning with categorical feature
+    let result = analyze_features_iv(
+        &df,
+        "target",
+        10,
+        20,
+        None,
+        BinningStrategy::Cart,
+        Some(2),
+        Some(10.0), // 10% minimum bin size
+        &weights,
+        None,
+        None,
+    );
+
+    assert!(result.is_ok(), "CART categorical binning should succeed");
+
+    let analyses = result.unwrap();
+    assert!(!analyses.is_empty(), "Should analyze categorical features");
+
+    // Find the category analysis
+    let category_analysis = analyses.iter().find(|a| a.feature_name == "category");
+
+    assert!(
+        category_analysis.is_some(),
+        "Should have analysis for category feature"
+    );
+
+    let analysis = category_analysis.unwrap();
+    // Should have categorical bins
+    assert!(
+        !analysis.categories.is_empty(),
+        "Category feature should have categorical WoE bins"
+    );
+
+    // IV should be non-negative
+    assert!(analysis.iv >= 0.0, "IV should be non-negative");
+
+    // Gini should be between 0 and 1
+    assert!(
+        analysis.gini >= 0.0 && analysis.gini <= 1.0,
+        "Gini should be between 0 and 1, got {}",
+        analysis.gini
+    );
+}
+
+#[test]
+fn test_cart_categorical_with_many_categories() {
+    // Test with more categories to ensure proper binning
+    let mut target_vec: Vec<i32> = Vec::new();
+    let mut category_vec: Vec<&str> = Vec::new();
+
+    // Create dataset with 5 categories, varying event rates
+    for _ in 0..10 {
+        target_vec.extend(&[0, 1, 1, 0, 1]); // Category A: 60% event rate
+        category_vec.extend(&["A", "A", "A", "A", "A"]);
+    }
+    for _ in 0..10 {
+        target_vec.extend(&[0, 0, 1, 0, 0]); // Category B: 20% event rate
+        category_vec.extend(&["B", "B", "B", "B", "B"]);
+    }
+    for _ in 0..10 {
+        target_vec.extend(&[1, 1, 1, 1, 0]); // Category C: 80% event rate
+        category_vec.extend(&["C", "C", "C", "C", "C"]);
+    }
+    for _ in 0..10 {
+        target_vec.extend(&[1, 0, 1, 0, 1]); // Category D: 60% event rate
+        category_vec.extend(&["D", "D", "D", "D", "D"]);
+    }
+    for _ in 0..10 {
+        target_vec.extend(&[0, 0, 0, 0, 1]); // Category E: 20% event rate
+        category_vec.extend(&["E", "E", "E", "E", "E"]);
+    }
+
+    let df = df! {
+        "target" => &target_vec,
+        "category" => &category_vec,
+    }
+    .unwrap();
+
+    let weights = vec![1.0; df.height()];
+
+    // Analyze with CART strategy
+    let result = analyze_features_iv(
+        &df,
+        "target",
+        10,
+        20,
+        None,
+        BinningStrategy::Cart,
+        Some(5),   // Min 5 samples per category
+        Some(5.0), // 5% minimum bin size
+        &weights,
+        None,
+        None,
+    );
+
+    assert!(
+        result.is_ok(),
+        "CART categorical binning with many categories should succeed"
+    );
+
+    let analyses = result.unwrap();
+    let category_analysis = analyses
+        .iter()
+        .find(|a| a.feature_name == "category")
+        .expect("Should have category analysis");
+
+    // Should have created bins
+    assert!(
+        !category_analysis.categories.is_empty(),
+        "Should have categorical bins"
+    );
+
+    // IV should reflect the predictive power
+    // Categories with different event rates should produce positive IV
+    assert!(
+        category_analysis.iv > 0.0,
+        "IV should be positive for categories with varying event rates, got {}",
+        category_analysis.iv
+    );
+
+    // All categories should be accounted for in bins
+    let total_samples: f64 = category_analysis
+        .categories
+        .iter()
+        .map(|bin| bin.count)
+        .sum();
+
+    assert!(
+        (total_samples - (df.height() as f64)).abs() < 1.0,
+        "All samples should be accounted for in bins"
+    );
+}
+
+#[test]
+fn test_cart_categorical_respects_min_bin_size() {
+    // Test that CART respects the minimum bin size parameter
+    let mut target_vec: Vec<i32> = Vec::new();
+    let mut category_vec: Vec<&str> = Vec::new();
+
+    // Create 100 samples total
+    // Category A: 40 samples (40%)
+    for _ in 0..40 {
+        target_vec.push(0);
+        category_vec.push("A");
+    }
+    // Category B: 30 samples (30%)
+    for _ in 0..30 {
+        target_vec.push(1);
+        category_vec.push("B");
+    }
+    // Category C: 20 samples (20%)
+    for _ in 0..20 {
+        target_vec.push(0);
+        category_vec.push("C");
+    }
+    // Category D: 10 samples (10%)
+    for _ in 0..10 {
+        target_vec.push(1);
+        category_vec.push("D");
+    }
+
+    let df = df! {
+        "target" => &target_vec,
+        "category" => &category_vec,
+    }
+    .unwrap();
+
+    let weights = vec![1.0; df.height()];
+
+    // Set min_bin_pct to 15% - should merge small categories
+    let result = analyze_features_iv(
+        &df,
+        "target",
+        10,
+        20,
+        None,
+        BinningStrategy::Cart,
+        Some(5),
+        Some(15.0), // 15% minimum - Categories C (20%) and D (10%) might get merged
+        &weights,
+        None,
+        None,
+    );
+
+    assert!(
+        result.is_ok(),
+        "CART categorical binning with min bin size should succeed"
+    );
+
+    let analyses = result.unwrap();
+    let category_analysis = analyses
+        .iter()
+        .find(|a| a.feature_name == "category")
+        .expect("Should have category analysis");
+
+    // Each bin should respect the minimum size (at least 15% of samples)
+    for bin in &category_analysis.categories {
+        // Allow some tolerance for merged bins
+        // After merging, bins should be >= 15% of total samples
+        let bin_pct = (bin.count / (df.height() as f64)) * 100.0;
+        assert!(
+            bin_pct >= 14.0, // Small tolerance for rounding
+            "Bin should contain at least ~15% of samples, got {:.1}%",
+            bin_pct
         );
     }
 }
