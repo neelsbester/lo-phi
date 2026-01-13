@@ -440,7 +440,11 @@ fn run_gini_analysis(
     let features_to_drop_gini = get_low_gini_features(&gini_analyses, config.gini_threshold);
 
     // Export Gini analysis to JSON
-    let gini_output_path = cli.gini_analysis_path().unwrap();
+    let gini_output_path = {
+        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+        parent.join(format!("{}_gini_analysis.json", stem))
+    };
     let export_params = ExportParams {
         input_file: input.to_str().unwrap_or("unknown"),
         target_column: &config.target,
