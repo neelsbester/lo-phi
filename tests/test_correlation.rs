@@ -271,7 +271,7 @@ fn test_weight_column_excluded_from_correlation() {
 
     // Without exclusion - weight should be in correlation pairs
     let pairs_included = find_correlated_pairs(&df, 0.9, &weights, None).unwrap();
-    let has_weight = pairs_included
+    let _has_weight = pairs_included
         .iter()
         .any(|p| p.feature1 == "weight" || p.feature2 == "weight");
     // Note: weight column might not correlate with anything, but it should be checked

@@ -78,6 +78,7 @@ pub fn solve_numeric_binning(
 }
 
 /// Solve with automatic monotonicity detection
+#[allow(clippy::too_many_arguments)]
 fn solve_with_auto_monotonicity(
     prebins: &[WoeBin],
     target_bins: usize,
@@ -122,6 +123,7 @@ fn solve_with_auto_monotonicity(
 }
 
 /// Solve the MIP model with a specific monotonicity constraint
+#[allow(clippy::too_many_arguments)]
 fn solve_with_monotonicity(
     prebins: &[WoeBin],
     target_bins: usize,
@@ -289,10 +291,10 @@ pub fn reconstruct_bins(
             let mut non_events = 0.0;
             let mut count = 0.0;
 
-            for i in *start..=*end {
-                events += prebins[i].events;
-                non_events += prebins[i].non_events;
-                count += prebins[i].count;
+            for prebin in &prebins[*start..=*end] {
+                events += prebin.events;
+                non_events += prebin.non_events;
+                count += prebin.count;
             }
 
             let (woe, iv) = calculate_woe_iv(events, non_events, total_events, total_non_events);

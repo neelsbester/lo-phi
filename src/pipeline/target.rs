@@ -218,6 +218,7 @@ fn column_to_string_vec(col: &Column) -> Result<Vec<Option<String>>> {
 }
 
 /// Count how many records match the event and non-event values
+#[allow(dead_code)]
 pub fn count_mapped_records(
     df: &DataFrame,
     target: &str,

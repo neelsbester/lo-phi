@@ -421,6 +421,7 @@ fn create_cart_prebins(
 }
 
 /// Create a WoeBin from a slice of pairs
+#[allow(clippy::too_many_arguments)]
 fn create_woe_bin_from_pairs(
     bin_pairs: &[(f64, i32, f64)], // (value, target, weight)
     _start_idx: usize,
@@ -655,6 +656,7 @@ fn create_categorical_cart_bins(
 ///
 /// # Returns
 /// Vector of IvAnalysis for each feature, sorted by IV descending
+#[allow(clippy::too_many_arguments)]
 pub fn analyze_features_iv(
     df: &DataFrame,
     target: &str,
@@ -767,14 +769,11 @@ pub fn analyze_features_iv(
 
             // Update progress
             let count = progress_counter.fetch_add(1, Ordering::Relaxed);
-            if count % 10 == 0 || count == (total_features as u64 - 1) {
+            if count.is_multiple_of(10) || count == (total_features as u64 - 1) {
                 pb.set_position(count + 1);
             }
 
-            match result {
-                Ok(analysis) => Some(analysis),
-                Err(_) => None, // Skip features that fail (e.g., all null)
-            }
+            result.ok() // Skip features that fail (e.g., all null)
         })
         .collect();
 
@@ -800,14 +799,11 @@ pub fn analyze_features_iv(
 
             // Update progress
             let count = progress_counter.fetch_add(1, Ordering::Relaxed);
-            if count % 10 == 0 || count == (total_features as u64 - 1) {
+            if count.is_multiple_of(10) || count == (total_features as u64 - 1) {
                 pb.set_position(count + 1);
             }
 
-            match result {
-                Ok(analysis) => Some(analysis),
-                Err(_) => None, // Skip features that fail
-            }
+            result.ok() // Skip features that fail
         })
         .collect();
 
@@ -840,7 +836,7 @@ fn validate_binary_target(df: &DataFrame, target: &str) -> Result<()> {
         .with_context(|| format!("Target column '{}' not found", target))?;
 
     // Check for empty or all-null column first
-    if target_col.len() == 0 {
+    if target_col.is_empty() {
         anyhow::bail!("Target column '{}' is empty", target);
     }
 
@@ -885,6 +881,7 @@ fn validate_binary_target(df: &DataFrame, target: &str) -> Result<()> {
 ///
 /// Missing feature values are placed in a dedicated MISSING bin rather than being dropped.
 /// Only records with invalid/unmapped target values are excluded from the analysis.
+#[allow(clippy::too_many_arguments)]
 fn analyze_single_numeric_feature(
     df: &DataFrame,
     col_name: &str,
@@ -1112,6 +1109,7 @@ fn analyze_single_numeric_feature(
 ///
 /// Missing feature values are placed in a dedicated MISSING bin rather than being dropped.
 /// Only records with invalid/unmapped target values are excluded from the analysis.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn analyze_categorical_feature(
     df: &DataFrame,
     col_name: &str,
@@ -1702,9 +1700,9 @@ fn calculate_weighted_auc(sorted_pairs: &[(f64, i32, f64)]) -> f64 {
         let avg_rank = cumulative_weight + group_weight / 2.0;
 
         // Add weighted rank contribution for positive class members
-        for k in i..j {
-            if sorted_pairs[k].1 == 1 {
-                weighted_rank_sum_pos += avg_rank * sorted_pairs[k].2;
+        for pair in &sorted_pairs[i..j] {
+            if pair.1 == 1 {
+                weighted_rank_sum_pos += avg_rank * pair.2;
             }
         }
 

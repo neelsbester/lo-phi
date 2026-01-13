@@ -36,7 +36,7 @@ fn format_duration(duration: std::time::Duration) -> String {
 /// * `output` - Optional output path. If not provided, uses input path with .parquet extension
 /// * `infer_schema_length` - Number of rows to use for schema inference
 /// * `fast` - If true, uses in-memory conversion (more RAM, all CPU cores).
-///            If false, uses streaming conversion (low RAM, single-threaded).
+///   If false, uses streaming conversion (low RAM, single-threaded).
 ///
 /// # Performance Notes
 /// - **Streaming mode (default)**: Uses `sink_parquet()` for memory efficiency. Single-threaded.

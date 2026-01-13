@@ -255,7 +255,7 @@ impl ReductionReportBuilder {
         for analysis in analyses {
             self.gini_results.insert(
                 analysis.feature_name.clone(),
-                (analysis.gini, analysis.iv, analysis.feature_type.clone()),
+                (analysis.gini, analysis.iv, analysis.feature_type),
             );
         }
 
@@ -319,30 +319,27 @@ impl ReductionReportBuilder {
         }
 
         // Sort features: kept first, then by drop stage, then alphabetically
-        features.sort_by(|a, b| {
-            match (&a.dropped_at_stage, &b.dropped_at_stage) {
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (Some(stage_a), Some(stage_b)) => {
-                    let order_a = match stage_a {
-                        DropStage::Missing => 0,
-                        DropStage::Gini => 1,
-                        DropStage::Correlation => 2,
-                    };
-                    let order_b = match stage_b {
-                        DropStage::Missing => 0,
-                        DropStage::Gini => 1,
-                        DropStage::Correlation => 2,
-                    };
-                    order_a.cmp(&order_b).then(a.name.cmp(&b.name))
-                }
-                (None, None) => a.name.cmp(&b.name),
+        features.sort_by(|a, b| match (&a.dropped_at_stage, &b.dropped_at_stage) {
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(stage_a), Some(stage_b)) => {
+                let order_a = match stage_a {
+                    DropStage::Missing => 0,
+                    DropStage::Gini => 1,
+                    DropStage::Correlation => 2,
+                };
+                let order_b = match stage_b {
+                    DropStage::Missing => 0,
+                    DropStage::Gini => 1,
+                    DropStage::Correlation => 2,
+                };
+                order_a.cmp(&order_b).then(a.name.cmp(&b.name))
             }
+            (None, None) => a.name.cmp(&b.name),
         });
 
-        let dropped_count = self.dropped_missing.len()
-            + self.dropped_gini.len()
-            + self.dropped_correlation.len();
+        let dropped_count =
+            self.dropped_missing.len() + self.dropped_gini.len() + self.dropped_correlation.len();
 
         ReductionReport {
             metadata: ReportMetadata {
@@ -390,7 +387,11 @@ impl ReductionReportBuilder {
     fn build_feature_entry(&self, feature_name: &str) -> FeatureReportEntry {
         // Determine status and drop stage
         let (status, dropped_at_stage, reason) = if self.dropped_missing.contains(feature_name) {
-            let ratio = self.missing_ratios.get(feature_name).copied().unwrap_or(0.0);
+            let ratio = self
+                .missing_ratios
+                .get(feature_name)
+                .copied()
+                .unwrap_or(0.0);
             (
                 "dropped".to_string(),
                 Some(DropStage::Missing),
@@ -414,16 +415,15 @@ impl ReductionReportBuilder {
                 )),
             )
         } else if self.dropped_correlation.contains(feature_name) {
-            let reason = if let Some((other, corr)) =
-                self.dropped_correlation_reasons.get(feature_name)
-            {
-                format!(
-                    "Correlated with {} (r={:.4}), dropped due to higher correlation frequency",
-                    other, corr
-                )
-            } else {
-                "Dropped due to high correlation".to_string()
-            };
+            let reason =
+                if let Some((other, corr)) = self.dropped_correlation_reasons.get(feature_name) {
+                    format!(
+                        "Correlated with {} (r={:.4}), dropped due to higher correlation frequency",
+                        other, corr
+                    )
+                } else {
+                    "Dropped due to high correlation".to_string()
+                };
             (
                 "dropped".to_string(),
                 Some(DropStage::Correlation),
@@ -528,8 +528,12 @@ pub fn export_reduction_report(report: &ReductionReport, output_path: &Path) -> 
     let json = serde_json::to_string_pretty(report)
         .context("Failed to serialize reduction report to JSON")?;
 
-    std::fs::write(output_path, json)
-        .with_context(|| format!("Failed to write reduction report to {}", output_path.display()))?;
+    std::fs::write(output_path, json).with_context(|| {
+        format!(
+            "Failed to write reduction report to {}",
+            output_path.display()
+        )
+    })?;
 
     Ok(())
 }
@@ -793,7 +797,9 @@ mod tests {
         builder.set_correlation_results(&pairs, &dropped);
 
         assert!(builder.dropped_correlation.contains("feature_1"));
-        assert!(builder.dropped_correlation_reasons.contains_key("feature_1"));
+        assert!(builder
+            .dropped_correlation_reasons
+            .contains_key("feature_1"));
     }
 
     #[test]
@@ -889,10 +895,7 @@ mod tests {
         let feature = &report.features[0];
 
         assert_eq!(feature.status, "dropped");
-        assert!(matches!(
-            feature.dropped_at_stage,
-            Some(DropStage::Missing)
-        ));
+        assert!(matches!(feature.dropped_at_stage, Some(DropStage::Missing)));
         assert!(feature.reason.as_ref().unwrap().contains("Missing ratio"));
         assert!(feature.analysis.missing.is_some());
         assert!(feature.analysis.gini.is_none()); // Not analyzed

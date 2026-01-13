@@ -44,6 +44,21 @@ struct PipelineConfig {
     columns_to_drop: Vec<String>,
     target_mapping: Option<TargetMapping>,
     weight_column: Option<String>,
+
+    // Binning parameters
+    binning_strategy: String,
+    prebins: usize,
+    cart_min_bin_pct: f64,
+    min_category_samples: usize,
+
+    // Solver options
+    use_solver: bool,
+    monotonicity: String,
+    solver_timeout: u64,
+    solver_gap: f64,
+
+    // Data handling
+    infer_schema_length: usize,
 }
 
 fn main() -> Result<()> {
@@ -108,13 +123,13 @@ fn main() -> Result<()> {
 
     // Load dataset and apply initial drops
     let (mut df, _initial_features, mut summary) =
-        load_and_prepare_dataset(&input, &config.columns_to_drop, cli.infer_schema_length)?;
+        load_and_prepare_dataset(&input, &config.columns_to_drop, config.infer_schema_length)?;
 
     // Validate target and setup weights
     let weights = validate_target_and_weights(&df, &mut config, cli.no_confirm)?;
 
     // Parse binning strategy for report
-    let binning_strategy: BinningStrategy = cli
+    let binning_strategy: BinningStrategy = config
         .binning_strategy
         .parse()
         .map_err(|e: String| anyhow::anyhow!(e))?;
@@ -139,7 +154,7 @@ fn main() -> Result<()> {
 
     // Run Gini/IV analysis
     let (gini_analyses, features_to_drop_gini) =
-        run_gini_analysis(&df, &config, &cli, &input, &weights, &mut summary)?;
+        run_gini_analysis(&df, &config, &input, &weights, &mut summary)?;
     report_builder.set_gini_results(&gini_analyses, &features_to_drop_gini);
 
     // Update df after Gini drops
@@ -196,12 +211,14 @@ fn main() -> Result<()> {
             .unwrap_or("output");
         parent.join(format!("{}_reduction_report.zip", stem))
     };
-    package_reduction_reports(&gini_analysis_path, &report_path, &csv_report_path, &zip_path)?;
+    package_reduction_reports(
+        &gini_analysis_path,
+        &report_path,
+        &csv_report_path,
+        &zip_path,
+    )?;
 
-    print_success(&format!(
-        "Reduction report saved to {}",
-        zip_path.display()
-    ));
+    print_success(&format!("Reduction report saved to {}", zip_path.display()));
 
     // Display summary and completion
     summary.display();
@@ -244,6 +261,15 @@ fn setup_configuration(
             columns_to_drop: cli.drop_columns.clone(),
             target_mapping: cli_target_mapping,
             weight_column: cli.weight_column.clone(),
+            binning_strategy: cli.binning_strategy.clone(),
+            prebins: cli.prebins,
+            cart_min_bin_pct: cli.cart_min_bin_pct,
+            min_category_samples: cli.min_category_samples,
+            use_solver: cli.use_solver,
+            monotonicity: cli.monotonicity.clone(),
+            solver_timeout: cli.solver_timeout,
+            solver_gap: cli.solver_gap,
+            infer_schema_length: cli.infer_schema_length,
         })
     } else {
         // Load column names for interactive selection
@@ -260,10 +286,21 @@ fn setup_configuration(
             columns_to_drop: cli.drop_columns.clone(),
             target_mapping: cli_target_mapping,
             weight_column: cli.weight_column.clone(),
+            binning_strategy: cli.binning_strategy.clone(),
+            gini_bins: cli.gini_bins,
+            prebins: cli.prebins,
+            cart_min_bin_pct: cli.cart_min_bin_pct,
+            min_category_samples: cli.min_category_samples,
+            use_solver: cli.use_solver,
+            monotonicity: cli.monotonicity.clone(),
+            solver_timeout: cli.solver_timeout,
+            solver_gap: cli.solver_gap,
+            infer_schema_length: cli.infer_schema_length,
         };
 
         match run_config_menu(config, columns)? {
-            ConfigResult::Proceed(cfg) => {
+            ConfigResult::Proceed(boxed_cfg) => {
+                let cfg = *boxed_cfg;
                 let target = cfg.target.ok_or_else(|| {
                     anyhow::anyhow!("Target column must be selected before proceeding")
                 })?;
@@ -272,11 +309,20 @@ fn setup_configuration(
                     target,
                     missing_threshold: cfg.missing_threshold,
                     gini_threshold: cfg.gini_threshold,
-                    gini_bins: cli.gini_bins,
+                    gini_bins: cfg.gini_bins,
                     correlation_threshold: cfg.correlation_threshold,
                     columns_to_drop: cfg.columns_to_drop,
                     target_mapping: cfg.target_mapping,
                     weight_column: cfg.weight_column,
+                    binning_strategy: cfg.binning_strategy,
+                    prebins: cfg.prebins,
+                    cart_min_bin_pct: cfg.cart_min_bin_pct,
+                    min_category_samples: cfg.min_category_samples,
+                    use_solver: cfg.use_solver,
+                    monotonicity: cfg.monotonicity,
+                    solver_timeout: cfg.solver_timeout,
+                    solver_gap: cfg.solver_gap,
+                    infer_schema_length: cfg.infer_schema_length,
                 })
             }
             ConfigResult::Quit => {
@@ -431,6 +477,7 @@ fn validate_target_and_weights(
 
 /// Run missing value analysis
 /// Returns (missing_ratios, features_dropped) for report generation
+#[allow(clippy::type_complexity)]
 fn run_missing_analysis(
     df: &mut polars::prelude::DataFrame,
     config: &PipelineConfig,
@@ -472,7 +519,6 @@ fn run_missing_analysis(
 fn run_gini_analysis(
     df: &polars::prelude::DataFrame,
     config: &PipelineConfig,
-    cli: &Cli,
     input: &std::path::Path,
     weights: &[f64],
     summary: &mut ReductionSummary,
@@ -480,21 +526,21 @@ fn run_gini_analysis(
     print_step_header(2, "Univariate Gini Analysis");
 
     // Parse binning strategy
-    let binning_strategy: BinningStrategy = cli
+    let binning_strategy: BinningStrategy = config
         .binning_strategy
         .parse()
         .map_err(|e: String| anyhow::anyhow!(e))?;
 
     // Parse solver config if solver is enabled
-    let solver_config = if cli.use_solver {
-        let monotonicity: MonotonicityConstraint = cli
+    let solver_config = if config.use_solver {
+        let monotonicity: MonotonicityConstraint = config
             .monotonicity
             .parse()
             .map_err(|e: String| anyhow::anyhow!(e))?;
 
         Some(SolverConfig {
-            timeout_seconds: cli.solver_timeout,
-            gap_tolerance: cli.solver_gap,
+            timeout_seconds: config.solver_timeout,
+            gap_tolerance: config.solver_gap,
             monotonicity,
             min_bin_samples: 5,
         })
@@ -507,11 +553,11 @@ fn run_gini_analysis(
         df,
         &config.target,
         config.gini_bins,
-        cli.prebins,
+        config.prebins,
         config.target_mapping.as_ref(),
         binning_strategy,
-        Some(cli.min_category_samples),
-        Some(cli.cart_min_bin_pct),
+        Some(config.min_category_samples),
+        Some(config.cart_min_bin_pct),
         weights,
         config.weight_column.as_deref(),
         solver_config.as_ref(),
@@ -521,7 +567,10 @@ fn run_gini_analysis(
     // Export Gini analysis to JSON
     let gini_output_path = {
         let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+        let stem = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
         parent.join(format!("{}_gini_analysis.json", stem))
     };
     let export_params = ExportParams {
@@ -531,9 +580,9 @@ fn run_gini_analysis(
         binning_strategy,
         num_bins: config.gini_bins,
         gini_threshold: config.gini_threshold,
-        min_category_samples: cli.min_category_samples,
+        min_category_samples: config.min_category_samples,
         cart_min_bin_pct: if binning_strategy == BinningStrategy::Cart {
-            Some(cli.cart_min_bin_pct)
+            Some(config.cart_min_bin_pct)
         } else {
             None
         },

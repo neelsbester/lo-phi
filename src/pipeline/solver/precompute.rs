@@ -56,6 +56,7 @@ fn calculate_woe_iv(
 /// for merging prebins i through j (inclusive).
 ///
 /// Uses cumulative sums for O(n^2) complexity instead of O(n^3).
+#[allow(clippy::needless_range_loop)]
 pub fn precompute_iv_matrix(
     prebins: &[WoeBin],
     total_events: f64,
@@ -113,6 +114,7 @@ pub fn get_precomputed_bin(
 /// Precompute IV for all possible category groupings
 ///
 /// Similar to numeric binning but for categories sorted by event rate.
+#[allow(clippy::needless_range_loop)]
 pub fn precompute_categorical_iv_matrix(
     categories: &[CategoryStats],
     total_events: f64,

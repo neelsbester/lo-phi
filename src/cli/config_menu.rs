@@ -15,7 +15,10 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 
 use crate::pipeline::TargetMapping;
@@ -34,6 +37,32 @@ pub struct Config {
     pub target_mapping: Option<TargetMapping>,
     /// Optional column containing sample weights
     pub weight_column: Option<String>,
+
+    // Binning parameters
+    /// Binning strategy: "cart" or "quantile"
+    pub binning_strategy: String,
+    /// Number of final bins for IV calculation
+    pub gini_bins: usize,
+    /// Number of pre-bins before optimization
+    pub prebins: usize,
+    /// Minimum bin size percentage for CART strategy
+    pub cart_min_bin_pct: f64,
+    /// Minimum samples per category for categorical features
+    pub min_category_samples: usize,
+
+    // Solver options
+    /// Whether to use MIP solver for optimal binning
+    pub use_solver: bool,
+    /// Monotonicity constraint for WoE
+    pub monotonicity: String,
+    /// Solver timeout in seconds
+    pub solver_timeout: u64,
+    /// Solver MIP gap tolerance
+    pub solver_gap: f64,
+
+    // Data handling
+    /// Number of rows to use for schema inference
+    pub infer_schema_length: usize,
 }
 
 /// The current state of the menu
@@ -72,12 +101,29 @@ enum MenuState {
     EditCorrelation {
         input: String,
     },
+    // Solver options
+    EditUseSolver {
+        selected: bool,
+    },
+    SelectMonotonicity {
+        selected: usize,
+    },
+    // Data options
+    SelectWeightColumn {
+        search: String,
+        columns: Vec<String>,
+        filtered: Vec<usize>,
+        selected: usize,
+    },
+    EditInferSchemaLength {
+        input: String,
+    },
 }
 
 /// Result of the config menu interaction
 pub enum ConfigResult {
     /// User confirmed, proceed with these settings
-    Proceed(Config),
+    Proceed(Box<Config>),
     /// User quit
     Quit,
 }
@@ -492,7 +538,7 @@ fn run_menu_loop(
                     KeyCode::Enter => {
                         // Only proceed if target is selected
                         if config.target.is_some() {
-                            return Ok(ConfigResult::Proceed(config));
+                            return Ok(ConfigResult::Proceed(Box::new(config)));
                         }
                     }
                     KeyCode::Char('t') | KeyCode::Char('T') => {
@@ -524,6 +570,25 @@ fn run_menu_loop(
                     KeyCode::Char('c') | KeyCode::Char('C') => {
                         state = MenuState::EditMissing {
                             input: format!("{:.2}", config.missing_threshold),
+                        };
+                    }
+                    KeyCode::Char('s') | KeyCode::Char('S') => {
+                        state = MenuState::EditUseSolver {
+                            selected: config.use_solver,
+                        };
+                    }
+                    KeyCode::Char('w') | KeyCode::Char('W') => {
+                        let filtered: Vec<usize> = (0..columns.len()).collect();
+                        state = MenuState::SelectWeightColumn {
+                            search: String::new(),
+                            columns: columns.clone(),
+                            filtered,
+                            selected: 0,
+                        };
+                    }
+                    KeyCode::Char('a') | KeyCode::Char('A') => {
+                        state = MenuState::EditInferSchemaLength {
+                            input: config.infer_schema_length.to_string(),
                         };
                     }
                     KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
@@ -771,6 +836,125 @@ fn run_menu_loop(
                     }
                     _ => {}
                 },
+                // Solver flow handlers
+                MenuState::EditUseSolver { selected } => match key.code {
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        *selected = !*selected;
+                    }
+                    KeyCode::Tab => {
+                        config.use_solver = *selected;
+                        if config.use_solver {
+                            state = MenuState::SelectMonotonicity {
+                                selected: match config.monotonicity.as_str() {
+                                    "none" => 0,
+                                    "ascending" => 1,
+                                    "descending" => 2,
+                                    "peak" => 3,
+                                    "valley" => 4,
+                                    "auto" => 5,
+                                    _ => 0,
+                                },
+                            };
+                        } else {
+                            state = MenuState::Main;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        state = MenuState::Main;
+                    }
+                    _ => {}
+                },
+                MenuState::SelectMonotonicity { selected } => match key.code {
+                    KeyCode::Enter => {
+                        config.monotonicity = match *selected {
+                            0 => "none".to_string(),
+                            1 => "ascending".to_string(),
+                            2 => "descending".to_string(),
+                            3 => "peak".to_string(),
+                            4 => "valley".to_string(),
+                            5 => "auto".to_string(),
+                            _ => "none".to_string(),
+                        };
+                        state = MenuState::Main;
+                    }
+                    KeyCode::Up => {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected < 5 {
+                            *selected += 1;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        state = MenuState::Main;
+                    }
+                    _ => {}
+                },
+                // Data options handlers
+                MenuState::SelectWeightColumn {
+                    search,
+                    columns,
+                    filtered,
+                    selected,
+                } => match key.code {
+                    KeyCode::Enter => {
+                        if filtered.is_empty() || *selected == 0 {
+                            // First option is "None" when filtered is not empty
+                            // or no selection available
+                            config.weight_column = None;
+                        } else {
+                            let idx = filtered[*selected - 1]; // -1 because of "None" option
+                            config.weight_column = Some(columns[idx].clone());
+                        }
+                        state = MenuState::Main;
+                    }
+                    KeyCode::Esc => {
+                        state = MenuState::Main;
+                    }
+                    KeyCode::Up => {
+                        if *selected > 0 {
+                            *selected -= 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if *selected < filtered.len() {
+                            *selected += 1;
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        search.pop();
+                        update_filtered(search, columns, filtered);
+                        *selected = 0;
+                    }
+                    KeyCode::Char(c) => {
+                        search.push(c);
+                        update_filtered(search, columns, filtered);
+                        *selected = 0;
+                    }
+                    _ => {}
+                },
+                MenuState::EditInferSchemaLength { input } => match key.code {
+                    KeyCode::Enter => {
+                        if let Ok(val) = input.parse::<usize>() {
+                            if val >= 100 {
+                                config.infer_schema_length = val;
+                            }
+                        }
+                        state = MenuState::Main;
+                    }
+                    KeyCode::Esc => {
+                        state = MenuState::Main;
+                    }
+                    KeyCode::Backspace => {
+                        input.pop();
+                    }
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        input.push(c);
+                    }
+                    _ => {}
+                },
             }
         }
     }
@@ -801,7 +985,13 @@ fn truncate_path_start(path: &str, max_len: usize) -> String {
     format!("...{}", &path[start_idx..])
 }
 
-fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[String], scroll_offset: &mut u16) {
+fn draw_ui(
+    frame: &mut Frame,
+    config: &Config,
+    state: &MenuState,
+    _columns: &[String],
+    scroll_offset: &mut u16,
+) {
     let area = frame.area();
 
     // ASCII logo for Lo-phi
@@ -846,7 +1036,10 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
     let menu_width = 66u16;
     // Dynamic height: use minimum needed (22) or available space, whichever is smaller
     let ideal_height = 22u16;
-    let menu_height = ideal_height.min(area.height.saturating_sub(logo_height + scroll_hint_height + 2)); // Leave room for logo and hint
+    let menu_height = ideal_height.min(
+        area.height
+            .saturating_sub(logo_height + scroll_hint_height + 2),
+    ); // Leave room for logo and hint
 
     // Total height needed: logo + menu + scroll hint
     let total_height = logo_height + menu_height + scroll_hint_height;
@@ -909,8 +1102,8 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
             .track_symbol(Some("│"))
             .thumb_symbol("█");
 
-        let mut scrollbar_state = ScrollbarState::new(max_scroll as usize)
-            .position(*scroll_offset as usize);
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll as usize).position(*scroll_offset as usize);
 
         // Render scrollbar in the right edge of menu area
         let scrollbar_area = Rect::new(
@@ -976,8 +1169,36 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
         }
         MenuState::EditMissing { input }
         | MenuState::EditGini { input }
-        | MenuState::EditCorrelation { input } => {
+        | MenuState::EditCorrelation { input }
+        | MenuState::EditInferSchemaLength { input } => {
             draw_edit_popup(frame, state, input);
+        }
+        // Solver popups
+        MenuState::EditUseSolver { selected } => {
+            draw_toggle_popup(
+                frame,
+                " Use MIP Solver ",
+                "Enable optimal binning solver",
+                *selected,
+            );
+        }
+        MenuState::SelectMonotonicity { selected } => {
+            draw_selection_popup(
+                frame,
+                " Select Monotonicity ",
+                &["none", "ascending", "descending", "peak", "valley", "auto"],
+                *selected,
+                Color::Magenta,
+            );
+        }
+        // Data popups
+        MenuState::SelectWeightColumn {
+            search,
+            columns,
+            filtered,
+            selected,
+        } => {
+            draw_weight_column_selector(frame, search, columns, filtered, *selected);
         }
         MenuState::Main => {}
     }
@@ -1042,38 +1263,24 @@ fn build_content(
         Span::styled(output_path, Style::default().fg(Color::White)),
     ]));
 
-    // Show columns to drop count
-    let drop_display = if config.columns_to_drop.is_empty() {
-        "None".to_string()
-    } else {
-        format!("{} column(s) selected", config.columns_to_drop.len())
-    };
-    let drop_style = if config.columns_to_drop.is_empty() {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default().fg(Color::Red)
-    };
+    // Separator
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ───────────────────────────────────────────────────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Three-column header: THRESHOLDS | SOLVER | DATA
+    // Fixed widths: col1=20 chars, col2=16 chars, col3=rest
     lines.push(Line::from(vec![
-        Span::styled("  Drop:   ", Style::default().fg(Color::DarkGray)),
-        Span::styled(drop_display, drop_style),
+        Span::styled("  THRESHOLDS        ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("SOLVER          ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("DATA", Style::default().fg(Color::Cyan).bold()),
     ]));
 
-    // Separator - use shorter one for compact mode
-    if height >= 16 {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  ───────────────────────────────────────────────────",
-            Style::default().fg(Color::DarkGray),
-        )));
-        lines.push(Line::from(""));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  ─────────────────────────────────",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    // Threshold section with highlighting based on state
+    // Compute styles for all fields
     let missing_style = match state {
         MenuState::EditMissing { .. } => Style::default().fg(Color::Yellow).bold(),
         _ => Style::default().fg(Color::Green),
@@ -1087,46 +1294,107 @@ fn build_content(
         _ => Style::default().fg(Color::Green),
     };
 
+    let solver_enabled = config.use_solver;
+    let use_solver_style = match state {
+        MenuState::EditUseSolver { .. } => Style::default().fg(Color::Yellow).bold(),
+        _ => {
+            if solver_enabled {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            }
+        }
+    };
+    let trend_style = match state {
+        MenuState::SelectMonotonicity { .. } => Style::default().fg(Color::Yellow).bold(),
+        _ => {
+            if solver_enabled {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            }
+        }
+    };
+
+    let drop_style = if config.columns_to_drop.is_empty() {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::Red)
+    };
+    let weight_style = match state {
+        MenuState::SelectWeightColumn { .. } => Style::default().fg(Color::Yellow).bold(),
+        _ => Style::default().fg(Color::Green),
+    };
+    let schema_style = match state {
+        MenuState::EditInferSchemaLength { .. } => Style::default().fg(Color::Yellow).bold(),
+        _ => Style::default().fg(Color::Green),
+    };
+
+    // Compute display values
+    let drop_display = if config.columns_to_drop.is_empty() {
+        "None".to_string()
+    } else {
+        format!("{} col", config.columns_to_drop.len())
+    };
+    let weight_display = config
+        .weight_column
+        .clone()
+        .unwrap_or_else(|| "None".to_string());
+    let schema_display = if config.infer_schema_length == 0 {
+        "Full".to_string()
+    } else {
+        format!("{}", config.infer_schema_length)
+    };
+
+    // Row 1: Missing | Solver | Drop
+    // Col1: "  Missing: " (11) + value (4) + padding (5) = 20
+    let missing_val = format!("{:.2}", config.missing_threshold);
+    let solver_val = if config.use_solver { "Yes" } else { "No" };
     lines.push(Line::from(vec![
-        Span::styled(
-            "  Missing Threshold:     ",
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(format!("{:.2}", config.missing_threshold), missing_style),
-        Span::styled(
-            format!(" ({:.0}%)", config.missing_threshold * 100.0),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled(
-            "  Gini Threshold:        ",
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(format!("{:.2}", config.gini_threshold), gini_style),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled(
-            "  Correlation Threshold: ",
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(format!("{:.2}", config.correlation_threshold), corr_style),
+        Span::styled("  Missing:    ", Style::default().fg(Color::DarkGray)),
+        Span::styled(missing_val, missing_style),
+        Span::styled("  ", Style::default()),
+        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Solver: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:<8}", solver_val), use_solver_style),
+        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Drop:   ", Style::default().fg(Color::DarkGray)),
+        Span::styled(drop_display, drop_style),
     ]));
 
-    // Second separator - adaptive
-    if height >= 16 {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  ───────────────────────────────────────────────────",
-            Style::default().fg(Color::DarkGray),
-        )));
-        lines.push(Line::from(""));
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  ─────────────────────────────────",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
+    // Row 2: Gini | Trend | Weight
+    let gini_val = format!("{:.2}", config.gini_threshold);
+    let trend_val = format!("{:<8}", config.monotonicity);
+    lines.push(Line::from(vec![
+        Span::styled("  Gini:       ", Style::default().fg(Color::DarkGray)),
+        Span::styled(gini_val, gini_style),
+        Span::styled("  ", Style::default()),
+        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Trend:  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(trend_val, trend_style),
+        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Weight: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(weight_display, weight_style),
+    ]));
+
+    // Row 3: Correlation | (empty) | Schema
+    let corr_val = format!("{:.2}", config.correlation_threshold);
+    lines.push(Line::from(vec![
+        Span::styled("  Correlation:", Style::default().fg(Color::DarkGray)),
+        Span::styled(corr_val, corr_style),
+        Span::styled("  ", Style::default()),
+        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("                ", Style::default()),
+        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Schema: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(schema_display, schema_style),
+    ]));
+
+    // Bottom separator
+    lines.push(Line::from(Span::styled(
+        "  ───────────────────────────────────────────────────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     // Controls section
     let enter_style = if config.target.is_some() {
@@ -1154,18 +1422,24 @@ fn build_content(
     lines.push(Line::from(vec![
         Span::styled("  [", Style::default().fg(Color::DarkGray)),
         Span::styled("D", Style::default().fg(Color::Cyan).bold()),
-        Span::styled(
-            "] Select columns to drop",
-            Style::default().fg(Color::White),
-        ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  [", Style::default().fg(Color::DarkGray)),
+        Span::styled("] Drop columns  ", Style::default().fg(Color::White)),
+        Span::styled("[", Style::default().fg(Color::DarkGray)),
         Span::styled("C", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Customize parameters", Style::default().fg(Color::White)),
+        Span::styled("] Thresholds", Style::default().fg(Color::White)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  [", Style::default().fg(Color::DarkGray)),
+        Span::styled("S", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("] Solver        ", Style::default().fg(Color::White)),
+        Span::styled("[", Style::default().fg(Color::DarkGray)),
+        Span::styled("W", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("] Weight col", Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  [", Style::default().fg(Color::DarkGray)),
+        Span::styled("A", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("] Advanced     ", Style::default().fg(Color::White)),
+        Span::styled("[", Style::default().fg(Color::DarkGray)),
         Span::styled("Q", Style::default().fg(Color::Cyan).bold()),
         Span::styled("] Quit", Style::default().fg(Color::White)),
     ]));
@@ -1218,7 +1492,7 @@ fn draw_target_selector(
         .title(" Search ")
         .title_style(Style::default().fg(Color::DarkGray));
 
-    let search_text = format!("{}", search);
+    let search_text = search.to_string();
     let search_para = Paragraph::new(Line::from(vec![
         Span::styled(search_text, Style::default().fg(Color::White)),
         Span::styled("▌", Style::default().fg(Color::Magenta)),
@@ -1325,7 +1599,7 @@ fn draw_columns_to_drop_selector(
         .title(" Search ")
         .title_style(Style::default().fg(Color::DarkGray));
 
-    let search_text = format!("{}", search);
+    let search_text = search.to_string();
     let search_para = Paragraph::new(Line::from(vec![
         Span::styled(search_text, Style::default().fg(Color::White)),
         Span::styled("▌", Style::default().fg(Color::Red)),
@@ -1418,6 +1692,7 @@ fn draw_edit_popup(frame: &mut Frame, state: &MenuState, input: &str) {
         MenuState::EditMissing { .. } => " Missing Threshold ",
         MenuState::EditGini { .. } => " Gini Threshold ",
         MenuState::EditCorrelation { .. } => " Correlation Threshold ",
+        MenuState::EditInferSchemaLength { .. } => " Schema Inference Length ",
         _ => "",
     };
 
@@ -1448,6 +1723,254 @@ fn draw_edit_popup(frame: &mut Frame, state: &MenuState, input: &str) {
 
     let paragraph = Paragraph::new(content);
     frame.render_widget(paragraph, inner);
+}
+
+/// Draw a selection popup for choosing from a list of options
+fn draw_selection_popup(
+    frame: &mut Frame,
+    title: &str,
+    options: &[&str],
+    selected: usize,
+    color: Color,
+) {
+    let area = frame.area();
+
+    let popup_width = 45u16;
+    let popup_height = (options.len() + 5) as u16;
+    let x = area.width.saturating_sub(popup_width) / 2;
+    let y = area.height.saturating_sub(popup_height) / 2;
+
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(title)
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(color).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", opt)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    frame.render_stateful_widget(list, chunks[0], &mut list_state);
+
+    let help_text = Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(help_text), chunks[1]);
+}
+
+/// Draw a toggle popup for boolean options
+fn draw_toggle_popup(frame: &mut Frame, title: &str, description: &str, current: bool) {
+    let area = frame.area();
+
+    let popup_width = 50u16;
+    let popup_height = 9u16;
+    let x = area.width.saturating_sub(popup_width) / 2;
+    let y = area.height.saturating_sub(popup_height) / 2;
+
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta))
+        .title(title)
+        .title_style(Style::default().fg(Color::Magenta).bold());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let yes_style = if current {
+        Style::default().fg(Color::Black).bg(Color::Green).bold()
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let no_style = if !current {
+        Style::default().fg(Color::Black).bg(Color::Red).bold()
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let content = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {}", description),
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("      ", Style::default()),
+            Span::styled("  Yes  ", yes_style),
+            Span::styled("    ", Style::default()),
+            Span::styled("  No  ", no_style),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Space/Enter", Style::default().fg(Color::Cyan)),
+            Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Tab", Style::default().fg(Color::Cyan)),
+            Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(content);
+    frame.render_widget(paragraph, inner);
+}
+
+/// Draw the weight column selector popup (similar to target selector but with "None" option)
+fn draw_weight_column_selector(
+    frame: &mut Frame,
+    search: &str,
+    columns: &[String],
+    filtered: &[usize],
+    selected: usize,
+) {
+    let area = frame.area();
+
+    let popup_width = 50u16;
+    let popup_height = 18u16;
+    let x = area.width.saturating_sub(popup_width) / 2;
+    let y = area.height.saturating_sub(popup_height) / 2;
+
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green))
+        .title(" Select Weight Column ")
+        .title_style(Style::default().fg(Color::Green).bold());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Split inner area into search box and list
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(inner);
+
+    // Search box
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Search ")
+        .title_style(Style::default().fg(Color::DarkGray));
+
+    let search_para = Paragraph::new(Line::from(vec![
+        Span::styled(search, Style::default().fg(Color::White)),
+        Span::styled("▌", Style::default().fg(Color::Green)),
+    ]))
+    .block(search_block);
+
+    frame.render_widget(search_para, chunks[0]);
+
+    // Build items list with "None" option first
+    let max_visible = (chunks[1].height as usize).saturating_sub(0);
+    let total_items = filtered.len() + 1; // +1 for "None" option
+
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // Add "None" option if it's in the visible range
+    if start_idx == 0 {
+        let style = if selected == 0 {
+            Style::default().fg(Color::Black).bg(Color::Green).bold()
+        } else {
+            Style::default().fg(Color::DarkGray).italic()
+        };
+        items.push(ListItem::new("  (None)").style(style));
+    }
+
+    // Add filtered columns
+    let col_start = if start_idx > 0 { start_idx - 1 } else { 0 };
+    let remaining_space = max_visible.saturating_sub(if start_idx == 0 { 1 } else { 0 });
+
+    for (display_idx, &col_idx) in filtered
+        .iter()
+        .enumerate()
+        .skip(col_start)
+        .take(remaining_space)
+    {
+        let actual_idx = display_idx + 1; // +1 because "None" is at 0
+        let col_name = &columns[col_idx];
+        let style = if actual_idx == selected {
+            Style::default().fg(Color::Black).bg(Color::Green).bold()
+        } else {
+            Style::default().fg(Color::White)
+        };
+        items.push(ListItem::new(format!("  {}", col_name)).style(style));
+    }
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+
+    frame.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    // Show count indicator at bottom
+    let count_text = format!(" {}/{} ", selected + 1, total_items);
+    let text_len = count_text.len();
+    let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+    let count_area = Rect::new(
+        popup_area.x + popup_area.width - text_len as u16 - 1,
+        popup_area.y + popup_area.height - 1,
+        text_len as u16,
+        1,
+    );
+    frame.render_widget(Paragraph::new(count_span), count_area);
 }
 
 /// Draw the event value selector popup
@@ -1813,7 +2336,8 @@ fn run_file_selector_loop(
                     state.selected = state.selected.saturating_sub(10);
                 }
                 KeyCode::PageDown => {
-                    state.selected = (state.selected + 10).min(state.filtered.len().saturating_sub(1));
+                    state.selected =
+                        (state.selected + 10).min(state.filtered.len().saturating_sub(1));
                 }
                 KeyCode::Home => {
                     state.selected = 0;
@@ -2076,11 +2600,7 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
 
     // Count indicator
     if !state.filtered.is_empty() {
-        let count_text = format!(
-            " {}/{} ",
-            state.selected + 1,
-            state.filtered.len()
-        );
+        let count_text = format!(" {}/{} ", state.selected + 1, state.filtered.len());
         let text_len = count_text.len();
         let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
         let count_area = Rect::new(
@@ -2109,6 +2629,9 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
             chunks[2].width.saturating_sub(4),
             1,
         );
-        frame.render_widget(Paragraph::new(msg_line).alignment(Alignment::Center), msg_area);
+        frame.render_widget(
+            Paragraph::new(msg_line).alignment(Alignment::Center),
+            msg_area,
+        );
     }
 }

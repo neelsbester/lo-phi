@@ -92,6 +92,7 @@ pub fn get_weights(df: &DataFrame, weight_column: Option<&str>) -> Result<Vec<f6
 /// Calculate the total weight (sum of all weights).
 /// Useful for computing weighted statistics.
 #[inline]
+#[allow(dead_code)]
 pub fn total_weight(weights: &[f64]) -> f64 {
     weights.iter().sum()
 }

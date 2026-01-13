@@ -60,8 +60,8 @@ Configuration → Load Dataset → Missing Analysis → Gini/IV Analysis → Cor
 ### Key Types in `src/pipeline/iv.rs`
 
 ```rust
-BinningStrategy::Quantile  // Equal-frequency binning (default)
-BinningStrategy::Cart      // Decision-tree splits
+BinningStrategy::Cart      // Decision-tree splits (default)
+BinningStrategy::Quantile  // Equal-frequency binning
 
 IvAnalysis {
     feature_name, feature_type,
@@ -100,6 +100,50 @@ When running the pipeline, Lo-phi generates the following output files:
 - **Ratatui/Crossterm** - Interactive TUI configuration menu and file selector
 - **Indicatif** - Progress bars
 - **zip** - Packaging reduction reports into zip archives
+
+### Interactive TUI Options
+
+The interactive configuration menu (`src/cli/config_menu.rs`) provides keyboard shortcuts to configure pipeline options.
+
+**Three-Column Layout:**
+```
+  THRESHOLDS          │  SOLVER            │  DATA
+  Missing:     0.30   │  Solver: Yes       │  Drop:    None
+  Gini:        0.05   │  Trend:  none      │  Weight:  None
+  Correlation: 0.40   │                    │  Schema:  10000
+```
+
+**Keyboard Shortcuts:**
+- `[Enter]` - Run with current settings (requires target selected)
+- `[T]` - Select target column
+- `[D]` - Select columns to drop (now in DATA column)
+- `[C]` - Edit thresholds (Missing → Gini → Correlation, chained flow)
+- `[S]` - Edit solver options (Use Solver toggle → Trend/Monotonicity selection)
+- `[W]` - Select weight column
+- `[A]` - Advanced options (Schema inference length)
+- `[Q]` - Quit
+
+**TUI-Configurable Parameters:**
+| Category | Parameter | Default | Range |
+|----------|-----------|---------|-------|
+| Thresholds | Missing | 0.30 | 0.0-1.0 |
+| Thresholds | Gini | 0.05 | 0.0-1.0 |
+| Thresholds | Correlation | 0.40 | 0.0-1.0 |
+| Solver | Use Solver | true | true/false |
+| Solver | Trend (monotonicity) | none | none, ascending, descending, peak, valley, auto |
+| Data | Drop columns | None | column names |
+| Data | Weight Column | None | column name or None |
+| Data | Schema Inference | 10000 | 100+ rows (0 = full scan) |
+
+**CLI-Only Parameters (not in TUI):**
+Binning parameters use sensible defaults and are only configurable via CLI:
+- `--binning-strategy` (default: cart)
+- `--gini-bins` (default: 10)
+- `--prebins` (default: 20)
+- `--cart-min-bin-pct` (default: 5.0)
+- `--min-category-samples` (default: 5)
+- `--solver-timeout` (default: 30s)
+- `--solver-gap` (default: 0.01)
 
 ## Future Enhancements (TODO)
 

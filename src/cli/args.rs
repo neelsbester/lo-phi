@@ -46,7 +46,7 @@ pub struct Cli {
     pub missing_threshold: f64,
 
     /// Correlation threshold - drop one feature from pairs with correlation above this value
-    #[arg(long, default_value = "0.95")]
+    #[arg(long, default_value = "0.40")]
     pub correlation_threshold: f64,
 
     /// Gini threshold - drop features with Gini below this value (calculated via WoE binning)
@@ -70,7 +70,7 @@ pub struct Cli {
     /// Enable solver-based optimal binning (MIP optimization).
     /// When enabled, uses mathematical optimization instead of greedy merging.
     /// Slower but produces globally optimal bin boundaries with optional monotonicity constraints.
-    #[arg(long, default_value = "false")]
+    #[arg(long, default_value = "true")]
     pub use_solver: bool,
 
     /// Monotonicity constraint for WoE pattern in binning.
@@ -143,6 +143,7 @@ pub enum Commands {
     },
 }
 
+#[allow(dead_code)]
 impl Cli {
     /// Get the input path, returning an error if not provided when running the reduce pipeline.
     pub fn input(&self) -> Option<&PathBuf> {
@@ -183,7 +184,7 @@ fn validate_cart_min_bin_pct(s: &str) -> Result<f64, String> {
         .parse()
         .map_err(|_| format!("'{}' is not a valid number", s))?;
 
-    if value < 0.0 || value > 100.0 {
+    if !(0.0..=100.0).contains(&value) {
         Err(format!(
             "cart_min_bin_pct must be between 0.0 and 100.0, got {}",
             value
@@ -199,7 +200,7 @@ fn validate_solver_gap(s: &str) -> Result<f64, String> {
         .parse()
         .map_err(|_| format!("'{}' is not a valid number", s))?;
 
-    if value < 0.0 || value > 1.0 {
+    if !(0.0..=1.0).contains(&value) {
         Err(format!(
             "solver_gap must be between 0.0 and 1.0, got {}",
             value

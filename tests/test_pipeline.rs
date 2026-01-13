@@ -98,7 +98,7 @@ fn test_pipeline_with_no_reductions_needed() {
     .unwrap();
 
     let (_temp_dir, csv_path) = create_temp_csv(&mut df);
-    let (df, _, initial_cols, _) = load_dataset_with_progress(&csv_path, 100).unwrap();
+    let (df, _, _initial_cols, _) = load_dataset_with_progress(&csv_path, 100).unwrap();
     let weights = vec![1.0; df.height()];
 
     // Missing - none above 30%
