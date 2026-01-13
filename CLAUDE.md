@@ -89,3 +89,21 @@ IvAnalysis {
 - **Rayon** - Parallel processing for correlation and IV analysis
 - **Ratatui/Crossterm** - Interactive TUI configuration menu
 - **Indicatif** - Progress bars
+
+## Future Enhancements (TODO)
+
+### Correlation Analysis Improvements
+
+1. **WoE-Encoded Correlation for Numeric Features**
+   - Current: Correlation uses raw feature values
+   - Proposed: Option to use WoE-encoded values for correlation
+   - Benefit: Measures correlation in "predictive space" rather than raw linear relationships
+   - Infrastructure exists: `find_woe_for_value()` in `iv.rs` already maps values to WoE
+   - Consideration: Results become dependent on binning parameters
+
+2. **Cramér's V for Categorical Features**
+   - Current: Categorical features are excluded from correlation analysis
+   - Proposed: Use Cramér's V to detect association between categorical pairs
+   - Formula: `V = sqrt(χ² / (N × (k-1)))` where k = min(categories_A, categories_B)
+   - Benefit: Identifies redundant categorical features (e.g., `city` and `postal_code`)
+   - Consideration: Handle missing values as "MISSING" category (consistent with IV analysis)

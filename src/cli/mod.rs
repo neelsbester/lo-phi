@@ -6,5 +6,6 @@ pub mod convert;
 
 pub use args::{Cli, Commands};
 pub use config_menu::{
-    run_config_menu, run_target_mapping_selector, Config, ConfigResult, TargetMappingResult,
+    run_config_menu, run_file_selector, run_target_mapping_selector, Config, ConfigResult,
+    FileSelectResult, TargetMappingResult,
 };

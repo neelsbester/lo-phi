@@ -39,6 +39,9 @@ rayon = "1.10"
 # Rich terminal styling - colors, emojis, and formatting
 console = "0.15"
 
+# Home directory detection for file selector
+dirs = "5"
+
 # Date/time handling - timestamps for progress tracking
 chrono = "0.4"
 

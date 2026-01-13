@@ -15,8 +15,8 @@ use clap::Parser;
 use console::style;
 
 use cli::{
-    run_config_menu, run_target_mapping_selector, Cli, Commands, Config, ConfigResult,
-    TargetMappingResult,
+    run_config_menu, run_file_selector, run_target_mapping_selector, Cli, Commands, Config,
+    ConfigResult, FileSelectResult, TargetMappingResult,
 };
 use pipeline::{
     analyze_features_iv, analyze_missing_values, analyze_target_column, find_correlated_pairs_auto,
@@ -57,23 +57,44 @@ fn main() -> Result<()> {
         };
     }
 
-    // Main reduce pipeline - require input
-    let input = cli.input().ok_or_else(|| {
-        anyhow::anyhow!("Input file is required. Use -i/--input to specify a file.")
-    })?;
+    // Main reduce pipeline - get input from CLI or interactive file selector
+    let input = match cli.input() {
+        Some(path) => path.clone(),
+        None => {
+            // Launch interactive file selector
+            match run_file_selector()? {
+                FileSelectResult::Selected(path) => path,
+                FileSelectResult::Cancelled => {
+                    println!("Cancelled by user.");
+                    std::process::exit(0);
+                }
+            }
+        }
+    };
 
     // Derive output path from input if not provided
-    let output_path = cli.output_path().unwrap();
+    let output_path = cli.output.clone().unwrap_or_else(|| {
+        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let stem = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        let extension = input
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("parquet");
+        parent.join(format!("{}_reduced.{}", stem, extension))
+    });
 
     // Setup configuration (interactive or CLI-based)
-    let mut config = setup_configuration(&cli, input, &output_path)?;
+    let mut config = setup_configuration(&cli, &input, &output_path)?;
 
     // Print styled banner
     print_banner(env!("CARGO_PKG_VERSION"));
 
     // Print configuration card
     print_config(
-        input,
+        &input,
         &config.target,
         &output_path,
         config.missing_threshold,
@@ -83,7 +104,7 @@ fn main() -> Result<()> {
 
     // Load dataset and apply initial drops
     let (mut df, _initial_features, mut summary) =
-        load_and_prepare_dataset(input, &config.columns_to_drop, cli.infer_schema_length)?;
+        load_and_prepare_dataset(&input, &config.columns_to_drop, cli.infer_schema_length)?;
 
     // Validate target and setup weights
     let weights = validate_target_and_weights(&df, &mut config, cli.no_confirm)?;
@@ -92,7 +113,7 @@ fn main() -> Result<()> {
     run_missing_analysis(&mut df, &config, &weights, &mut summary)?;
 
     // Run Gini/IV analysis
-    run_gini_analysis(&df, &config, &cli, input, &weights, &mut summary)?;
+    run_gini_analysis(&df, &config, &cli, &input, &weights, &mut summary)?;
 
     // Update df after Gini drops
     if !summary.dropped_gini.is_empty() {

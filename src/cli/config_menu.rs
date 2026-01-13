@@ -15,7 +15,7 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap},
 };
 
 use crate::pipeline::TargetMapping;
@@ -475,10 +475,11 @@ fn run_menu_loop(
     columns: Vec<String>,
 ) -> Result<ConfigResult> {
     let mut state = MenuState::Main;
+    let mut scroll_offset: u16 = 0;
 
     loop {
         terminal.draw(|frame| {
-            draw_ui(frame, &config, &state, &columns);
+            draw_ui(frame, &config, &state, &columns, &mut scroll_offset);
         })?;
 
         if let Event::Key(key) = event::read()? {
@@ -527,6 +528,21 @@ fn run_menu_loop(
                     }
                     KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                         return Ok(ConfigResult::Quit);
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        scroll_offset = scroll_offset.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        scroll_offset = scroll_offset.saturating_add(1);
+                    }
+                    KeyCode::PageUp => {
+                        scroll_offset = scroll_offset.saturating_sub(5);
+                    }
+                    KeyCode::PageDown => {
+                        scroll_offset = scroll_offset.saturating_add(5);
+                    }
+                    KeyCode::Home => {
+                        scroll_offset = 0;
                     }
                     _ => {}
                 },
@@ -785,7 +801,7 @@ fn truncate_path_start(path: &str, max_len: usize) -> String {
     format!("...{}", &path[start_idx..])
 }
 
-fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[String]) {
+fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[String], scroll_offset: &mut u16) {
     let area = frame.area();
 
     // ASCII logo for Lo-phi
@@ -824,15 +840,16 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
         ]),
     ];
     let logo_height = 9u16; // 6 logo lines + 1 empty + 1 subtitle + 1 spacing
+    let scroll_hint_height = 1u16; // Height for the scroll hint below the box
 
     // Calculate centered box dimensions - wider box (66 chars, ~10% wider than 60)
     let menu_width = 66u16;
     // Dynamic height: use minimum needed (22) or available space, whichever is smaller
     let ideal_height = 22u16;
-    let menu_height = ideal_height.min(area.height.saturating_sub(logo_height + 2)); // Leave room for logo
+    let menu_height = ideal_height.min(area.height.saturating_sub(logo_height + scroll_hint_height + 2)); // Leave room for logo and hint
 
-    // Total height needed: logo + menu
-    let total_height = logo_height + menu_height;
+    // Total height needed: logo + menu + scroll hint
+    let total_height = logo_height + menu_height + scroll_hint_height;
     let x = area.width.saturating_sub(menu_width) / 2;
     let y = area.height.saturating_sub(total_height) / 2;
 
@@ -868,9 +885,62 @@ fn draw_ui(frame: &mut Frame, config: &Config, state: &MenuState, _columns: &[St
         inner_area.height as usize,
     );
 
-    let paragraph = Paragraph::new(content).wrap(Wrap { trim: false });
+    let content_height = content.len() as u16;
+    let visible_height = inner_area.height;
+
+    // Clamp scroll offset to valid range
+    let max_scroll = content_height.saturating_sub(visible_height);
+    if *scroll_offset > max_scroll {
+        *scroll_offset = max_scroll;
+    }
+
+    let paragraph = Paragraph::new(content.clone())
+        .wrap(Wrap { trim: false })
+        .scroll((*scroll_offset, 0));
 
     frame.render_widget(paragraph, inner_area);
+
+    // Draw scrollbar if content overflows
+    let has_overflow = content_height > visible_height;
+    if has_overflow {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"))
+            .track_symbol(Some("│"))
+            .thumb_symbol("█");
+
+        let mut scrollbar_state = ScrollbarState::new(max_scroll as usize)
+            .position(*scroll_offset as usize);
+
+        // Render scrollbar in the right edge of menu area
+        let scrollbar_area = Rect::new(
+            menu_area.x + menu_area.width - 1,
+            menu_area.y + 1,
+            1,
+            menu_area.height - 2,
+        );
+        frame.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    }
+
+    // Draw static scroll hint below the menu box (only in Main state)
+    if matches!(state, MenuState::Main) {
+        let hint_y = menu_area.y + menu_area.height;
+        let hint_area = Rect::new(x, hint_y, menu_width.min(area.width), 1);
+
+        let hint_content = if has_overflow {
+            Line::from(vec![
+                Span::styled("  ↑/↓", Style::default().fg(Color::DarkGray)),
+                Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("PgUp/PgDn", Style::default().fg(Color::DarkGray)),
+                Span::styled(" page", Style::default().fg(Color::DarkGray)),
+            ])
+        } else {
+            Line::from("") // Empty line to maintain consistent layout
+        };
+
+        let hint_paragraph = Paragraph::new(hint_content).alignment(Alignment::Center);
+        frame.render_widget(hint_paragraph, hint_area);
+    }
 
     // Draw popup based on current state
     match state {
@@ -1590,5 +1660,455 @@ fn draw_non_event_value_selector(
             1,
         );
         frame.render_widget(Paragraph::new(count_span), count_area);
+    }
+}
+
+// ============================================================================
+// File Selector TUI
+// ============================================================================
+
+/// Result of the file selector interaction
+pub enum FileSelectResult {
+    /// User selected a file
+    Selected(PathBuf),
+    /// User cancelled
+    Cancelled,
+}
+
+/// A file or directory entry in the file browser
+struct FileEntry {
+    name: String,
+    path: PathBuf,
+    is_dir: bool,
+}
+
+/// State for the file selector
+struct FileSelectorState {
+    current_dir: PathBuf,
+    entries: Vec<FileEntry>,
+    selected: usize,
+    search: String,
+    filtered: Vec<usize>,
+}
+
+impl FileSelectorState {
+    fn new(start_dir: PathBuf) -> Self {
+        let entries = list_directory(&start_dir);
+        let filtered: Vec<usize> = (0..entries.len()).collect();
+        Self {
+            current_dir: start_dir,
+            entries,
+            selected: 0,
+            search: String::new(),
+            filtered,
+        }
+    }
+
+    fn refresh(&mut self) {
+        self.entries = list_directory(&self.current_dir);
+        self.search.clear();
+        self.filtered = (0..self.entries.len()).collect();
+        self.selected = 0;
+    }
+
+    fn navigate_to(&mut self, path: PathBuf) {
+        self.current_dir = path;
+        self.refresh();
+    }
+
+    fn update_filter(&mut self) {
+        let search_lower = self.search.to_lowercase();
+        self.filtered = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.name.to_lowercase().contains(&search_lower))
+            .map(|(i, _)| i)
+            .collect();
+        self.selected = 0;
+    }
+}
+
+/// Run the interactive file selector
+pub fn run_file_selector() -> Result<FileSelectResult> {
+    // Get starting directory (home or fallback to current)
+    let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+
+    // Setup terminal
+    enable_raw_mode()?;
+    stdout().execute(EnterAlternateScreen)?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+
+    let result = run_file_selector_loop(&mut terminal, start_dir);
+
+    // Restore terminal
+    disable_raw_mode()?;
+    stdout().execute(LeaveAlternateScreen)?;
+
+    result
+}
+
+fn run_file_selector_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    start_dir: PathBuf,
+) -> Result<FileSelectResult> {
+    let mut state = FileSelectorState::new(start_dir);
+
+    loop {
+        terminal.draw(|frame| {
+            draw_file_selector(frame, &state);
+        })?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Enter => {
+                    if !state.filtered.is_empty() {
+                        let idx = state.filtered[state.selected];
+                        let entry = &state.entries[idx];
+                        if entry.is_dir {
+                            // Navigate into directory
+                            state.navigate_to(entry.path.clone());
+                        } else {
+                            // Select file
+                            return Ok(FileSelectResult::Selected(entry.path.clone()));
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if state.search.is_empty() {
+                        // Navigate to parent directory
+                        if let Some(parent) = state.current_dir.parent() {
+                            state.navigate_to(parent.to_path_buf());
+                        }
+                    } else {
+                        // Remove last character from search
+                        state.search.pop();
+                        state.update_filter();
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    // Only quit if search is empty, otherwise clear search
+                    if state.search.is_empty() {
+                        return Ok(FileSelectResult::Cancelled);
+                    } else {
+                        state.search.clear();
+                        state.update_filter();
+                    }
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if state.selected > 0 {
+                        state.selected -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if state.selected + 1 < state.filtered.len() {
+                        state.selected += 1;
+                    }
+                }
+                KeyCode::PageUp => {
+                    state.selected = state.selected.saturating_sub(10);
+                }
+                KeyCode::PageDown => {
+                    state.selected = (state.selected + 10).min(state.filtered.len().saturating_sub(1));
+                }
+                KeyCode::Home => {
+                    state.selected = 0;
+                }
+                KeyCode::End => {
+                    state.selected = state.filtered.len().saturating_sub(1);
+                }
+                KeyCode::Char(c) if !c.is_control() => {
+                    // Add to search filter (but not for j/k when not in search mode)
+                    if c != 'j' && c != 'k' || !state.search.is_empty() {
+                        state.search.push(c);
+                        state.update_filter();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// List directory contents, filtered for CSV/Parquet files and directories
+fn list_directory(path: &std::path::Path) -> Vec<FileEntry> {
+    let mut entries = Vec::new();
+
+    // Add parent directory entry if not at root
+    if let Some(parent) = path.parent() {
+        if parent != path {
+            entries.push(FileEntry {
+                name: "..".to_string(),
+                path: parent.to_path_buf(),
+                is_dir: true,
+            });
+        }
+    }
+
+    // Read directory entries
+    if let Ok(read_dir) = std::fs::read_dir(path) {
+        for entry in read_dir.flatten() {
+            let entry_path = entry.path();
+            let is_dir = entry_path.is_dir();
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            // Skip hidden files/directories (starting with .)
+            if name.starts_with('.') {
+                continue;
+            }
+
+            // Filter: directories or CSV/Parquet files
+            if is_dir || is_valid_data_file(&entry_path) {
+                entries.push(FileEntry {
+                    name,
+                    path: entry_path,
+                    is_dir,
+                });
+            }
+        }
+    }
+
+    // Sort: directories first (except ..), then alphabetically
+    entries.sort_by(|a, b| {
+        // Keep ".." at the top
+        if a.name == ".." {
+            return std::cmp::Ordering::Less;
+        }
+        if b.name == ".." {
+            return std::cmp::Ordering::Greater;
+        }
+        // Directories before files
+        match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+
+    entries
+}
+
+/// Check if a file is a valid data file (CSV or Parquet)
+fn is_valid_data_file(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("csv") || e.eq_ignore_ascii_case("parquet"))
+        .unwrap_or(false)
+}
+
+/// Draw the file selector UI
+fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
+    let area = frame.area();
+
+    // ASCII logo for Lo-phi (same as config menu)
+    let logo_lines = vec![
+        Line::from(Span::styled(
+            "██╗      ██████╗       ██████╗ ██╗  ██╗██╗",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "██║     ██╔═══██╗      ██╔══██╗██║  ██║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "██║     ██║   ██║█████╗██████╔╝███████║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "██║     ██║   ██║╚════╝██╔═══╝ ██╔══██║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "███████╗╚██████╔╝      ██║     ██║  ██║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "╚══════╝ ╚═════╝       ╚═╝     ╚═╝  ╚═╝╚═╝",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("φ ", Style::default().fg(Color::Magenta).bold()),
+            Span::styled(
+                "Feature Reduction as simple as phi",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+    ];
+    let logo_height = 9u16;
+
+    // Calculate dimensions
+    let popup_width = 70u16;
+    let popup_height = 22u16;
+    let total_height = logo_height + popup_height;
+
+    let x = area.width.saturating_sub(popup_width) / 2;
+    let y = area.height.saturating_sub(total_height) / 2;
+
+    // Draw logo
+    let logo_width = 43u16;
+    let logo_x = area.width.saturating_sub(logo_width) / 2;
+    let logo_area = Rect::new(logo_x, y, logo_width.min(area.width), logo_height);
+    let logo_paragraph = Paragraph::new(logo_lines).alignment(Alignment::Center);
+    frame.render_widget(logo_paragraph, logo_area);
+
+    // Main popup area
+    let popup_y = y + logo_height;
+    let popup_area = Rect::new(
+        x,
+        popup_y,
+        popup_width.min(area.width),
+        popup_height.min(area.height.saturating_sub(popup_y)),
+    );
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Select Input File ")
+        .title_style(Style::default().fg(Color::Cyan).bold());
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Split inner area
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // Current path
+            Constraint::Length(3), // Search box
+            Constraint::Min(1),    // File list
+            Constraint::Length(2), // Help text
+        ])
+        .split(inner);
+
+    // Current path display (truncated from start if too long)
+    let path_str = state.current_dir.display().to_string();
+    let max_path_len = (chunks[0].width as usize).saturating_sub(12);
+    let display_path = truncate_path_start(&path_str, max_path_len);
+    let path_line = Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled("Current: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(display_path, Style::default().fg(Color::White)),
+    ]);
+    frame.render_widget(Paragraph::new(path_line), chunks[0]);
+
+    // Search box
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Filter ")
+        .title_style(Style::default().fg(Color::DarkGray));
+
+    let search_content = if state.search.is_empty() {
+        Line::from(vec![
+            Span::styled("Type to filter...", Style::default().fg(Color::DarkGray)),
+            Span::styled("▌", Style::default().fg(Color::Cyan)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(&state.search, Style::default().fg(Color::White)),
+            Span::styled("▌", Style::default().fg(Color::Cyan)),
+        ])
+    };
+    let search_para = Paragraph::new(search_content).block(search_block);
+    frame.render_widget(search_para, chunks[1]);
+
+    // File list
+    let list_height = chunks[2].height as usize;
+    let start_idx = if state.selected >= list_height {
+        state.selected - list_height + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = state
+        .filtered
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(list_height)
+        .map(|(display_idx, &entry_idx)| {
+            let entry = &state.entries[entry_idx];
+            let icon = if entry.is_dir { "▸ " } else { "  " };
+            let suffix = if entry.is_dir && entry.name != ".." {
+                "/"
+            } else {
+                ""
+            };
+
+            let style = if display_idx == state.selected {
+                if entry.is_dir {
+                    Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+                } else {
+                    Style::default().fg(Color::Black).bg(Color::Green).bold()
+                }
+            } else if entry.is_dir {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            ListItem::new(format!("  {}{}{}", icon, entry.name, suffix)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.selected.saturating_sub(start_idx)));
+    frame.render_stateful_widget(list, chunks[2], &mut list_state);
+
+    // Help text
+    let help_text = Line::from(vec![
+        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Backspace", Style::default().fg(Color::Cyan)),
+        Span::styled(" back  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(help_text), chunks[3]);
+
+    // Count indicator
+    if !state.filtered.is_empty() {
+        let count_text = format!(
+            " {}/{} ",
+            state.selected + 1,
+            state.filtered.len()
+        );
+        let text_len = count_text.len();
+        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_area = Rect::new(
+            popup_area.x + popup_area.width - text_len as u16 - 1,
+            popup_area.y + popup_area.height - 1,
+            text_len as u16,
+            1,
+        );
+        frame.render_widget(Paragraph::new(count_span), count_area);
+    }
+
+    // Show "No files found" message if filtered is empty
+    if state.filtered.is_empty() {
+        let msg = if state.search.is_empty() {
+            "No CSV or Parquet files in this directory"
+        } else {
+            "No matching files"
+        };
+        let msg_line = Line::from(Span::styled(
+            msg,
+            Style::default().fg(Color::DarkGray).italic(),
+        ));
+        let msg_area = Rect::new(
+            chunks[2].x + 2,
+            chunks[2].y + chunks[2].height / 2,
+            chunks[2].width.saturating_sub(4),
+            1,
+        );
+        frame.render_widget(Paragraph::new(msg_line).alignment(Alignment::Center), msg_area);
     }
 }
