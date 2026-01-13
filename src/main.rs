@@ -24,7 +24,11 @@ use pipeline::{
     load_dataset_with_progress, select_features_to_drop, BinningStrategy, MonotonicityConstraint,
     SolverConfig, TargetAnalysis, TargetMapping,
 };
-use report::{export_gini_analysis_enhanced, ExportParams, ReductionSummary};
+use report::{
+    export_gini_analysis_enhanced, export_reduction_report, export_reduction_report_csv,
+    package_reduction_reports, ExportParams, ReductionReportBuilder, ReductionSummary,
+    ReportBuilderParams,
+};
 use utils::{
     create_spinner, finish_with_success, print_banner, print_completion, print_config, print_count,
     print_info, print_step_header, print_step_time, print_success,
@@ -109,11 +113,34 @@ fn main() -> Result<()> {
     // Validate target and setup weights
     let weights = validate_target_and_weights(&df, &mut config, cli.no_confirm)?;
 
+    // Parse binning strategy for report
+    let binning_strategy: BinningStrategy = cli
+        .binning_strategy
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!(e))?;
+
+    // Create report builder
+    let mut report_builder = ReductionReportBuilder::new(ReportBuilderParams {
+        input_file: input.to_string_lossy().to_string(),
+        output_file: output_path.to_string_lossy().to_string(),
+        target_column: config.target.clone(),
+        weight_column: config.weight_column.clone(),
+        binning_strategy: binning_strategy.to_string(),
+        num_bins: config.gini_bins,
+        missing_threshold: config.missing_threshold,
+        gini_threshold: config.gini_threshold,
+        correlation_threshold: config.correlation_threshold,
+    });
+
     // Run missing value analysis
-    run_missing_analysis(&mut df, &config, &weights, &mut summary)?;
+    let (missing_ratios, features_to_drop_missing) =
+        run_missing_analysis(&mut df, &config, &weights, &mut summary)?;
+    report_builder.set_missing_results(&missing_ratios, &features_to_drop_missing);
 
     // Run Gini/IV analysis
-    run_gini_analysis(&df, &config, &cli, &input, &weights, &mut summary)?;
+    let (gini_analyses, features_to_drop_gini) =
+        run_gini_analysis(&df, &config, &cli, &input, &weights, &mut summary)?;
+    report_builder.set_gini_results(&gini_analyses, &features_to_drop_gini);
 
     // Update df after Gini drops
     if !summary.dropped_gini.is_empty() {
@@ -121,10 +148,60 @@ fn main() -> Result<()> {
     }
 
     // Run correlation analysis
-    run_correlation_analysis(&mut df, &config, &weights, &mut summary)?;
+    let (correlated_pairs, features_to_drop_corr) =
+        run_correlation_analysis(&mut df, &config, &weights, &mut summary)?;
+    report_builder.set_correlation_results(&correlated_pairs, &features_to_drop_corr);
 
     // Save results
     save_results(&mut df, &output_path, &mut summary)?;
+
+    // Build and export reduction report
+    report_builder.set_timing(&summary);
+    let report = report_builder.build();
+    let report_path = {
+        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let stem = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        parent.join(format!("{}_reduction_report.json", stem))
+    };
+    export_reduction_report(&report, &report_path)?;
+
+    // Also export CSV summary for easy viewing
+    let csv_report_path = {
+        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let stem = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        parent.join(format!("{}_reduction_report.csv", stem))
+    };
+    export_reduction_report_csv(&report, &csv_report_path)?;
+
+    // Package all three reports into a zip file
+    let gini_analysis_path = {
+        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let stem = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        parent.join(format!("{}_gini_analysis.json", stem))
+    };
+    let zip_path = {
+        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let stem = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        parent.join(format!("{}_reduction_report.zip", stem))
+    };
+    package_reduction_reports(&gini_analysis_path, &report_path, &csv_report_path, &zip_path)?;
+
+    print_success(&format!(
+        "Reduction report saved to {}",
+        zip_path.display()
+    ));
 
     // Display summary and completion
     summary.display();
@@ -353,12 +430,13 @@ fn validate_target_and_weights(
 }
 
 /// Run missing value analysis
+/// Returns (missing_ratios, features_dropped) for report generation
 fn run_missing_analysis(
     df: &mut polars::prelude::DataFrame,
     config: &PipelineConfig,
     weights: &[f64],
     summary: &mut ReductionSummary,
-) -> Result<()> {
+) -> Result<(Vec<(String, f64)>, Vec<String>)> {
     print_step_header(1, "Missing Value Analysis");
 
     let step_start = Instant::now();
@@ -378,7 +456,7 @@ fn run_missing_analysis(
         );
 
         *df = df.clone().drop_many(&features_to_drop_missing);
-        summary.add_missing_drops(features_to_drop_missing);
+        summary.add_missing_drops(features_to_drop_missing.clone());
         print_success("Dropped features with high missing values");
     }
 
@@ -386,10 +464,11 @@ fn run_missing_analysis(
     summary.set_missing_time(missing_elapsed);
     print_step_time(missing_elapsed);
 
-    Ok(())
+    Ok((missing_ratios, features_to_drop_missing))
 }
 
 /// Run Gini/IV analysis
+/// Returns (gini_analyses, features_dropped) for report generation
 fn run_gini_analysis(
     df: &polars::prelude::DataFrame,
     config: &PipelineConfig,
@@ -397,7 +476,7 @@ fn run_gini_analysis(
     input: &std::path::Path,
     weights: &[f64],
     summary: &mut ReductionSummary,
-) -> Result<()> {
+) -> Result<(Vec<pipeline::IvAnalysis>, Vec<String>)> {
     print_step_header(2, "Univariate Gini Analysis");
 
     // Parse binning strategy
@@ -465,10 +544,6 @@ fn run_gini_analysis(
         &gini_output_path,
         &export_params,
     )?;
-    print_success(&format!(
-        "Gini analysis saved to {}",
-        gini_output_path.display()
-    ));
 
     if features_to_drop_gini.is_empty() {
         print_info("No features below Gini threshold");
@@ -479,7 +554,7 @@ fn run_gini_analysis(
             Some(&format!("(<{:.2})", config.gini_threshold)),
         );
 
-        summary.add_gini_drops(features_to_drop_gini);
+        summary.add_gini_drops(features_to_drop_gini.clone());
         print_success("Dropped low Gini features");
     }
 
@@ -487,16 +562,17 @@ fn run_gini_analysis(
     summary.set_gini_time(gini_elapsed);
     print_step_time(gini_elapsed);
 
-    Ok(())
+    Ok((gini_analyses, features_to_drop_gini))
 }
 
 /// Run correlation analysis
+/// Returns (correlated_pairs, features_dropped) for report generation
 fn run_correlation_analysis(
     df: &mut polars::prelude::DataFrame,
     config: &PipelineConfig,
     weights: &[f64],
     summary: &mut ReductionSummary,
-) -> Result<()> {
+) -> Result<(Vec<pipeline::CorrelatedPair>, Vec<String>)> {
     print_step_header(3, "Correlation Analysis");
 
     let step_start = Instant::now();
@@ -523,7 +599,7 @@ fn run_correlation_analysis(
         );
 
         *df = df.clone().drop_many(&features_to_drop_corr);
-        summary.add_correlation_drops(features_to_drop_corr);
+        summary.add_correlation_drops(features_to_drop_corr.clone());
         print_success("Dropped highly correlated features");
     }
 
@@ -531,7 +607,7 @@ fn run_correlation_analysis(
     summary.set_correlation_time(correlation_elapsed);
     print_step_time(correlation_elapsed);
 
-    Ok(())
+    Ok((correlated_pairs, features_to_drop_corr))
 }
 
 /// Save results to output file

@@ -53,6 +53,9 @@ crossterm = "0.28"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# Zip archive creation for bundled reports
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+
 # Linear/Mixed-Integer Programming solver for optimal binning
 # Using HiGHS backend only (default-features = false disables Cbc which requires separate library)
 good_lp = { version = "1.8", default-features = false, features = ["highs"] }

@@ -54,7 +54,7 @@ Configuration → Load Dataset → Missing Analysis → Gini/IV Analysis → Cor
   - `iv.rs` - WoE/IV binning analysis (most complex module, ~600 lines)
   - `correlation.rs` - Pearson correlation with Welford algorithm
   - `target.rs` - Binary/non-binary target column handling
-- **`src/report/`** - Results summary tables (`summary.rs`) and JSON export (`gini_export.rs`)
+- **`src/report/`** - Results summary tables (`summary.rs`), Gini JSON export (`gini_export.rs`), comprehensive reduction report (`reduction_report.rs`)
 - **`src/utils/`** - Progress bars and terminal styling
 
 ### Key Types in `src/pipeline/iv.rs`
@@ -83,12 +83,23 @@ IvAnalysis {
 - Integration tests: `test_pipeline.rs`, `test_missing.rs`, `test_correlation.rs`, `test_target_mapping.rs`, etc.
 - Benchmarks: `benches/binning_benchmark.rs` - Quantile vs CART performance comparison
 
+### Output Files
+
+When running the pipeline, Lo-phi generates the following output files:
+
+1. **`{input}_reduced.{csv|parquet}`** - The reduced dataset with dropped features removed
+2. **`{input}_reduction_report.zip`** - Bundled reports containing:
+   - `{input}_gini_analysis.json` - Detailed Gini/IV analysis with WoE bins per feature
+   - `{input}_reduction_report.json` - Comprehensive JSON report with full analysis details
+   - `{input}_reduction_report.csv` - Human-readable CSV summary with one row per feature, including all correlated features (pipe-separated format: `feature: 0.92 | feature2: 0.88`)
+
 ### Key Dependencies
 
 - **Polars** - DataFrame operations (lazy/streaming, CSV, Parquet)
 - **Rayon** - Parallel processing for correlation and IV analysis
-- **Ratatui/Crossterm** - Interactive TUI configuration menu
+- **Ratatui/Crossterm** - Interactive TUI configuration menu and file selector
 - **Indicatif** - Progress bars
+- **zip** - Packaging reduction reports into zip archives
 
 ## Future Enhancements (TODO)
 
