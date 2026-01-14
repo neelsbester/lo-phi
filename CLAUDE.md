@@ -116,6 +116,7 @@ The interactive configuration menu (`src/cli/config_menu.rs`) provides keyboard 
 **Keyboard Shortcuts:**
 - `[Enter]` - Run with current settings (requires target selected)
 - `[T]` - Select target column
+- `[F]` - Convert CSV to Parquet (fast in-memory mode)
 - `[D]` - Select columns to drop (now in DATA column)
 - `[C]` - Edit thresholds (Missing → Gini → Correlation, chained flow)
 - `[S]` - Edit solver options (Use Solver toggle → Trend/Monotonicity selection)

@@ -273,11 +273,12 @@ fn setup_configuration(
         })
     } else {
         // Load column names for interactive selection
-        let columns = get_column_names(input)?;
+        let mut current_input = input.to_path_buf();
+        let mut columns = get_column_names(&current_input)?;
 
-        // Show interactive config menu
-        let config = Config {
-            input: input.to_path_buf(),
+        // Show interactive config menu (loop to handle conversion)
+        let mut config = Config {
+            input: current_input.clone(),
             target: cli.target.clone(),
             output: output_path.to_path_buf(),
             missing_threshold: cli.missing_threshold,
@@ -298,36 +299,92 @@ fn setup_configuration(
             infer_schema_length: cli.infer_schema_length,
         };
 
-        match run_config_menu(config, columns)? {
-            ConfigResult::Proceed(boxed_cfg) => {
-                let cfg = *boxed_cfg;
-                let target = cfg.target.ok_or_else(|| {
-                    anyhow::anyhow!("Target column must be selected before proceeding")
-                })?;
+        loop {
+            match run_config_menu(config.clone(), columns.clone())? {
+                ConfigResult::Proceed(boxed_cfg) => {
+                    let cfg = *boxed_cfg;
+                    let target = cfg.target.ok_or_else(|| {
+                        anyhow::anyhow!("Target column must be selected before proceeding")
+                    })?;
 
-                Ok(PipelineConfig {
-                    target,
-                    missing_threshold: cfg.missing_threshold,
-                    gini_threshold: cfg.gini_threshold,
-                    gini_bins: cfg.gini_bins,
-                    correlation_threshold: cfg.correlation_threshold,
-                    columns_to_drop: cfg.columns_to_drop,
-                    target_mapping: cfg.target_mapping,
-                    weight_column: cfg.weight_column,
-                    binning_strategy: cfg.binning_strategy,
-                    prebins: cfg.prebins,
-                    cart_min_bin_pct: cfg.cart_min_bin_pct,
-                    min_category_samples: cfg.min_category_samples,
-                    use_solver: cfg.use_solver,
-                    monotonicity: cfg.monotonicity,
-                    solver_timeout: cfg.solver_timeout,
-                    solver_gap: cfg.solver_gap,
-                    infer_schema_length: cfg.infer_schema_length,
-                })
-            }
-            ConfigResult::Quit => {
-                println!("Cancelled by user.");
-                std::process::exit(0);
+                    return Ok(PipelineConfig {
+                        target,
+                        missing_threshold: cfg.missing_threshold,
+                        gini_threshold: cfg.gini_threshold,
+                        gini_bins: cfg.gini_bins,
+                        correlation_threshold: cfg.correlation_threshold,
+                        columns_to_drop: cfg.columns_to_drop,
+                        target_mapping: cfg.target_mapping,
+                        weight_column: cfg.weight_column,
+                        binning_strategy: cfg.binning_strategy,
+                        prebins: cfg.prebins,
+                        cart_min_bin_pct: cfg.cart_min_bin_pct,
+                        min_category_samples: cfg.min_category_samples,
+                        use_solver: cfg.use_solver,
+                        monotonicity: cfg.monotonicity,
+                        solver_timeout: cfg.solver_timeout,
+                        solver_gap: cfg.solver_gap,
+                        infer_schema_length: cfg.infer_schema_length,
+                    });
+                }
+                ConfigResult::Convert(boxed_cfg) => {
+                    let cfg = *boxed_cfg;
+                    // Run CSV to Parquet conversion
+                    cli::convert::run_convert(
+                        &cfg.input,
+                        None, // Auto-generate output path
+                        cfg.infer_schema_length,
+                        true, // Use fast mode
+                    )?;
+
+                    // Update input path to the new parquet file
+                    let parquet_path = cfg.input.with_extension("parquet");
+                    current_input = parquet_path.clone();
+
+                    // Re-read columns from the new file
+                    columns = get_column_names(&current_input)?;
+
+                    // Update config with new input path and output path
+                    let new_output = {
+                        let parent = current_input
+                            .parent()
+                            .unwrap_or_else(|| std::path::Path::new("."));
+                        let stem = current_input
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("output");
+                        parent.join(format!("{}_reduced.parquet", stem))
+                    };
+
+                    config = Config {
+                        input: current_input.clone(),
+                        output: new_output,
+                        target: cfg.target,
+                        missing_threshold: cfg.missing_threshold,
+                        gini_threshold: cfg.gini_threshold,
+                        correlation_threshold: cfg.correlation_threshold,
+                        columns_to_drop: cfg.columns_to_drop,
+                        target_mapping: cfg.target_mapping,
+                        weight_column: cfg.weight_column,
+                        binning_strategy: cfg.binning_strategy,
+                        gini_bins: cfg.gini_bins,
+                        prebins: cfg.prebins,
+                        cart_min_bin_pct: cfg.cart_min_bin_pct,
+                        min_category_samples: cfg.min_category_samples,
+                        use_solver: cfg.use_solver,
+                        monotonicity: cfg.monotonicity,
+                        solver_timeout: cfg.solver_timeout,
+                        solver_gap: cfg.solver_gap,
+                        infer_schema_length: cfg.infer_schema_length,
+                    };
+
+                    println!("\nPress any key to continue...");
+                    let _ = std::io::stdin().read_line(&mut String::new());
+                }
+                ConfigResult::Quit => {
+                    println!("Cancelled by user.");
+                    std::process::exit(0);
+                }
             }
         }
     }

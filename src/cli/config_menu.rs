@@ -124,6 +124,8 @@ enum MenuState {
 pub enum ConfigResult {
     /// User confirmed, proceed with these settings
     Proceed(Box<Config>),
+    /// User requested CSV to Parquet conversion
+    Convert(Box<Config>),
     /// User quit
     Quit,
 }
@@ -590,6 +592,9 @@ fn run_menu_loop(
                         state = MenuState::EditInferSchemaLength {
                             input: config.infer_schema_length.to_string(),
                         };
+                    }
+                    KeyCode::Char('f') | KeyCode::Char('F') => {
+                        return Ok(ConfigResult::Convert(Box::new(config)));
                     }
                     KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
                         return Ok(ConfigResult::Quit);
@@ -1273,7 +1278,10 @@ fn build_content(
     // Three-column header: THRESHOLDS | SOLVER | DATA
     // Fixed widths: col1=20 chars, col2=16 chars, col3=rest
     lines.push(Line::from(vec![
-        Span::styled("  THRESHOLDS        ", Style::default().fg(Color::Cyan).bold()),
+        Span::styled(
+            "  THRESHOLDS        ",
+            Style::default().fg(Color::Cyan).bold(),
+        ),
         Span::styled("│ ", Style::default().fg(Color::DarkGray)),
         Span::styled("SOLVER          ", Style::default().fg(Color::Cyan).bold()),
         Span::styled("│ ", Style::default().fg(Color::DarkGray)),
@@ -1417,7 +1425,10 @@ fn build_content(
     lines.push(Line::from(vec![
         Span::styled("  [", Style::default().fg(Color::DarkGray)),
         Span::styled("T", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Select target column", Style::default().fg(Color::White)),
+        Span::styled("] Select target ", Style::default().fg(Color::White)),
+        Span::styled("[", Style::default().fg(Color::DarkGray)),
+        Span::styled("F", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("] Convert file", Style::default().fg(Color::White)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  [", Style::default().fg(Color::DarkGray)),
@@ -1438,7 +1449,7 @@ fn build_content(
     lines.push(Line::from(vec![
         Span::styled("  [", Style::default().fg(Color::DarkGray)),
         Span::styled("A", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Advanced     ", Style::default().fg(Color::White)),
+        Span::styled("] Advanced      ", Style::default().fg(Color::White)),
         Span::styled("[", Style::default().fg(Color::DarkGray)),
         Span::styled("Q", Style::default().fg(Color::Cyan).bold()),
         Span::styled("] Quit", Style::default().fg(Color::White)),
