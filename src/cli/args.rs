@@ -3,10 +3,17 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Lo-phi - Reduce dataset features using missing value and correlation analysis
+/// Lo-phi - Feature reduction tool with guided wizard interface
 #[derive(Parser, Debug)]
 #[command(name = "lophi")]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = Some("\
+Lo-phi - Feature reduction tool with guided wizard interface\n\n\
+USAGE MODES:\n  \
+  Wizard (default):     lophi\n  \
+  Manual Dashboard:     lophi --manual --input data.csv\n  \
+  CLI Only:             lophi --no-confirm --input data.csv --target y ...\n\n\
+The wizard guides you through configuration step-by-step.\n\
+Use --manual for the full dashboard with all settings visible at once."))]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -111,6 +118,11 @@ pub struct Cli {
     /// Skip interactive confirmation prompts
     #[arg(long, default_value = "false")]
     pub no_confirm: bool,
+
+    /// Launch expert dashboard mode instead of the guided wizard.
+    /// Use this flag for full control over all settings in a single screen.
+    #[arg(long, default_value = "false")]
+    pub manual: bool,
 
     /// Number of rows to use for schema inference (CSV only).
     /// Higher values improve type detection for ambiguous columns but may be slower.

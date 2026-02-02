@@ -24,7 +24,7 @@ use ratatui::{
 use crate::pipeline::TargetMapping;
 
 /// Configuration values that can be customized
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Config {
     pub input: PathBuf,
     pub target: Option<String>,

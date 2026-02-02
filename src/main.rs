@@ -15,8 +15,8 @@ use clap::Parser;
 use console::style;
 
 use cli::{
-    run_config_menu, run_file_selector, run_target_mapping_selector, Cli, Commands, Config,
-    ConfigResult, FileSelectResult, TargetMappingResult,
+    run_config_menu, run_file_selector, run_target_mapping_selector, run_wizard, Cli, Commands,
+    Config, ConfigResult, FileSelectResult, TargetMappingResult, WizardResult,
 };
 use pipeline::{
     analyze_features_iv, analyze_missing_values, analyze_target_column, find_correlated_pairs_auto,
@@ -36,6 +36,10 @@ use utils::{
 
 /// Configuration parameters for the reduction pipeline
 struct PipelineConfig {
+    /// Input file path
+    input: std::path::PathBuf,
+    /// Output file path
+    output: std::path::PathBuf,
     target: String,
     missing_threshold: f64,
     gini_threshold: f64,
@@ -76,37 +80,10 @@ fn main() -> Result<()> {
         };
     }
 
-    // Main reduce pipeline - get input from CLI or interactive file selector
-    let input = match cli.input() {
-        Some(path) => path.clone(),
-        None => {
-            // Launch interactive file selector
-            match run_file_selector()? {
-                FileSelectResult::Selected(path) => path,
-                FileSelectResult::Cancelled => {
-                    println!("Cancelled by user.");
-                    std::process::exit(0);
-                }
-            }
-        }
-    };
-
-    // Derive output path from input if not provided
-    let output_path = cli.output.clone().unwrap_or_else(|| {
-        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let stem = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        let extension = input
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("parquet");
-        parent.join(format!("{}_reduced.{}", stem, extension))
-    });
-
-    // Setup configuration (interactive or CLI-based)
-    let mut config = setup_configuration(&cli, &input, &output_path)?;
+    // Setup configuration (handles wizard, manual, and CLI-only modes)
+    let mut config = setup_configuration(&cli)?;
+    let input = config.input.clone();
+    let output_path = config.output.clone();
 
     // Print styled banner
     print_banner(env!("CARGO_PKG_VERSION"));
@@ -227,12 +204,69 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Setup configuration from CLI args or interactive menu
-fn setup_configuration(
-    cli: &Cli,
-    input: &std::path::Path,
-    output_path: &std::path::Path,
-) -> Result<PipelineConfig> {
+/// Resolve the input file path and derive the output path
+fn resolve_paths(cli: &Cli) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let input = match cli.input() {
+        Some(path) => path.clone(),
+        None => {
+            // Launch interactive file selector
+            match run_file_selector()? {
+                FileSelectResult::Selected(path) => path,
+                FileSelectResult::Cancelled => {
+                    println!("Cancelled by user.");
+                    std::process::exit(0);
+                }
+            }
+        }
+    };
+
+    let output_path = cli.output.clone().unwrap_or_else(|| {
+        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let stem = input
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output");
+        let extension = input
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("parquet");
+        parent.join(format!("{}_reduced.{}", stem, extension))
+    });
+
+    Ok((input, output_path))
+}
+
+/// Convert a Config to PipelineConfig
+fn config_to_pipeline_config(cfg: Config) -> Result<PipelineConfig> {
+    let target = cfg
+        .target
+        .ok_or_else(|| anyhow::anyhow!("Target column must be selected before proceeding"))?;
+
+    Ok(PipelineConfig {
+        input: cfg.input,
+        output: cfg.output,
+        target,
+        missing_threshold: cfg.missing_threshold,
+        gini_threshold: cfg.gini_threshold,
+        gini_bins: cfg.gini_bins,
+        correlation_threshold: cfg.correlation_threshold,
+        columns_to_drop: cfg.columns_to_drop,
+        target_mapping: cfg.target_mapping,
+        weight_column: cfg.weight_column,
+        binning_strategy: cfg.binning_strategy,
+        prebins: cfg.prebins,
+        cart_min_bin_pct: cfg.cart_min_bin_pct,
+        min_category_samples: cfg.min_category_samples,
+        use_solver: cfg.use_solver,
+        monotonicity: cfg.monotonicity,
+        solver_timeout: cfg.solver_timeout,
+        solver_gap: cfg.solver_gap,
+        infer_schema_length: cfg.infer_schema_length,
+    })
+}
+
+/// Setup configuration from CLI args, wizard, or interactive dashboard
+fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
     // Build initial target mapping from CLI args if provided
     let cli_target_mapping = match (&cli.event_value, &cli.non_event_value) {
         (Some(event), Some(non_event)) => {
@@ -244,15 +278,18 @@ fn setup_configuration(
         (None, None) => None,
     };
 
+    // Branch 1: --no-confirm (CLI-only, existing behavior)
     if cli.no_confirm {
-        // Skip interactive menu when --no-confirm is set
+        let (input, output_path) = resolve_paths(cli)?;
         let target = cli.target.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "Target column is required when using --no-confirm. Use -t/--target to specify."
             )
         })?;
 
-        Ok(PipelineConfig {
+        return Ok(PipelineConfig {
+            input,
+            output: output_path,
             target,
             missing_threshold: cli.missing_threshold,
             gini_threshold: cli.gini_threshold,
@@ -270,17 +307,19 @@ fn setup_configuration(
             solver_timeout: cli.solver_timeout,
             solver_gap: cli.solver_gap,
             infer_schema_length: cli.infer_schema_length,
-        })
-    } else {
-        // Load column names for interactive selection
-        let mut current_input = input.to_path_buf();
+        });
+    }
+
+    // Branch 2: --manual (Dashboard, existing behavior)
+    if cli.manual {
+        let (input, output_path) = resolve_paths(cli)?;
+        let mut current_input = input;
         let mut columns = get_column_names(&current_input)?;
 
-        // Show interactive config menu (loop to handle conversion)
         let mut config = Config {
             input: current_input.clone(),
             target: cli.target.clone(),
-            output: output_path.to_path_buf(),
+            output: output_path,
             missing_threshold: cli.missing_threshold,
             gini_threshold: cli.gini_threshold,
             correlation_threshold: cli.correlation_threshold,
@@ -302,49 +341,16 @@ fn setup_configuration(
         loop {
             match run_config_menu(config.clone(), columns.clone())? {
                 ConfigResult::Proceed(boxed_cfg) => {
-                    let cfg = *boxed_cfg;
-                    let target = cfg.target.ok_or_else(|| {
-                        anyhow::anyhow!("Target column must be selected before proceeding")
-                    })?;
-
-                    return Ok(PipelineConfig {
-                        target,
-                        missing_threshold: cfg.missing_threshold,
-                        gini_threshold: cfg.gini_threshold,
-                        gini_bins: cfg.gini_bins,
-                        correlation_threshold: cfg.correlation_threshold,
-                        columns_to_drop: cfg.columns_to_drop,
-                        target_mapping: cfg.target_mapping,
-                        weight_column: cfg.weight_column,
-                        binning_strategy: cfg.binning_strategy,
-                        prebins: cfg.prebins,
-                        cart_min_bin_pct: cfg.cart_min_bin_pct,
-                        min_category_samples: cfg.min_category_samples,
-                        use_solver: cfg.use_solver,
-                        monotonicity: cfg.monotonicity,
-                        solver_timeout: cfg.solver_timeout,
-                        solver_gap: cfg.solver_gap,
-                        infer_schema_length: cfg.infer_schema_length,
-                    });
+                    return config_to_pipeline_config(*boxed_cfg);
                 }
                 ConfigResult::Convert(boxed_cfg) => {
                     let cfg = *boxed_cfg;
-                    // Run CSV to Parquet conversion
-                    cli::convert::run_convert(
-                        &cfg.input,
-                        None, // Auto-generate output path
-                        cfg.infer_schema_length,
-                        true, // Use fast mode
-                    )?;
+                    cli::convert::run_convert(&cfg.input, None, cfg.infer_schema_length, true)?;
 
-                    // Update input path to the new parquet file
                     let parquet_path = cfg.input.with_extension("parquet");
                     current_input = parquet_path.clone();
-
-                    // Re-read columns from the new file
                     columns = get_column_names(&current_input)?;
 
-                    // Update config with new input path and output path
                     let new_output = {
                         let parent = current_input
                             .parent()
@@ -386,6 +392,28 @@ fn setup_configuration(
                     std::process::exit(0);
                 }
             }
+        }
+    }
+
+    // Branch 3: Default (Wizard, new behavior)
+    match run_wizard(cli)? {
+        WizardResult::RunReduction(boxed_cfg) => config_to_pipeline_config(*boxed_cfg),
+        WizardResult::RunConversion(conversion_config) => {
+            cli::convert::run_convert(
+                &conversion_config.input,
+                Some(&conversion_config.output),
+                conversion_config.infer_schema_length,
+                conversion_config.fast,
+            )?;
+            println!(
+                "Conversion complete: {}",
+                conversion_config.output.display()
+            );
+            std::process::exit(0);
+        }
+        WizardResult::Quit => {
+            println!("Cancelled by user.");
+            std::process::exit(0);
         }
     }
 }

@@ -47,7 +47,7 @@ Configuration → Load Dataset → Missing Analysis → Gini/IV Analysis → Cor
 
 ### Module Structure
 
-- **`src/cli/`** - CLI argument parsing (`args.rs`), interactive TUI menu (`config_menu.rs`), CSV-to-Parquet conversion (`convert.rs`)
+- **`src/cli/`** - CLI argument parsing (`args.rs`), interactive TUI wizard (`wizard.rs`), dashboard menu (`config_menu.rs`), CSV-to-Parquet conversion (`convert.rs`)
 - **`src/pipeline/`** - Core analysis algorithms:
   - `loader.rs` - CSV/Parquet loading with progress
   - `missing.rs` - Null ratio calculation per column
@@ -97,11 +97,65 @@ When running the pipeline, Lo-phi generates the following output files:
 
 - **Polars** - DataFrame operations (lazy/streaming, CSV, Parquet)
 - **Rayon** - Parallel processing for correlation and IV analysis
-- **Ratatui/Crossterm** - Interactive TUI configuration menu and file selector
+- **Ratatui/Crossterm** - Interactive TUI wizard and dashboard menu with file selector
 - **Indicatif** - Progress bars
 - **zip** - Packaging reduction reports into zip archives
 
-### Interactive TUI Options
+### Wizard Mode
+
+Lo-phi provides three distinct usage modes to accommodate different workflows:
+
+**1. Wizard Mode (Default)**
+```bash
+lo-phi                    # Interactive wizard guides you through configuration
+lo-phi data.parquet       # Wizard starts with pre-selected input file
+```
+
+The wizard is a step-by-step guided interface that walks users through all configuration options. This is the recommended mode for new users and exploratory analysis.
+
+**2. Dashboard Mode**
+```bash
+lo-phi --manual           # Opens dashboard with all options visible at once
+lo-phi --manual data.csv  # Dashboard with pre-selected input
+```
+
+The dashboard presents all configuration options simultaneously with keyboard shortcuts for quick navigation. Ideal for experienced users who want to adjust multiple parameters efficiently.
+
+**3. CLI-Only Mode**
+```bash
+lo-phi --no-confirm data.csv --target y --missing-threshold 0.3 --gini-threshold 0.05
+```
+
+Pure command-line mode bypasses all interactive prompts. Required for scripting, CI/CD pipelines, and batch processing.
+
+#### Wizard Flow
+
+**Feature Reduction Workflow (8 steps):**
+1. **Select Input File** - File browser with CSV/Parquet filtering
+2. **Select Target Column** - Choose binary target for analysis
+3. **Configure Thresholds** - Missing (default: 0.30), Gini (0.05), Correlation (0.40)
+4. **Solver Options** - Enable optimizer (default: Yes), set monotonicity trend
+5. **Weight Column** - Optional sample weights for weighted analysis
+6. **Drop Columns** - Multi-select columns to exclude from analysis
+7. **Advanced Options** - Schema inference row limit (default: 10000)
+8. **Confirmation** - Review all settings before execution
+
+**CSV-to-Parquet Conversion Workflow (5 steps):**
+1. **Select Input File** - File browser with CSV filtering
+2. **Select Output Path** - Destination for Parquet file
+3. **Schema Inference** - Row limit for type inference (default: 10000)
+4. **Compression** - Choose compression codec (Snappy, Gzip, LZ4, Zstd, None)
+5. **Confirmation** - Review conversion settings
+
+#### Wizard Architecture
+
+- **Module:** `src/cli/wizard.rs`
+- **State Machine:** Each step is an enum variant (`WizardStep`) with associated state
+- **Data Accumulation:** Configuration builds incrementally across steps, validated before pipeline execution
+- **Integration:** `main.rs` dispatches to wizard by default unless `--manual` or `--no-confirm` flags are present
+- **Navigation:** Users can go back to previous steps to revise choices, maintaining consistency across the configuration
+
+### Interactive TUI Options (Dashboard Mode)
 
 The interactive configuration menu (`src/cli/config_menu.rs`) provides keyboard shortcuts to configure pipeline options.
 
