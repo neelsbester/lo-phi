@@ -9,9 +9,8 @@
 //! - Building Polars Series with appropriate dtypes
 
 use super::constants::*;
-use super::decompress::{decompress_rdc, decompress_rle};
 use super::error::SasError;
-use super::page::{is_page_comp, is_page_data, is_page_mix, parse_page_header};
+use super::page::{is_page_data, is_page_mix, parse_page_header};
 use super::{Compression, PolarsOutputType, SasColumn, SasDataType, SasEncoding, SasHeader};
 use polars::prelude::*;
 
@@ -57,49 +56,24 @@ pub enum ColumnValue {
 ///
 /// - **Data pages**: Rows start after page header (offset 24 for 64-bit, 8 for 32-bit)
 /// - **Mix pages**: Rows start after subheader pointer table
-/// - **Compressed pages**: Decompress first, then extract as data page
+///
+/// Note: COMP pages (0x9000) and compressed subheader rows are handled by the
+/// caller in `mod.rs`. This function only handles uncompressed DATA and MIX pages.
 #[allow(dead_code)]
 pub fn extract_rows_from_page(
     page_data: &[u8],
     header: &SasHeader,
     columns: &[SasColumn],
-    page_index: u64,
-    compression: Compression,
+    _page_index: u64,
+    _compression: Compression,
     rows_collected: u64,
     total_rows: u64,
 ) -> Result<Vec<Vec<ColumnValue>>, SasError> {
-    // Parse page header
+    // Parse page header.
+    // This function handles DATA and MIX pages only. COMP pages (0x9000) are
+    // skipped by the caller -- they are padding/marker pages with no row data.
+    // Compressed rows are handled per-subheader-entry in mod.rs, not here.
     let page_header = parse_page_header(page_data, header.is_64bit, header.is_little_endian)?;
-
-    // Handle compressed pages first
-    let decompressed_data;
-    let data_to_use = if is_page_comp(page_header.page_type) {
-        // Compressed page - decompress based on compression type
-        let output_length = header.page_size as usize;
-        decompressed_data = match compression {
-            Compression::Rle => decompress_rle(page_data, output_length).map_err(|e| {
-                SasError::DecompressionError {
-                    page_index,
-                    message: e.to_string(),
-                }
-            })?,
-            Compression::Rdc => decompress_rdc(page_data, output_length).map_err(|e| {
-                SasError::DecompressionError {
-                    page_index,
-                    message: e.to_string(),
-                }
-            })?,
-            Compression::None => {
-                return Err(SasError::DecompressionError {
-                    page_index,
-                    message: "Page marked as compressed but compression is None".to_string(),
-                });
-            }
-        };
-        &decompressed_data[..]
-    } else {
-        page_data
-    };
 
     // Determine data start offset and row count based on page type
     // page_bit_offset accounts for the page prefix bytes before the page header fields
@@ -113,7 +87,8 @@ pub fn extract_rows_from_page(
     } else if is_page_mix(page_header.page_type) {
         // Mix page: rows start after subheader pointer table, aligned to 8 bytes
         let pointer_size: usize = if header.is_64bit { 24 } else { 12 };
-        let raw_offset = page_header_size + (page_header.subheader_count as usize * pointer_size);
+        let raw_offset =
+            page_header_size + (page_header.subheader_count as usize * pointer_size);
         // Align to 8-byte boundary (required by SAS7BDAT spec)
         let offset = (raw_offset + 7) & !7;
 
@@ -124,7 +99,7 @@ pub fn extract_rows_from_page(
         let rows = std::cmp::min(data_blocks as u64, header.max_rows_on_mix_page);
         (offset, rows)
     } else {
-        // Metadata-only page, no data rows
+        // Metadata-only or unsupported page type, no data rows
         return Ok(Vec::new());
     };
 
@@ -140,11 +115,11 @@ pub fn extract_rows_from_page(
         let row_offset = data_start + (row_idx as usize * row_length);
 
         // Ensure we don't read past the page boundary
-        if row_offset + row_length > data_to_use.len() {
+        if row_offset + row_length > page_data.len() {
             break;
         }
 
-        let row_data = &data_to_use[row_offset..row_offset + row_length];
+        let row_data = &page_data[row_offset..row_offset + row_length];
         let row_values =
             extract_row_values(row_data, columns, &header.encoding, header.is_little_endian)?;
         rows.push(row_values);
@@ -166,7 +141,7 @@ pub fn extract_rows_from_page(
 ///
 /// * `Ok(Vec<ColumnValue>)` - One value per column
 /// * `Err(SasError)` - If value extraction fails
-fn extract_row_values(
+pub fn extract_row_values(
     row_data: &[u8],
     columns: &[SasColumn],
     encoding: &SasEncoding,

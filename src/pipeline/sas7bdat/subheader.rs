@@ -314,12 +314,14 @@ fn process_columntext_subheader(
     let text_block = &data[sig_len..];
 
     // Check for compression signature in the first text block.
-    // The compression literal ("SASYZCRL" or "SASYZCR2") appears at a known
-    // offset within the text block. Check multiple common positions.
+    // The compression literal ("SASYZCRL" or "SASYZCR2") is always at offset 12
+    // within the text_block (i.e., after the subheader signature bytes).
+    // This is offset 16 from subheader start for 32-bit (sig=4, 4+12=16) and
+    // offset 20 from subheader start for 64-bit (sig=8, 8+12=20).
     if state.column_text_blocks.is_empty() {
-        // Check at offset 4 of text block (after 2-byte size + 2 padding bytes)
-        if text_block.len() >= 12 {
-            let sig_check = &text_block[4..12];
+        let comp_offset: usize = 12;
+        if text_block.len() >= comp_offset + 8 {
+            let sig_check = &text_block[comp_offset..comp_offset + 8];
             if sig_check == COMPRESSION_SIGNATURE_RLE {
                 state.compression = Compression::Rle;
             } else if sig_check == COMPRESSION_SIGNATURE_RDC {
@@ -561,15 +563,51 @@ mod tests {
     #[test]
     fn test_compression_detection() {
         let mut state = SubheaderState::default();
-        // For 32-bit: 4-byte signature, then text block starts at offset 4
-        // Compression signature at text_block offset 4 (subheader offset 8)
+        // For 32-bit: 4-byte signature, then text block starts at offset 4.
+        // Compression signature is at fixed offset 16 from subheader start,
+        // which is offset 12 within the text block.
         let mut data = vec![0u8; 24];
         data[0..4].copy_from_slice(&SUBHEADER_SIGNATURE_COLUMNTEXT_32);
-        // Compression signature at offset 8 in full data = offset 4 in text block
-        data[8..16].copy_from_slice(&COMPRESSION_SIGNATURE_RLE);
+        // Compression signature at offset 16 in full data = offset 12 in text block
+        data[16..24].copy_from_slice(&COMPRESSION_SIGNATURE_RLE);
 
         process_columntext_subheader(&data, false, &mut state).unwrap();
         assert!(matches!(state.compression, Compression::Rle));
+    }
+
+    #[test]
+    fn test_compression_detection_64bit_rle() {
+        let mut state = SubheaderState::default();
+        // For 64-bit: 8-byte signature, then text block starts at offset 8.
+        // Compression signature is at fixed offset 20 from subheader start,
+        // which is offset 12 within the text block (same as 32-bit).
+        let mut data = vec![0u8; 28];
+        data[0..8].copy_from_slice(&SUBHEADER_SIGNATURE_COLUMNTEXT_64);
+        // Compression signature at offset 20 in full data = offset 12 in text block
+        data[20..28].copy_from_slice(&COMPRESSION_SIGNATURE_RLE);
+
+        process_columntext_subheader(&data, true, &mut state).unwrap();
+        assert!(
+            matches!(state.compression, Compression::Rle),
+            "64-bit RLE compression should be detected, got {:?}",
+            state.compression
+        );
+    }
+
+    #[test]
+    fn test_compression_detection_64bit_rdc() {
+        let mut state = SubheaderState::default();
+        // Same layout for RDC compression in 64-bit files.
+        let mut data = vec![0u8; 28];
+        data[0..8].copy_from_slice(&SUBHEADER_SIGNATURE_COLUMNTEXT_64);
+        data[20..28].copy_from_slice(&COMPRESSION_SIGNATURE_RDC);
+
+        process_columntext_subheader(&data, true, &mut state).unwrap();
+        assert!(
+            matches!(state.compression, Compression::Rdc),
+            "64-bit RDC compression should be detected, got {:?}",
+            state.compression
+        );
     }
 
     #[test]

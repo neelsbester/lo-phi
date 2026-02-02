@@ -34,7 +34,10 @@ use indicatif::{ProgressBar, ProgressStyle};
 use polars::prelude::*;
 
 use self::column::build_columns;
-use self::data::{build_series_from_column_values, extract_rows_from_page, ColumnValue};
+use self::data::{
+    build_series_from_column_values, extract_row_values, extract_rows_from_page, ColumnValue,
+};
+use self::decompress::{decompress_rdc, decompress_rle};
 use self::header::parse_header;
 use self::page::{is_page_data, is_page_meta, is_page_mix, parse_page_header};
 use self::subheader::{parse_subheader_pointers, process_subheader, SubheaderState};
@@ -85,9 +88,10 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
 
     // First pass: process metadata pages to get column definitions
     for page_idx in 0..sas_header.page_count {
-        let bytes_read = reader.read(&mut page_buf)?;
-        if bytes_read < sas_header.page_size as usize {
-            break; // Truncated page
+        match reader.read_exact(&mut page_buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(SasError::Io(e)),
         }
 
         let page_header =
@@ -157,16 +161,115 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
             break;
         }
 
-        let bytes_read = reader.read(&mut page_buf)?;
-        if bytes_read < sas_header.page_size as usize {
-            break;
+        match reader.read_exact(&mut page_buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(SasError::Io(e)),
         }
 
         let page_header =
             parse_page_header(&page_buf, sas_header.is_64bit, sas_header.is_little_endian)?;
 
-        // Only extract data from data pages and mix pages
-        if is_page_data(page_header.page_type) || is_page_mix(page_header.page_type) {
+        // In compressed SAS files, rows are stored as individually compressed
+        // subheader entries on META and MIX pages (compression != 0, subheader_type == 1).
+        // Each entry is decompressed to row_length bytes to recover one row.
+        // COMP pages (0x9000) are padding/marker pages with no useful data -- skip them.
+        let has_subheaders = is_page_meta(page_header.page_type)
+            || is_page_mix(page_header.page_type);
+
+        if has_subheaders && sas_header.compression != Compression::None {
+            let pointers = parse_subheader_pointers(
+                &page_buf,
+                sas_header.is_64bit,
+                sas_header.is_little_endian,
+                page_header.subheader_count,
+            )?;
+
+            for pointer in &pointers {
+                if rows_collected >= sas_header.row_count {
+                    break;
+                }
+
+                // Compressed row subheaders: compression == 4, subheader_type == 1.
+                // Skip truncated markers (compression == 1) and metadata subheaders.
+                if pointer.compression != 0 && pointer.subheader_type == 1 {
+                    let offset = pointer.offset as usize;
+                    let length = pointer.length as usize;
+
+                    if length == 0 || offset + length > page_buf.len() {
+                        continue;
+                    }
+
+                    // Truncated marker (compression == 1): not actual compressed data
+                    if pointer.compression == 1 {
+                        continue;
+                    }
+
+                    let compressed_data = &page_buf[offset..offset + length];
+                    let row_length = sas_header.row_length as usize;
+
+                    let decompressed = match sas_header.compression {
+                        Compression::Rle => {
+                            decompress_rle(compressed_data, row_length).map_err(|e| {
+                                SasError::DecompressionError {
+                                    page_index: page_idx,
+                                    message: format!("Compressed row RLE: {}", e),
+                                }
+                            })?
+                        }
+                        Compression::Rdc => {
+                            decompress_rdc(compressed_data, row_length).map_err(|e| {
+                                SasError::DecompressionError {
+                                    page_index: page_idx,
+                                    message: format!("Compressed row RDC: {}", e),
+                                }
+                            })?
+                        }
+                        Compression::None => unreachable!(),
+                    };
+
+                    let row_values = extract_row_values(
+                        &decompressed,
+                        &columns,
+                        &sas_header.encoding,
+                        sas_header.is_little_endian,
+                    )?;
+
+                    for (col_idx, value) in row_values.iter().enumerate() {
+                        if col_idx < column_values.len() {
+                            column_values[col_idx].push(value.clone());
+                        }
+                    }
+                    rows_collected += 1;
+                }
+            }
+
+            // For MIX pages, also extract any uncompressed trailing rows
+            // (when compression is None, this is the main path for MIX pages)
+            if is_page_mix(page_header.page_type) {
+                let page_rows = extract_rows_from_page(
+                    &page_buf,
+                    &sas_header,
+                    &columns,
+                    page_idx,
+                    sas_header.compression,
+                    rows_collected,
+                    sas_header.row_count,
+                )?;
+
+                for row in &page_rows {
+                    for (col_idx, value) in row.iter().enumerate() {
+                        if col_idx < column_values.len() {
+                            column_values[col_idx].push(value.clone());
+                        }
+                    }
+                }
+                rows_collected += page_rows.len() as u64;
+            }
+        } else if is_page_data(page_header.page_type)
+            || is_page_mix(page_header.page_type)
+        {
+            // Uncompressed DATA and MIX pages: extract rows directly.
             let page_rows = extract_rows_from_page(
                 &page_buf,
                 &sas_header,
@@ -186,6 +289,7 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
             }
             rows_collected += page_rows.len() as u64;
         }
+        // COMP pages (0x9000) are skipped -- they are padding/marker pages.
 
         pb.set_position(page_idx + 1);
     }
@@ -248,9 +352,10 @@ pub fn get_sas7bdat_columns(path: &Path) -> Result<Vec<String>, SasError> {
     let mut page_buf = vec![0u8; sas_header.page_size as usize];
 
     for _page_idx in 0..sas_header.page_count {
-        let bytes_read = reader.read(&mut page_buf)?;
-        if bytes_read < sas_header.page_size as usize {
-            break;
+        match reader.read_exact(&mut page_buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(SasError::Io(e)),
         }
 
         let page_header =
@@ -445,7 +550,7 @@ mod integration_tests {
     fn load_test_file(name: &str) -> Result<(usize, usize), String> {
         let path = Path::new(TEST_DIR).join(name);
         if !path.exists() {
-            return Err(format!("file not found"));
+            return Err("file not found".to_string());
         }
 
         // Test get_columns
@@ -472,29 +577,30 @@ mod integration_tests {
         println!("\n=== Testing real SAS7BDAT files ===\n");
 
         let test_files = [
-            // (filename, expected_rows, expected_cols) - 0 means "just check it loads"
-            ("test1.sas7bdat", 10, 100),
-            ("test2.sas7bdat", 0, 0),
-            ("test3.sas7bdat", 0, 0),
-            ("test4.sas7bdat", 0, 0),
-            ("test5.sas7bdat", 0, 0),
-            ("test6.sas7bdat", 0, 0),
-            ("test7.sas7bdat", 0, 0),
-            ("test8.sas7bdat", 0, 0),
-            ("test9.sas7bdat", 0, 0),
-            ("test10.sas7bdat", 0, 0),
-            ("test11.sas7bdat", 0, 0),
-            ("test12.sas7bdat", 0, 0),
-            ("test13.sas7bdat", 0, 0),
-            ("test14.sas7bdat", 0, 0),
-            ("test15.sas7bdat", 0, 0),
-            ("test16.sas7bdat", 0, 0),
-            ("cars.sas7bdat", 0, 0),
-            ("productsales.sas7bdat", 0, 0),
-            ("datetime.sas7bdat", 0, 0),
-            ("many_columns.sas7bdat", 0, 0),
-            ("test_12659.sas7bdat", 0, 0),
-            ("test_meta2_page.sas7bdat", 0, 0),
+            // (filename, expected_rows, expected_cols)
+            // test1-16: same dataset in different format variants (32/64-bit, LE/BE, uncompressed/RLE/RDC)
+            ("test1.sas7bdat", 10, 100),   // 32-bit LE, uncompressed
+            ("test2.sas7bdat", 10, 100),   // 32-bit LE, RLE compressed
+            ("test3.sas7bdat", 10, 100),   // 32-bit LE, RDC compressed
+            ("test4.sas7bdat", 10, 100),   // 32-bit LE, uncompressed (v9)
+            ("test5.sas7bdat", 10, 100),   // 32-bit LE, RLE compressed (v9)
+            ("test6.sas7bdat", 10, 100),   // 32-bit LE, RDC compressed (v9)
+            ("test7.sas7bdat", 10, 100),   // 64-bit LE, uncompressed
+            ("test8.sas7bdat", 10, 100),   // 64-bit LE, RDC compressed
+            ("test9.sas7bdat", 10, 100),   // 64-bit LE, RLE compressed
+            ("test10.sas7bdat", 10, 100),  // 32-bit BE, uncompressed
+            ("test11.sas7bdat", 10, 100),  // 32-bit BE, RDC compressed
+            ("test12.sas7bdat", 10, 100),  // 32-bit BE, RLE compressed
+            ("test13.sas7bdat", 10, 100),  // 64-bit BE, uncompressed
+            ("test14.sas7bdat", 10, 100),  // 64-bit BE, RDC compressed
+            ("test15.sas7bdat", 10, 100),  // 64-bit BE, RLE compressed
+            ("test16.sas7bdat", 10, 100),  // 64-bit LE, uncompressed (v8)
+            ("cars.sas7bdat", 392, 4),
+            ("productsales.sas7bdat", 1440, 10),
+            ("datetime.sas7bdat", 4, 5),
+            ("many_columns.sas7bdat", 3, 392),
+            ("test_12659.sas7bdat", 36, 13),
+            ("test_meta2_page.sas7bdat", 1000, 28),
         ];
 
         let mut passed = 0;
@@ -531,7 +637,93 @@ mod integration_tests {
             }
         }
 
-        // At minimum, test1.sas7bdat must work
-        assert!(passed >= 1, "At least test1.sas7bdat should parse successfully");
+        // All files must parse successfully
+        assert_eq!(failed, 0, "All SAS7BDAT files should parse successfully");
+    }
+
+    /// Verifies that compressed files produce identical data to their uncompressed counterparts.
+    ///
+    /// The test1-16 fixtures contain the same dataset in different format variants:
+    /// - test1/test4: 32-bit LE, uncompressed
+    /// - test2/test5: 32-bit LE, RLE compressed
+    /// - test3/test6: 32-bit LE, RDC compressed
+    /// - test7:       64-bit LE, uncompressed
+    /// - test8:       64-bit LE, RDC compressed
+    /// - test9:       64-bit LE, RLE compressed
+    #[test]
+    fn test_compressed_files_match_uncompressed() {
+        let groups: &[(&str, &[&str])] = &[
+            // (uncompressed, [compressed variants])
+            ("test1.sas7bdat", &["test2.sas7bdat", "test3.sas7bdat"]),
+            ("test7.sas7bdat", &["test8.sas7bdat", "test9.sas7bdat"]),
+            ("test10.sas7bdat", &["test11.sas7bdat", "test12.sas7bdat"]),
+            ("test13.sas7bdat", &["test14.sas7bdat", "test15.sas7bdat"]),
+        ];
+
+        for (uncompressed_name, compressed_names) in groups {
+            let uncompressed_path = Path::new(TEST_DIR).join(uncompressed_name);
+            if !uncompressed_path.exists() {
+                continue;
+            }
+
+            let (ref_df, ref_rows, ref_cols, _) =
+                super::load_sas7bdat(&uncompressed_path).unwrap();
+
+            for compressed_name in *compressed_names {
+                let compressed_path = Path::new(TEST_DIR).join(compressed_name);
+                if !compressed_path.exists() {
+                    continue;
+                }
+
+                let (comp_df, comp_rows, comp_cols, _) =
+                    super::load_sas7bdat(&compressed_path).unwrap();
+
+                assert_eq!(
+                    ref_rows, comp_rows,
+                    "{} vs {}: row count mismatch",
+                    uncompressed_name, compressed_name
+                );
+                assert_eq!(
+                    ref_cols, comp_cols,
+                    "{} vs {}: column count mismatch",
+                    uncompressed_name, compressed_name
+                );
+
+                // Compare column names
+                let ref_names = ref_df.get_column_names();
+                let comp_names = comp_df.get_column_names();
+                assert_eq!(
+                    ref_names, comp_names,
+                    "{} vs {}: column names differ",
+                    uncompressed_name, compressed_name
+                );
+
+                // Compare data types
+                assert_eq!(
+                    ref_df.dtypes(),
+                    comp_df.dtypes(),
+                    "{} vs {}: dtypes differ",
+                    uncompressed_name, compressed_name
+                );
+
+                // Compare actual values column by column
+                for col_name in &ref_names {
+                    let ref_col = ref_df.column(col_name.as_str()).unwrap();
+                    let comp_col = comp_df.column(col_name.as_str()).unwrap();
+                    assert!(
+                        ref_col.equals_missing(comp_col),
+                        "{} vs {}: column '{}' values differ",
+                        uncompressed_name,
+                        compressed_name,
+                        col_name
+                    );
+                }
+
+                println!(
+                    "  {} matches {} ({} rows x {} cols)",
+                    compressed_name, uncompressed_name, comp_rows, comp_cols
+                );
+            }
+        }
     }
 }

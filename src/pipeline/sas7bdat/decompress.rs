@@ -370,47 +370,43 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                     }
 
                     // Long RLE
+                    // Reference: Parso BinDecompressor.java / pandas sas.pyx
+                    // First byte after command extends cnt, second byte is the fill value.
                     1 => {
                         if input_pos + 1 >= input.len() {
                             return Err(SasError::DecompressionError {
                                 page_index: 0,
                                 message: format!(
-                                    "RDC: long RLE missing fill_byte/length_byte at position {}",
+                                    "RDC: long RLE missing length_byte/fill_byte at position {}",
                                     input_pos
                                 ),
                             });
                         }
+                        let length_byte = input[input_pos] as usize;
+                        input_pos += 1;
+                        let count = cnt + (length_byte << 4) + 19;
                         let fill_byte = input[input_pos];
-                        let length_byte = input[input_pos + 1] as usize;
-                        input_pos += 2;
-                        let count = cnt + length_byte * 16 + 19;
+                        input_pos += 1;
                         repeat_byte(&mut output, fill_byte, count, output_length)?;
                     }
 
                     // Long Pattern (back-reference)
+                    // Reference: Parso BinDecompressor.java / pandas sas.pyx
+                    // offset = cnt + 3 + (next_byte << 4), count = length_byte + 16
                     2 => {
                         if input_pos + 1 >= input.len() {
                             return Err(SasError::DecompressionError {
                                 page_index: 0,
                                 message: format!(
-                                    "RDC: long pattern missing offset bytes at position {}",
+                                    "RDC: long pattern missing offset/length bytes at position {}",
                                     input_pos
                                 ),
                             });
                         }
                         let next_byte = input[input_pos] as usize;
                         input_pos += 1;
-                        let offset = cnt * 256 + next_byte;
+                        let offset = cnt + 3 + (next_byte << 4);
 
-                        if input_pos >= input.len() {
-                            return Err(SasError::DecompressionError {
-                                page_index: 0,
-                                message: format!(
-                                    "RDC: long pattern missing length_byte at position {}",
-                                    input_pos
-                                ),
-                            });
-                        }
                         let length_byte = input[input_pos] as usize;
                         input_pos += 1;
                         let count = length_byte + 16;
@@ -419,6 +415,8 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                     }
 
                     // Short Pattern (back-reference)
+                    // Reference: Parso BinDecompressor.java / pandas sas.pyx
+                    // offset = cnt + 3 + (next_byte << 4), count = cmd
                     cmd @ 3..=15 => {
                         if input_pos >= input.len() {
                             return Err(SasError::DecompressionError {
@@ -431,7 +429,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                         }
                         let next_byte = input[input_pos] as usize;
                         input_pos += 1;
-                        let offset = cnt * 256 + next_byte;
+                        let offset = cnt + 3 + (next_byte << 4);
                         let count = cmd as usize;
 
                         copy_from_output(&mut output, offset, count, output_length)?;
@@ -717,9 +715,10 @@ mod tests {
     fn test_rdc_long_rle() {
         // Control word: 0x8000 (bit 15 = 1)
         // Command: 0x12 (cmd=1, cnt=2) → long RLE
-        // Fill byte: 'A', length_byte: 0x01
-        // Count = 2 + 1*16 + 19 = 37
-        let input = vec![0x80, 0x00, 0x12, b'A', 0x01];
+        // Per Ross algorithm: first byte after cmd is length extension, second is fill byte
+        // length_byte: 0x01, fill_byte: 'A'
+        // Count = 2 + (1 << 4) + 19 = 37
+        let input = vec![0x80, 0x00, 0x12, 0x01, b'A'];
         let result = decompress_rdc(&input, 37).unwrap();
         assert_eq!(result.len(), 37);
         assert!(result.iter().all(|&b| b == b'A'));
@@ -732,33 +731,39 @@ mod tests {
         // Bit 15=0: literal 'A'
         // Bit 14=0: literal 'B'
         // Bit 13=0: literal 'C'
-        // Bit 12=1: command → 0x30 (cmd=3, cnt=0) → count=3, offset from next byte
-        // Offset byte: 0x03 → offset=3, copies last 3 bytes
+        // Bit 12=1: command → 0x30 (cmd=3, cnt=0) → count=3
+        // Offset = cnt + 3 + (next_byte << 4) = 0 + 3 + (0 << 4) = 3
+        // Offset byte: 0x00 → copies last 3 bytes
         // Output reaches 6 bytes (ABCABC), loop exits
-        let input = vec![0x10, 0x00, b'A', b'B', b'C', 0x30, 0x03];
+        let input = vec![0x10, 0x00, b'A', b'B', b'C', 0x30, 0x00];
         let result = decompress_rdc(&input, 6).unwrap();
         assert_eq!(result, b"ABCABC");
     }
 
     #[test]
     fn test_rdc_overlapping_back_reference() {
-        // Write "A", then back-reference with offset=1, count=5 to repeat it
-        // Control word: 0x4000 (binary: 0100 0000 0000 0000)
+        // Write "AAA" as 3 literals, then back-reference with offset=3, count=5
+        // to repeat "AAA" overlapping (copies byte-by-byte from start)
+        // Control word: 0x1000 (binary: 0001 0000 0000 0000)
         // Bit 15=0: literal 'A'
-        // Bit 14=1: command → 0x50 (cmd=5, cnt=0) → count=5
-        // Offset byte: 0x01 → offset=1 (copies from position 0, which is 'A')
-        // Output reaches 6 bytes (AAAAAA), loop exits
-        let input = vec![0x40, 0x00, b'A', 0x50, 0x01];
-        let result = decompress_rdc(&input, 6).unwrap();
-        assert_eq!(result, b"AAAAAA");
+        // Bit 14=0: literal 'A'
+        // Bit 13=0: literal 'A'
+        // Bit 12=1: command → 0x50 (cmd=5, cnt=0) → count=5
+        // Offset = cnt + 3 + (next_byte << 4) = 0 + 3 + (0 << 4) = 3
+        // Offset byte: 0x00 → copies from 3 back overlapping
+        // Output: "AAA" + 5 more 'A's = "AAAAAAAA" (8 bytes)
+        let input = vec![0x10, 0x00, b'A', b'A', b'A', 0x50, 0x00];
+        let result = decompress_rdc(&input, 8).unwrap();
+        assert_eq!(result, b"AAAAAAAA");
     }
 
     #[test]
     fn test_rdc_invalid_offset() {
         // Try to back-reference beyond start of output
-        // Control word: 0x8000
+        // Control word: 0x8000 (first bit=1, command immediately)
         // Command: 0x30 (cmd=3, cnt=0) → count=3
-        // Offset: 0x0A → offset=10 (but output is empty)
+        // Offset = cnt + 3 + (next_byte << 4) = 0 + 3 + (0x0A << 4) = 163
+        // Output is empty so any offset > 0 is invalid
         let input = vec![0x80, 0x00, 0x30, 0x0A];
         let result = decompress_rdc(&input, 3);
         assert!(result.is_err());
@@ -797,5 +802,79 @@ mod tests {
         let result = repeat_byte(&mut output, b'X', 10, 5);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("overflow"));
+    }
+
+    #[test]
+    fn test_rdc_short_pattern_with_nonzero_cnt() {
+        // Verify offset = cnt + 3 + (next_byte << 4) with cnt > 0
+        // Write 20 literals, then back-reference with larger offset
+        // We need 20 literal bytes first, which takes 2 control words:
+        //   Control word 1: 0x0000 (16 literal bits) -> 16 literals
+        //   Control word 2: 0x0800 (bits 15..12 = 0000, bit 11 = 1, rest = 0)
+        //     -> 4 literals then command
+        //
+        // Command byte: 0x34 (cmd=3, cnt=4) with offset_byte=0x01
+        // Offset = 4 + 3 + (1 << 4) = 23
+        // Count = 3 (cmd value)
+        // At output position 20, offset=23 is too large (> 20)
+        // So use offset_byte=0x00: offset = 4 + 3 + 0 = 7, copy 3 bytes from pos 13
+        let mut input = vec![0x00, 0x00]; // ctrl word 1: all literals
+        input.extend_from_slice(b"ABCDEFGHIJKLMNOP"); // 16 literals
+        input.extend_from_slice(&[0x08, 0x00]); // ctrl word 2: 4 lits then cmd
+        input.extend_from_slice(b"QRST"); // 4 more literals (total 20: A..T)
+        input.push(0x34); // cmd=3, cnt=4
+        input.push(0x00); // offset_byte=0 -> offset = 4+3+0 = 7
+        // At position 20, offset 7 -> copies from position 13 = "NOP" (3 bytes)
+        let result = decompress_rdc(&input, 23).unwrap();
+        assert_eq!(&result[..20], b"ABCDEFGHIJKLMNOPQRST");
+        assert_eq!(&result[20..23], b"NOP");
+    }
+
+    #[test]
+    fn test_rdc_long_pattern_back_reference() {
+        // Test cmd=2 (long pattern): offset = cnt + 3 + (next_byte << 4), count = length_byte + 16
+        // First emit 20 literals, then use long pattern to copy 16+ bytes
+        // Control word 1: 0x0000 -> 16 literals
+        // Control word 2: 0x0800 -> 4 literals, then command at bit 11
+        // Command: 0x20 (cmd=2, cnt=0)
+        //   offset_byte: 0x01 -> offset = 0 + 3 + (1 << 4) = 19
+        //   length_byte: 0x00 -> count = 0 + 16 = 16
+        //   At output pos 20, offset 19 -> copies from position 1 (B..Q, 16 bytes)
+        let mut input = vec![0x00, 0x00]; // ctrl word 1
+        input.extend_from_slice(b"ABCDEFGHIJKLMNOP"); // 16 literals
+        input.extend_from_slice(&[0x08, 0x00]); // ctrl word 2
+        input.extend_from_slice(b"QRST"); // 4 more literals
+        input.push(0x20); // cmd=2, cnt=0
+        input.push(0x01); // offset_byte -> offset = 0 + 3 + 16 = 19
+        input.push(0x00); // length_byte -> count = 0 + 16 = 16
+        let result = decompress_rdc(&input, 36).unwrap();
+        assert_eq!(&result[..20], b"ABCDEFGHIJKLMNOPQRST");
+        // From position 1 (offset 19 from pos 20), copies BCDEFGHIJKLMNOPQ (16 bytes)
+        assert_eq!(&result[20..36], b"BCDEFGHIJKLMNOPQ");
+    }
+
+    #[test]
+    fn test_rdc_offset_with_shifted_next_byte() {
+        // Verify the << 4 shift in the offset formula
+        // Write 100 literals (7 control words), then back-reference with next_byte > 0
+        // 6 full control words of 16 literals = 96 bytes, then 1 ctrl word with 4 lits + cmd
+        let mut input = Vec::new();
+        // 6 control words of all-literal (96 bytes)
+        for _ in 0..6 {
+            input.extend_from_slice(&[0x00, 0x00]);
+            input.extend_from_slice(&[b'X'; 16]);
+        }
+        // 7th control word: 4 literals then command at bit 11
+        input.extend_from_slice(&[0x08, 0x00]);
+        input.extend_from_slice(&[b'Y'; 4]); // 4 literals -> total 100 bytes
+        // Command: 0x30 (cmd=3, cnt=0), offset_byte=0x05
+        // offset = 0 + 3 + (5 << 4) = 0 + 3 + 80 = 83
+        // At position 100, offset 83 -> copies from position 17, 3 bytes
+        input.push(0x30); // cmd=3, cnt=0
+        input.push(0x05); // offset_byte=5 -> offset = 83
+        let result = decompress_rdc(&input, 103).unwrap();
+        assert_eq!(result.len(), 103);
+        // Position 17 is in the second group of X's -> "XXX"
+        assert_eq!(&result[100..103], b"XXX");
     }
 }

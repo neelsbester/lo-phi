@@ -96,15 +96,15 @@ IvAnalysis {
 Pure Rust parser for SAS7BDAT binary files (read-only). No external C/FFI dependencies.
 
 **Module structure:**
-- `mod.rs` - Public API: `load_sas7bdat(path)`, `get_sas7bdat_columns(path)`, core type definitions
+- `mod.rs` - Public API: `load_sas7bdat(path)`, `get_sas7bdat_columns(path)`, core type definitions; orchestrates two-pass page iteration (metadata pass + data extraction pass with per-row decompression)
 - `constants.rs` - Magic numbers, offsets, page types, subheader signatures, encoding map, epoch constants
 - `error.rs` - `SasError` enum with 9 variants (InvalidMagic, TruncatedFile, ZeroRows, etc.)
 - `header.rs` - File header parsing (alignment, endianness, encoding, page/row dimensions)
 - `page.rs` - Page header parsing and type classification (Meta, Data, Mix, AMD, Comp)
-- `subheader.rs` - Subheader pointer table and metadata extraction (RowSize, ColumnSize, ColumnText, ColumnName, ColumnAttributes, FormatAndLabel)
+- `subheader.rs` - Subheader pointer table and metadata extraction (RowSize, ColumnSize, ColumnText, ColumnName, ColumnAttributes, FormatAndLabel); compression signature detection at fixed text_block offset 12
 - `column.rs` - Column metadata construction, format-to-Polars type inference, encoding-aware text decoding
-- `decompress.rs` - RLE (16 control byte commands) and RDC (LZ77 sliding window) decompression
-- `data.rs` - Row extraction, truncated numeric reconstruction, missing value detection, date/time epoch conversion, character encoding via `encoding_rs`
+- `decompress.rs` - RLE (16 control byte commands) and RDC (Ross Data Compression / LZ77) decompression; operates per-row (not per-page)
+- `data.rs` - Row extraction via `extract_rows_from_page` (uncompressed DATA/MIX pages) and `extract_row_values` (public, for individual decompressed row buffers); truncated numeric reconstruction, missing value detection, date/time epoch conversion, character encoding via `encoding_rs`
 
 **Key types:**
 ```rust
@@ -118,6 +118,14 @@ SasEncoding { Utf8, Ascii, Latin1, Windows1252, Other { id, name }, Unspecified 
 - SAS date epoch: 1960-01-01 (offset: 3653 days to Unix epoch)
 - SAS datetime epoch: 1960-01-01 00:00:00 (offset: 315,619,200 seconds to Unix epoch)
 - Missing values: 28 sentinel patterns (standard `.` plus `.A`-`.Z` and `._`)
+
+**Compression architecture (per-row, not per-page):**
+- Compressed SAS files store rows as individually compressed subheader entries on META and MIX pages (subheader pointer: `compression == 4`, `subheader_type == 1`)
+- Each compressed entry is decompressed to `row_length` bytes using RLE or RDC
+- COMP pages (type 0x9000) are padding/marker pages with no useful data -- skipped entirely
+- Compression signature detection: always at offset 12 within the ColumnText text_block (offset 16 from subheader start for 32-bit, offset 20 for 64-bit)
+- Subheader pointer compression flags: 0=normal metadata, 1=truncated/padding (skip), 4=compressed row data (decompress)
+- Uncompressed files: rows live as sequential byte runs in the trailing area of MIX pages or on DATA pages
 
 **Integration points:**
 - `loader.rs` - `"sas7bdat"` arms in `get_column_names()` and `load_dataset_with_progress()`
