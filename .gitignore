@@ -1,4 +1,7 @@
 /target
+debug/
+release/
+*.rs.bk
 
 # Python virtual environment
 .venv/
@@ -7,3 +10,20 @@
 /test_data/
 *.parquet
 *.csv
+
+# Allow documentation example files
+!docs/examples/*.csv
+!docs/examples/*.json
+!docs/examples/*.zip
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env*
+*.log

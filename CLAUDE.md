@@ -9,6 +9,19 @@ Lo-phi is a Rust CLI tool for feature reduction in datasets. It analyzes feature
 2. **Gini/IV (Information Value)** - drops features with low predictive power using WoE binning
 3. **Correlation** - drops one feature from highly correlated pairs
 
+## Documentation
+
+Comprehensive project documentation is available in `docs/`:
+
+- `docs/glossary.md` - Domain terminology (WoE, IV, Gini, CART, etc.)
+- `docs/architecture.md` - System architecture and module structure
+- `docs/algorithms.md` - Statistical methods and formulas with source code verification
+- `docs/user-guide.md` - CLI arguments, TUI shortcuts, and common workflows
+- `docs/developer-guide.md` - Build, test, benchmark, CI, and contributing guide
+- `docs/output-reference.md` - Output file formats and JSON schemas
+- `docs/worked-example.md` - End-to-end pipeline walkthrough with synthetic data
+- `docs/adr/` - 8 Architectural Decision Records (ADR-001 through ADR-008)
+
 ## Build and Development Commands
 
 ```bash
@@ -47,13 +60,14 @@ Configuration → Load Dataset → Missing Analysis → Gini/IV Analysis → Cor
 
 ### Module Structure
 
-- **`src/cli/`** - CLI argument parsing (`args.rs`), interactive TUI menu (`config_menu.rs`), CSV-to-Parquet conversion (`convert.rs`)
+- **`src/cli/`** - CLI argument parsing (`args.rs`), interactive TUI menu (`config_menu.rs`), CSV/SAS7BDAT-to-Parquet conversion (`convert.rs`)
 - **`src/pipeline/`** - Core analysis algorithms:
-  - `loader.rs` - CSV/Parquet loading with progress
+  - `loader.rs` - CSV/Parquet/SAS7BDAT loading with progress
   - `missing.rs` - Null ratio calculation per column
-  - `iv.rs` - WoE/IV binning analysis (most complex module, ~600 lines)
+  - `iv.rs` - WoE/IV binning analysis (most complex module, ~2600 lines)
   - `correlation.rs` - Pearson correlation with Welford algorithm
   - `target.rs` - Binary/non-binary target column handling
+  - `sas7bdat/` - Pure Rust SAS7BDAT binary file parser (see below)
 - **`src/report/`** - Results summary tables (`summary.rs`), Gini JSON export (`gini_export.rs`), comprehensive reduction report (`reduction_report.rs`)
 - **`src/utils/`** - Progress bars and terminal styling
 
@@ -73,9 +87,44 @@ IvAnalysis {
 
 ### Constants in IV Analysis
 
-- `PRE_BIN_COUNT = 50` - Initial quantile bins before merging
+- `DEFAULT_PREBINS = 20` - Initial quantile bins before merging
 - `MIN_BIN_SAMPLES = 5` - Minimum samples per bin
 - `SMOOTHING = 0.5` - Laplace smoothing to prevent log(0)
+
+### SAS7BDAT Parser (`src/pipeline/sas7bdat/`)
+
+Pure Rust parser for SAS7BDAT binary files (read-only). No external C/FFI dependencies.
+
+**Module structure:**
+- `mod.rs` - Public API: `load_sas7bdat(path)`, `get_sas7bdat_columns(path)`, core type definitions
+- `constants.rs` - Magic numbers, offsets, page types, subheader signatures, encoding map, epoch constants
+- `error.rs` - `SasError` enum with 9 variants (InvalidMagic, TruncatedFile, ZeroRows, etc.)
+- `header.rs` - File header parsing (alignment, endianness, encoding, page/row dimensions)
+- `page.rs` - Page header parsing and type classification (Meta, Data, Mix, AMD, Comp)
+- `subheader.rs` - Subheader pointer table and metadata extraction (RowSize, ColumnSize, ColumnText, ColumnName, ColumnAttributes, FormatAndLabel)
+- `column.rs` - Column metadata construction, format-to-Polars type inference, encoding-aware text decoding
+- `decompress.rs` - RLE (16 control byte commands) and RDC (LZ77 sliding window) decompression
+- `data.rs` - Row extraction, truncated numeric reconstruction, missing value detection, date/time epoch conversion, character encoding via `encoding_rs`
+
+**Key types:**
+```rust
+SasDataType { Numeric, Character }
+PolarsOutputType { Float64, Date, Datetime, Time, Utf8 }
+Compression { None, Rle, Rdc }
+SasEncoding { Utf8, Ascii, Latin1, Windows1252, Other { id, name }, Unspecified }
+```
+
+**Epoch conversion constants:**
+- SAS date epoch: 1960-01-01 (offset: 3653 days to Unix epoch)
+- SAS datetime epoch: 1960-01-01 00:00:00 (offset: 315,619,200 seconds to Unix epoch)
+- Missing values: 28 sentinel patterns (standard `.` plus `.A`-`.Z` and `._`)
+
+**Integration points:**
+- `loader.rs` - `"sas7bdat"` arms in `get_column_names()` and `load_dataset_with_progress()`
+- `main.rs` - SAS7BDAT input defaults output extension to `.parquet`
+- `config_menu.rs` - `is_valid_data_file()` accepts `.sas7bdat`
+- `convert.rs` - `run_convert()` detects SAS7BDAT and routes to `run_convert_sas7bdat()`
+- `args.rs` - CLI help text updated for SAS7BDAT support
 
 ### Test Structure
 
@@ -100,6 +149,24 @@ When running the pipeline, Lo-phi generates the following output files:
 - **Ratatui/Crossterm** - Interactive TUI configuration menu and file selector
 - **Indicatif** - Progress bars
 - **zip** - Packaging reduction reports into zip archives
+- **good_lp (HiGHS)** - MIP solver for optimal binning with monotonicity constraints
+- **faer** - Pure-Rust linear algebra for matrix-based correlation computation
+- **encoding_rs** - Character encoding conversion for SAS7BDAT file support
+
+### Architectural Decision Records (ADRs)
+
+Lo-phi's design decisions are documented in `/docs/adr/`:
+
+- **ADR-001**: Polars DataFrame Framework - Why Polars over pandas/DataFusion/ndarray
+- **ADR-002**: HiGHS MIP Solver - Why HiGHS via good_lp over CBC/GLPK/custom solver
+- **ADR-003**: CART Default Binning - Why CART over quantile/fixed-width binning
+- **ADR-004**: WoE Convention ln(Bad/Good) - Why this sign convention over alternatives
+- **ADR-005**: Welford Correlation Algorithm - Why Welford over two-pass/naive formulas
+- **ADR-006**: Sequential Pipeline Stages - Why Missing→Gini→Correlation ordering
+- **ADR-007**: Dual CSV/Parquet Support - Why both formats over CSV-only/Parquet-only
+- **ADR-008**: Ratatui Terminal UI - Why Ratatui over CLI-only/web UI/GUI
+
+Each ADR documents context, decision rationale, alternatives considered, and consequences.
 
 ### Interactive TUI Options
 
@@ -116,7 +183,7 @@ The interactive configuration menu (`src/cli/config_menu.rs`) provides keyboard 
 **Keyboard Shortcuts:**
 - `[Enter]` - Run with current settings (requires target selected)
 - `[T]` - Select target column
-- `[F]` - Convert CSV to Parquet (fast in-memory mode)
+- `[F]` - Convert CSV/SAS7BDAT to Parquet (fast in-memory mode)
 - `[D]` - Select columns to drop (now in DATA column)
 - `[C]` - Edit thresholds (Missing → Gini → Correlation, chained flow)
 - `[S]` - Edit solver options (Use Solver toggle → Trend/Monotonicity selection)
