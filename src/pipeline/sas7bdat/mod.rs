@@ -439,7 +439,7 @@ pub struct SasColumn {
 mod integration_tests {
     use std::path::Path;
 
-    const TEST_DIR: &str = "/tmp/claude-1000/-home-neelsbester-lo-phi/343df7d7-afd6-4cdc-9c9e-2bd30a8f0914/scratchpad/sas_test_files";
+    const TEST_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sas7bdat");
 
     /// Helper: load a SAS7BDAT file and report success/failure with diagnostics
     fn load_test_file(name: &str) -> Result<(usize, usize), String> {
