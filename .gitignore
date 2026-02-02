@@ -24,3 +24,20 @@ Thumbs.db
 /test_data/
 *.parquet
 *.csv
+
+# Allow documentation example files
+!docs/examples/*.csv
+!docs/examples/*.json
+!docs/examples/*.zip
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env*
+*.log

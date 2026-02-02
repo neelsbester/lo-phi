@@ -1,4 +1,4 @@
-//! CSV to Parquet conversion utility with streaming and fast in-memory modes
+//! CSV/SAS7BDAT to Parquet conversion utility with streaming and fast in-memory modes
 
 use std::path::Path;
 use std::time::Instant;
@@ -8,6 +8,7 @@ use chrono::Local;
 use console::style;
 use polars::prelude::*;
 
+use crate::pipeline::sas7bdat::load_sas7bdat;
 use crate::utils::create_spinner;
 
 /// Get current timestamp as HH:MM:SS
@@ -29,24 +30,37 @@ fn format_duration(duration: std::time::Duration) -> String {
     }
 }
 
-/// Run the CSV to Parquet conversion
+/// Run the CSV/SAS7BDAT to Parquet conversion
 ///
 /// # Arguments
-/// * `input` - Path to the input CSV file
+/// * `input` - Path to the input file (CSV or SAS7BDAT)
 /// * `output` - Optional output path. If not provided, uses input path with .parquet extension
-/// * `infer_schema_length` - Number of rows to use for schema inference
+/// * `infer_schema_length` - Number of rows to use for schema inference (CSV only)
 /// * `fast` - If true, uses in-memory conversion (more RAM, all CPU cores).
 ///   If false, uses streaming conversion (low RAM, single-threaded).
+///   Note: SAS7BDAT always uses in-memory mode.
 ///
 /// # Performance Notes
 /// - **Streaming mode (default)**: Uses `sink_parquet()` for memory efficiency. Single-threaded.
 /// - **Fast mode (`--fast`)**: Loads entire dataset into memory, parallelizes across all cores.
+/// - **SAS7BDAT mode**: Always loads fully into memory (binary format requires sequential parsing).
 pub fn run_convert(
     input: &Path,
     output: Option<&Path>,
     infer_schema_length: usize,
     fast: bool,
 ) -> Result<()> {
+    // Detect SAS7BDAT input and route to dedicated handler
+    let input_ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if input_ext == "sas7bdat" {
+        return run_convert_sas7bdat(input, output);
+    }
+
     let total_start = Instant::now();
 
     // Determine output path
@@ -310,6 +324,131 @@ pub fn run_convert(
     );
     println!("      Throughput: {:.1} MB/s", throughput_mb_s);
 
+    println!();
+    println!(" {} Conversion complete!", style("✓").green().bold());
+
+    Ok(())
+}
+
+/// Run SAS7BDAT to Parquet/CSV conversion
+///
+/// Loads the SAS7BDAT file using the pure Rust parser, then writes to
+/// Parquet (default) or CSV (if output path has .csv extension).
+fn run_convert_sas7bdat(input: &Path, output: Option<&Path>) -> Result<()> {
+    let total_start = Instant::now();
+
+    // Determine output path and format
+    let output_path = match output {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let parent = input.parent().unwrap_or_else(|| Path::new("."));
+            let stem = input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            parent.join(format!("{}.parquet", stem))
+        }
+    };
+
+    let output_ext = output_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("parquet")
+        .to_lowercase();
+
+    let format_name = if output_ext == "csv" {
+        "CSV"
+    } else {
+        "Parquet"
+    };
+
+    println!(
+        "\n {} Converting SAS7BDAT to {}  {}",
+        style("◆").cyan().bold(),
+        format_name,
+        style(format!("[started {}]", timestamp())).dim()
+    );
+    println!("   Input:  {}", style(input.display()).dim());
+    println!("   Output: {}", style(output_path.display()).dim());
+    println!();
+
+    // Step 1: Load SAS7BDAT file
+    let spinner = create_spinner("Loading SAS7BDAT file...");
+    let (mut df, rows, cols, _) =
+        load_sas7bdat(input).map_err(|e| anyhow::anyhow!("Failed to load SAS7BDAT file: {}", e))?;
+    let load_time = total_start.elapsed();
+    spinner.finish_with_message(format!(
+        "{} [{}] SAS7BDAT loaded: {} rows x {} columns ({})",
+        style("✓").green(),
+        style(timestamp()).dim(),
+        style(rows).yellow(),
+        style(cols).yellow(),
+        style(format_duration(load_time)).cyan()
+    ));
+
+    // Step 2: Write output
+    let write_start = Instant::now();
+    let msg = format!("Writing {} file...", format_name);
+    let spinner = create_spinner(&msg);
+
+    if output_ext == "csv" {
+        let file = std::fs::File::create(&output_path)
+            .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
+        CsvWriter::new(file)
+            .finish(&mut df)
+            .with_context(|| format!("Failed to write CSV file: {}", output_path.display()))?;
+    } else {
+        let file = std::fs::File::create(&output_path)
+            .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
+        ParquetWriter::new(file)
+            .with_compression(ParquetCompression::Snappy)
+            .with_statistics(StatisticsOptions::full())
+            .with_row_group_size(Some(100_000))
+            .finish(&mut df)
+            .with_context(|| format!("Failed to write Parquet file: {}", output_path.display()))?;
+    }
+
+    let write_time = write_start.elapsed();
+    spinner.finish_with_message(format!(
+        "{} [{}] {} written ({})",
+        style("✓").green(),
+        style(timestamp()).dim(),
+        format_name,
+        style(format_duration(write_time)).cyan()
+    ));
+
+    // Show file sizes
+    let input_size_bytes = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
+    let output_size_bytes = std::fs::metadata(&output_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let input_size = input_size_bytes as f64 / (1024.0 * 1024.0);
+    let output_size = output_size_bytes as f64 / (1024.0 * 1024.0);
+    let total_time = total_start.elapsed();
+
+    println!();
+    println!(
+        "   {} rows x {} columns",
+        style(rows).yellow(),
+        style(cols).yellow()
+    );
+    println!("   {} File sizes:", style("✧").cyan());
+    println!("      SAS7BDAT: {:.2} MB", input_size);
+    println!("      {}:  {:.2} MB", format_name, output_size);
+
+    if output_size < input_size {
+        let reduction = ((input_size - output_size) / input_size) * 100.0;
+        println!(
+            "      {}",
+            style(format!("↓ {:.1}% smaller", reduction)).green()
+        );
+    }
+
+    println!();
+    println!(
+        "   {}",
+        style(format!("Total: {}", format_duration(total_time))).bold()
+    );
     println!();
     println!(" {} Conversion complete!", style("✓").green().bold());
 

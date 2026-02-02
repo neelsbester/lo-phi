@@ -230,7 +230,13 @@ fn resolve_paths(cli: &Cli) -> Result<(std::path::PathBuf, std::path::PathBuf)> 
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("parquet");
-        parent.join(format!("{}_reduced.{}", stem, extension))
+        // SAS7BDAT input defaults to Parquet output (no SAS7BDAT write support)
+        let output_ext = if extension.eq_ignore_ascii_case("sas7bdat") {
+            "parquet"
+        } else {
+            extension
+        };
+        parent.join(format!("{}_reduced.{}", stem, output_ext))
     });
 
     Ok((input, output_path))
@@ -345,7 +351,13 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
                 }
                 ConfigResult::Convert(boxed_cfg) => {
                     let cfg = *boxed_cfg;
-                    cli::convert::run_convert(&cfg.input, None, cfg.infer_schema_length, true)?;
+                    // Run CSV/SAS7BDAT to Parquet conversion
+                    cli::convert::run_convert(
+                        &cfg.input,
+                        None, // Auto-generate output path
+                        cfg.infer_schema_length,
+                        true, // Use fast mode
+                    )?;
 
                     let parquet_path = cfg.input.with_extension("parquet");
                     current_input = parquet_path.clone();

@@ -16,26 +16,31 @@ pub fn get_column_names(path: &Path) -> Result<Vec<String>> {
         .unwrap_or("")
         .to_lowercase();
 
-    let schema = match extension.as_str() {
+    match extension.as_str() {
         "csv" => {
             let mut lf = LazyCsvReader::new(path)
                 .with_infer_schema_length(Some(100))
                 .finish()
                 .with_context(|| format!("Failed to read CSV schema: {}", path.display()))?;
-            lf.collect_schema()?
+            let schema = lf.collect_schema()?;
+            Ok(schema.iter_names().map(|s| s.to_string()).collect())
         }
         "parquet" => {
             let mut lf = LazyFrame::scan_parquet(path, Default::default())
                 .with_context(|| format!("Failed to read Parquet schema: {}", path.display()))?;
-            lf.collect_schema()?
+            let schema = lf.collect_schema()?;
+            Ok(schema.iter_names().map(|s| s.to_string()).collect())
+        }
+        "sas7bdat" => {
+            use super::sas7bdat::get_sas7bdat_columns;
+            get_sas7bdat_columns(path)
+                .map_err(|e| anyhow::anyhow!("Failed to read SAS7BDAT columns: {}", e))
         }
         _ => anyhow::bail!(
-            "Unsupported file format: {}. Supported formats: csv, parquet",
+            "Unsupported file format: {}. Supported formats: csv, parquet, sas7bdat",
             extension
         ),
-    };
-
-    Ok(schema.iter_names().map(|s| s.to_string()).collect())
+    }
 }
 
 /// Load a CSV file with a progress bar showing bytes read
@@ -149,8 +154,14 @@ pub fn load_dataset_with_progress(
     let df = match extension.as_str() {
         "csv" => load_csv_with_progress(path, schema_length)?,
         "parquet" => load_parquet(path)?,
+        "sas7bdat" => {
+            use super::sas7bdat::load_sas7bdat;
+            let (df, _, _, _) = load_sas7bdat(path)
+                .map_err(|e| anyhow::anyhow!("Failed to load SAS7BDAT file: {}", e))?;
+            df
+        }
         _ => anyhow::bail!(
-            "Unsupported file format: {}. Supported formats: csv, parquet",
+            "Unsupported file format: {}. Supported formats: csv, parquet, sas7bdat",
             extension
         ),
     };
