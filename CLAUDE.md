@@ -229,6 +229,21 @@ Pure command-line mode bypasses all interactive prompts. Required for scripting,
 - **Data Accumulation:** Configuration builds incrementally across steps, validated before pipeline execution
 - **Integration:** `main.rs` dispatches to wizard by default unless `--manual` or `--no-confirm` flags are present
 - **Navigation:** Users can go back to previous steps to revise choices, maintaining consistency across the configuration
+- **Visual Design:** Aligned with dashboard (`config_menu.rs`) design language — ASCII logo, fixed-size centered popups, semantic colors per step type, styled help bar, search cursors (▌), count indicators
+
+#### Wizard Visual Design
+
+The wizard shares the dashboard's visual language:
+
+- **Logo:** Lo-phi ASCII art + "Feature Reduction as simple as phi" tagline at top
+- **Progress Bar:** Color matches current step's semantic color
+- **Centered Popups:** Fixed-size popups (not full-screen), e.g. 50x18 for target selection, 45x9 for thresholds
+- **Semantic Colors:** Magenta (target), Yellow (thresholds/inputs), Red (drop columns), Green (solver/weight/summary), Cyan (navigation/general)
+- **Help Bar:** Borderless, 1-row, Cyan keys + DarkGray descriptions, context-sensitive per step
+- **Search Fields:** DarkGray bordered, White text + semantic-colored cursor (▌)
+- **List Selection:** `fg(Black).bg(semantic_color).bold()` (inverted background)
+- **Count Indicators:** DarkGray `" 3/12 columns "` at bottom-right of list popups
+- **Helper Functions:** `centered_fixed_rect()`, `step_color()`, `render_threshold_popup()` (shared by all threshold renderers)
 
 ### Interactive TUI Options (Dashboard Mode)
 

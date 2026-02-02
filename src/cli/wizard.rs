@@ -47,7 +47,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     prelude::*,
-    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph},
     Terminal,
 };
 
@@ -739,7 +739,39 @@ fn generate_output_path(input: &std::path::Path, suffix: &str) -> Result<PathBuf
 }
 
 // ============================================================================
-// Rendering
+// Rendering Helpers
+// ============================================================================
+
+/// Create a centered rectangle with fixed dimensions
+fn centered_fixed_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.width.saturating_sub(width) / 2;
+    let y = area.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+/// Get semantic color for a step
+fn step_color(step: &WizardStep) -> Color {
+    match step {
+        WizardStep::TargetSelection { .. } | WizardStep::TargetMapping { .. } => Color::Magenta,
+        WizardStep::MissingThreshold { .. }
+        | WizardStep::GiniThreshold { .. }
+        | WizardStep::CorrelationThreshold { .. }
+        | WizardStep::SchemaInference { .. }
+        | WizardStep::OutputPath { .. } => Color::Yellow,
+        WizardStep::DropColumns { .. } => Color::Red,
+        WizardStep::SolverToggle { .. }
+        | WizardStep::MonotonicitySelection { .. }
+        | WizardStep::WeightColumn { .. }
+        | WizardStep::Summary => Color::Green,
+        WizardStep::TaskSelection
+        | WizardStep::FileSelection
+        | WizardStep::OptionalSettingsPrompt
+        | WizardStep::ConversionMode { .. } => Color::Cyan,
+    }
+}
+
+// ============================================================================
+// Main Rendering Functions
 // ============================================================================
 
 /// Render the complete wizard UI
@@ -747,25 +779,73 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Progress bar
-            Constraint::Min(0),    // Main content
-            Constraint::Length(3), // Help bar
+            Constraint::Length(9),  // Logo area
+            Constraint::Length(3),  // Progress bar
+            Constraint::Min(0),     // Main content
+            Constraint::Length(1),  // Help bar (no border)
         ])
         .split(f.area());
 
+    // Render logo
+    render_logo(f, chunks[0]);
+
     // Render progress bar
-    render_progress_bar(f, chunks[0], wizard);
+    render_progress_bar(f, chunks[1], wizard);
 
     // Render current step
-    render_step(f, chunks[1], wizard);
+    render_step(f, chunks[2], wizard);
 
     // Render help bar
-    render_help_bar(f, chunks[2], wizard);
+    render_help_bar(f, chunks[3], wizard);
 
     // Render quit confirmation overlay if needed
     if wizard.show_quit_confirm {
         render_quit_confirm_overlay(f, wizard);
     }
+}
+
+/// Render logo
+fn render_logo(f: &mut Frame, area: Rect) {
+    let logo_lines = vec![
+        Line::from(Span::styled(
+            "██╗      ██████╗       ██████╗ ██╗  ██╗██╗",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "██║     ██╔═══██╗      ██╔══██╗██║  ██║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "██║     ██║   ██║█████╗██████╔╝███████║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "██║     ██║   ██║╚════╝██╔═══╝ ██╔══██║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "███████╗╚██████╔╝      ██║     ██║  ██║██║",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(Span::styled(
+            "╚══════╝ ╚═════╝       ╚═╝     ╚═╝  ╚═╝╚═╝",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("φ ", Style::default().fg(Color::Magenta).bold()),
+            Span::styled(
+                "Feature Reduction as simple as phi",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+    ];
+
+    let logo_width = 43u16;
+    let logo_x = area.width.saturating_sub(logo_width) / 2;
+    let logo_area = Rect::new(logo_x, area.y, logo_width.min(area.width), area.height);
+    let logo_paragraph = Paragraph::new(logo_lines).alignment(Alignment::Center);
+    f.render_widget(logo_paragraph, logo_area);
 }
 
 /// Render progress bar showing current step
@@ -779,16 +859,18 @@ fn render_progress_bar(f: &mut Frame, area: Rect, wizard: &WizardState) {
         .map(|s| s.title())
         .unwrap_or("Unknown");
 
+    let color = wizard.current_step().map(step_color).unwrap_or(Color::Cyan);
     let label = format!("Step {} of {} - {}", current, total, step_title);
 
     let gauge = Gauge::default()
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title("Lo-phi Wizard"),
+                .border_style(Style::default().fg(color))
+                .title(" Lo-phi Wizard ")
+                .title_style(Style::default().fg(color).bold()),
         )
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::Black))
+        .gauge_style(Style::default().fg(color).bg(Color::Black))
         .label(label)
         .ratio(progress);
 
@@ -809,7 +891,7 @@ fn render_step(f: &mut Frame, area: Rect, wizard: &WizardState) {
         }
     };
 
-    // Dispatch to step-specific renderer (placeholder for now)
+    // Dispatch to step-specific renderer
     match step {
         WizardStep::TaskSelection => render_task_selection(f, area, wizard),
         WizardStep::FileSelection => render_file_selection(f, area, wizard),
@@ -832,109 +914,1079 @@ fn render_step(f: &mut Frame, area: Rect, wizard: &WizardState) {
 
 /// Render help bar with context-appropriate shortcuts
 fn render_help_bar(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let help_text = if wizard.is_last_step() {
-        "[Enter] Execute | [Backspace] Back | [Q/Esc] Quit"
-    } else if wizard.current_index == 0 {
-        "[Enter] Continue | [Q/Esc] Quit"
+    let step = wizard.current_step();
+    let is_drop = matches!(step, Some(WizardStep::DropColumns { .. }));
+
+    let mut spans = vec![
+        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+    ];
+
+    if wizard.is_last_step() {
+        spans.push(Span::styled(" execute  ", Style::default().fg(Color::DarkGray)));
     } else {
-        "[Enter] Next | [Backspace] Back | [Q/Esc] Quit"
-    };
+        spans.push(Span::styled(" next  ", Style::default().fg(Color::DarkGray)));
+    }
 
-    let paragraph = Paragraph::new(help_text)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL));
+    if is_drop {
+        spans.push(Span::styled("Space", Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)));
+    }
 
+    if wizard.current_index > 0 {
+        spans.push(Span::styled("Backspace", Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(" back  ", Style::default().fg(Color::DarkGray)));
+    }
+
+    spans.push(Span::styled("Q/Esc", Style::default().fg(Color::Cyan)));
+    spans.push(Span::styled(" quit", Style::default().fg(Color::DarkGray)));
+
+    let help_line = Line::from(spans);
+    let paragraph = Paragraph::new(help_line).alignment(Alignment::Center);
     f.render_widget(paragraph, area);
 }
 
 /// Render quit confirmation overlay
 fn render_quit_confirm_overlay(f: &mut Frame, _wizard: &WizardState) {
-    let area = centered_rect(50, 30, f.area());
-
-    // Clear the area
-    f.render_widget(Clear, area);
+    let popup = centered_fixed_rect(40, 8, f.area());
+    f.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title("Quit Wizard?")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Red))
+        .title(" Quit Wizard? ")
+        .title_style(Style::default().fg(Color::Red).bold())
         .style(Style::default().bg(Color::Black));
 
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
 
-    let text = "Are you sure you want to quit?\n\nAll progress will be lost.\n\n[Y] Yes  [N] No";
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true });
+    let content = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Are you sure you want to quit?",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("      ", Style::default()),
+            Span::styled("Y", Style::default().fg(Color::Cyan)),
+            Span::styled(" yes  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("N", Style::default().fg(Color::Cyan)),
+            Span::styled(" no", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
 
+    let paragraph = Paragraph::new(content);
     f.render_widget(paragraph, inner);
 }
 
-/// Create a centered rectangle
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
+// ============================================================================
+// Step Renderers
+// ============================================================================
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
+/// Render threshold popup helper
+fn render_threshold_popup(
+    f: &mut Frame,
+    area: Rect,
+    title: &str,
+    description: &str,
+    input: &str,
+    error: &Option<String>,
+) {
+    let color = Color::Yellow;
+    let popup_height = if error.is_some() { 11u16 } else { 9u16 };
+    let popup = centered_fixed_rect(45, popup_height, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(format!(" {} ", title))
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let mut content = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {}", description),
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Value: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(input.to_string(), Style::default().fg(Color::White).bold()),
+            Span::styled("▌", Style::default().fg(color)),
+        ]),
+    ];
+
+    if let Some(err) = error {
+        content.push(Line::from(""));
+        content.push(Line::from(Span::styled(
+            format!("  {}", err),
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    content.push(Line::from(""));
+    content.push(Line::from(vec![
+        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Backspace", Style::default().fg(Color::Cyan)),
+        Span::styled(" back", Style::default().fg(Color::DarkGray)),
+    ]));
+
+    let paragraph = Paragraph::new(content);
+    f.render_widget(paragraph, inner);
 }
-
-// ============================================================================
-// Step Renderers (Placeholders - Phase 3/4 will implement)
-// ============================================================================
 
 #[allow(dead_code)]
 fn render_task_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let options = [
-        (
-            "Reduce features",
-            "Analyze and reduce dataset features based on missing values, Gini/IV, and correlation",
-        ),
-        (
-            "Convert CSV to Parquet",
-            "Convert a CSV file to Parquet format with optional compression",
-        ),
-    ];
+    let color = Color::Cyan;
+    let popup = centered_fixed_rect(60, 10, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" What would you like to do? ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let options = ["Reduce features", "Convert CSV to Parquet"];
 
     let items: Vec<ListItem> = options
         .iter()
         .enumerate()
-        .map(|(i, (title, desc))| {
+        .map(|(i, title)| {
             let style = if i == wizard.task_selected_index {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::Black).bg(color).bold()
             } else {
-                Style::default()
+                Style::default().fg(Color::White)
             };
-            let content = format!("  {} - {}", title, desc);
-            ListItem::new(content).style(style)
+            ListItem::new(format!("  {}", title)).style(style)
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title("What would you like to do?"),
-    );
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
 
-    f.render_widget(list, area);
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(wizard.task_selected_index));
+    f.render_stateful_widget(list, chunks[0], &mut list_state);
+
+    let help_text = Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" confirm", Style::default().fg(Color::DarkGray)),
+    ]);
+    f.render_widget(Paragraph::new(help_text), chunks[1]);
 }
+
+#[allow(dead_code)]
+fn render_file_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let color = Color::Cyan;
+    let popup = centered_fixed_rect(55, 10, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Select Input File ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let content = if let Some(input) = &wizard.data.input {
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  File: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    input.display().to_string(),
+                    Style::default().fg(Color::White).bold(),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+                Span::styled(" to continue", Style::default().fg(Color::DarkGray)),
+            ]),
+        ]
+    } else {
+        vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Press Enter to open file selector...",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ]
+    };
+
+    let paragraph = Paragraph::new(content);
+    f.render_widget(paragraph, inner);
+}
+
+#[allow(dead_code)]
+fn render_target_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (search, filtered, selected) = match wizard.current_step() {
+        Some(WizardStep::TargetSelection {
+            search,
+            filtered,
+            selected,
+        }) => (search, filtered, *selected),
+        _ => return,
+    };
+
+    let color = Color::Magenta;
+    let popup = centered_fixed_rect(50, 18, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Select Target Column ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(inner);
+
+    // Search box with cursor
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Search ")
+        .title_style(Style::default().fg(Color::DarkGray));
+
+    let search_para = Paragraph::new(Line::from(vec![
+        Span::styled(search.to_string(), Style::default().fg(Color::White)),
+        Span::styled("▌", Style::default().fg(color)),
+    ]))
+    .block(search_block);
+    f.render_widget(search_para, chunks[0]);
+
+    // Column list with visible window
+    let filtered_cols: Vec<&String> = filtered
+        .iter()
+        .map(|&i| &wizard.data.available_columns[i])
+        .collect();
+
+    let max_visible = chunks[1].height as usize;
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = filtered_cols
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, col)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(color).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", col)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    // Count indicator at bottom-right
+    if !filtered_cols.is_empty() {
+        let count_text = format!(" {}/{} columns ", selected + 1, filtered_cols.len());
+        let text_len = count_text.len() as u16;
+        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_area = Rect::new(
+            popup.x + popup.width - text_len - 1,
+            popup.y + popup.height - 1,
+            text_len,
+            1,
+        );
+        f.render_widget(Paragraph::new(count_span), count_area);
+    }
+}
+
+#[allow(dead_code)]
+fn render_target_mapping(f: &mut Frame, area: Rect, _wizard: &WizardState) {
+    let color = Color::Magenta;
+    let popup = centered_fixed_rect(50, 10, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Target Mapping ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let content = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Target mapping is handled automatically.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Binary targets (0/1) are detected and mapped.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+            Span::styled(" to continue", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(content);
+    f.render_widget(paragraph, inner);
+}
+
+#[allow(dead_code)]
+fn render_missing_threshold(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (input, error) = match wizard.current_step() {
+        Some(WizardStep::MissingThreshold { input, error }) => (input, error),
+        _ => return,
+    };
+    render_threshold_popup(
+        f,
+        area,
+        "Missing Threshold",
+        "Drop columns exceeding null ratio (0.0-1.0)",
+        input,
+        error,
+    );
+}
+
+#[allow(dead_code)]
+fn render_gini_threshold(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (input, error) = match wizard.current_step() {
+        Some(WizardStep::GiniThreshold { input, error }) => (input, error),
+        _ => return,
+    };
+    render_threshold_popup(
+        f,
+        area,
+        "Gini Threshold",
+        "Drop features with Gini below threshold (0.0-1.0)",
+        input,
+        error,
+    );
+}
+
+#[allow(dead_code)]
+fn render_correlation_threshold(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (input, error) = match wizard.current_step() {
+        Some(WizardStep::CorrelationThreshold { input, error }) => (input, error),
+        _ => return,
+    };
+    render_threshold_popup(
+        f,
+        area,
+        "Correlation Threshold",
+        "Drop correlated features above threshold (0.0-1.0)",
+        input,
+        error,
+    );
+}
+
+#[allow(dead_code)]
+fn render_optional_settings_prompt(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let color = Color::Cyan;
+    let popup = centered_fixed_rect(50, 12, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Optional Settings ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let selected = if wizard.optional_yes { 0 } else { 1 };
+    let options = ["Yes - configure advanced settings", "No - use defaults"];
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(color).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", opt)).style(style)
+        })
+        .collect();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let desc = Paragraph::new(Line::from(Span::styled(
+        "  Configure solver, weights, and drop columns?",
+        Style::default().fg(Color::DarkGray),
+    )));
+    f.render_widget(desc, chunks[0]);
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    let help_text = Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" confirm", Style::default().fg(Color::DarkGray)),
+    ]);
+    f.render_widget(Paragraph::new(help_text), chunks[2]);
+}
+
+#[allow(dead_code)]
+fn render_solver_toggle(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let selected = match wizard.current_step() {
+        Some(WizardStep::SolverToggle { selected }) => *selected,
+        _ => return,
+    };
+
+    let color = Color::Green;
+    let popup = centered_fixed_rect(45, 10, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Solver Configuration ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let current_idx = if selected { 0 } else { 1 };
+    let options = ["Enabled", "Disabled"];
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let style = if i == current_idx {
+                Style::default().fg(Color::Black).bg(color).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", opt)).style(style)
+        })
+        .collect();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let desc = Paragraph::new(Line::from(Span::styled(
+        "  Use optimization solver for WoE binning?",
+        Style::default().fg(Color::DarkGray),
+    )));
+    f.render_widget(desc, chunks[0]);
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(current_idx));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    let help_text = Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" confirm", Style::default().fg(Color::DarkGray)),
+    ]);
+    f.render_widget(Paragraph::new(help_text), chunks[2]);
+}
+
+#[allow(dead_code)]
+fn render_monotonicity_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let selected = match wizard.current_step() {
+        Some(WizardStep::MonotonicitySelection { selected }) => *selected,
+        _ => return,
+    };
+
+    let color = Color::Green;
+    let popup = centered_fixed_rect(45, 14, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Monotonicity Constraint ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let options = ["none", "ascending", "descending", "peak", "valley", "auto"];
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(color).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", opt)).style(style)
+        })
+        .collect();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    f.render_stateful_widget(list, chunks[0], &mut list_state);
+
+    let help_text = Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" confirm", Style::default().fg(Color::DarkGray)),
+    ]);
+    f.render_widget(Paragraph::new(help_text), chunks[1]);
+}
+
+#[allow(dead_code)]
+fn render_weight_column(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (search, filtered, selected) = match wizard.current_step() {
+        Some(WizardStep::WeightColumn {
+            search,
+            filtered,
+            selected,
+        }) => (search, filtered, *selected),
+        _ => return,
+    };
+
+    let color = Color::Green;
+    let popup = centered_fixed_rect(50, 18, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Select Weight Column ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(inner);
+
+    // Search box with cursor
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Search ")
+        .title_style(Style::default().fg(Color::DarkGray));
+
+    let search_para = Paragraph::new(Line::from(vec![
+        Span::styled(search.to_string(), Style::default().fg(Color::White)),
+        Span::styled("▌", Style::default().fg(color)),
+    ]))
+    .block(search_block);
+    f.render_widget(search_para, chunks[0]);
+
+    // Build option list: "None" + filtered columns
+    let filtered_cols: Vec<String> = filtered
+        .iter()
+        .map(|&i| wizard.data.available_columns[i].clone())
+        .collect();
+
+    let mut options = vec!["(None)".to_string()];
+    options.extend(filtered_cols);
+
+    let max_visible = chunks[1].height as usize;
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, col)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(color).bold()
+            } else if i == 0 {
+                Style::default().fg(Color::DarkGray).italic()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", col)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    // Count indicator
+    if !options.is_empty() {
+        let count_text = format!(" {}/{} options ", selected + 1, options.len());
+        let text_len = count_text.len() as u16;
+        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_area = Rect::new(
+            popup.x + popup.width - text_len - 1,
+            popup.y + popup.height - 1,
+            text_len,
+            1,
+        );
+        f.render_widget(Paragraph::new(count_span), count_area);
+    }
+}
+
+#[allow(dead_code)]
+fn render_drop_columns(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (search, filtered, selected, checked) = match wizard.current_step() {
+        Some(WizardStep::DropColumns {
+            search,
+            filtered,
+            selected,
+            checked,
+        }) => (search, filtered, *selected, checked),
+        _ => return,
+    };
+
+    let color = Color::Red;
+    let checked_count = checked.iter().filter(|&&c| c).count();
+    let popup = centered_fixed_rect(55, 20, area);
+    f.render_widget(Clear, popup);
+
+    let title = format!(" Select Columns to Drop ({} selected) ", checked_count);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(title)
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    // Search box with cursor
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title(" Search ")
+        .title_style(Style::default().fg(Color::DarkGray));
+
+    let search_para = Paragraph::new(Line::from(vec![
+        Span::styled(search.to_string(), Style::default().fg(Color::White)),
+        Span::styled("▌", Style::default().fg(color)),
+    ]))
+    .block(search_block);
+    f.render_widget(search_para, chunks[0]);
+
+    // Column list
+    let filtered_cols: Vec<&String> = filtered
+        .iter()
+        .map(|&i| &wizard.data.available_columns[i])
+        .collect();
+
+    let max_visible = chunks[1].height as usize;
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = filtered_cols
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, col)| {
+            let is_checked = checked.get(i).copied().unwrap_or(false);
+            let checkbox = if is_checked { "[x]" } else { "[ ]" };
+
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(color).bold()
+            } else if is_checked {
+                Style::default().fg(color)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {} {}", checkbox, col)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    // Help text at bottom
+    let help_text = Line::from(vec![
+        Span::styled("  Space", Style::default().fg(Color::Cyan)),
+        Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Backspace", Style::default().fg(Color::Cyan)),
+        Span::styled(" back", Style::default().fg(Color::DarkGray)),
+    ]);
+    f.render_widget(Paragraph::new(help_text), chunks[2]);
+
+    // Count indicator at bottom-right
+    if !filtered_cols.is_empty() {
+        let count_text = format!(" {}/{} columns ", selected + 1, filtered_cols.len());
+        let text_len = count_text.len() as u16;
+        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_area = Rect::new(
+            popup.x + popup.width - text_len - 1,
+            popup.y + popup.height - 1,
+            text_len,
+            1,
+        );
+        f.render_widget(Paragraph::new(count_span), count_area);
+    }
+}
+
+#[allow(dead_code)]
+fn render_schema_inference(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (input, error) = match wizard.current_step() {
+        Some(WizardStep::SchemaInference { input, error }) => (input, error),
+        _ => return,
+    };
+    render_threshold_popup(
+        f,
+        area,
+        "Schema Inference",
+        "Rows for schema inference (0 = full scan, >= 100)",
+        input,
+        error,
+    );
+}
+
+#[allow(dead_code)]
+fn render_summary(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let color = Color::Green;
+    let popup = centered_fixed_rect(60, 20, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Configuration Summary ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let content = match wizard.data.task {
+        Some(WizardTask::Reduction) => {
+            let input = wizard
+                .data
+                .input
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "None".to_string());
+            let target = wizard.data.target.as_deref().unwrap_or("None");
+            let weight = wizard.data.weight_column.as_deref().unwrap_or("None");
+            let drop_cols = if wizard.data.columns_to_drop.is_empty() {
+                "None".to_string()
+            } else {
+                wizard.data.columns_to_drop.join(", ")
+            };
+            let solver = if wizard.data.use_solver {
+                "Enabled"
+            } else {
+                "Disabled"
+            };
+
+            vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Input:       ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(input, Style::default().fg(color)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Target:      ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(target.to_string(), Style::default().fg(color)),
+                ]),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Thresholds",
+                    Style::default().fg(Color::DarkGray).bold(),
+                )),
+                Line::from(vec![
+                    Span::styled("    Missing:     ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{:.2}", wizard.data.missing_threshold),
+                        Style::default().fg(color),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("    Gini:        ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{:.2}", wizard.data.gini_threshold),
+                        Style::default().fg(color),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("    Correlation: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{:.2}", wizard.data.correlation_threshold),
+                        Style::default().fg(color),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Solver:      ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(solver.to_string(), Style::default().fg(color)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Monotonicity:", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!(" {}", wizard.data.monotonicity),
+                        Style::default().fg(color),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Weight:      ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(weight.to_string(), Style::default().fg(color)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Drop:        ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(drop_cols, Style::default().fg(color)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Schema:      ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{} rows", wizard.data.infer_schema_length),
+                        Style::default().fg(color),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+                    Span::styled(" to execute  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Backspace", Style::default().fg(Color::Cyan)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]),
+            ]
+        }
+        Some(WizardTask::Conversion) => {
+            let input = wizard
+                .data
+                .input
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "None".to_string());
+            let output = wizard
+                .data
+                .conversion_output
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "None".to_string());
+            let mode = if wizard.data.conversion_fast {
+                "Fast (parallel)"
+            } else {
+                "Memory-efficient (streaming)"
+            };
+
+            vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Input:  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(input, Style::default().fg(color)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Output: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(output, Style::default().fg(color)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Mode:   ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(mode.to_string(), Style::default().fg(color)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Schema: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        format!("{} rows", wizard.data.infer_schema_length),
+                        Style::default().fg(color),
+                    ),
+                ]),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Enter", Style::default().fg(Color::Cyan)),
+                    Span::styled(" to execute  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Backspace", Style::default().fg(Color::Cyan)),
+                    Span::styled(" back", Style::default().fg(Color::DarkGray)),
+                ]),
+            ]
+        }
+        None => vec![Line::from(Span::styled(
+            "Error: No task selected",
+            Style::default().fg(Color::Red),
+        ))],
+    };
+
+    let paragraph = Paragraph::new(content);
+    f.render_widget(paragraph, inner);
+}
+
+#[allow(dead_code)]
+fn render_output_path(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (input, error) = match wizard.current_step() {
+        Some(WizardStep::OutputPath { input, error }) => (input, error),
+        _ => return,
+    };
+
+    let color = Color::Yellow;
+    let popup_height = if error.is_some() { 12u16 } else { 10u16 };
+    let popup = centered_fixed_rect(50, popup_height, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Output Path ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let input_file = wizard
+        .data
+        .input
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "None".to_string());
+
+    let mut content = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Input: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(input_file, Style::default().fg(Color::White)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Output path (must end with .parquet):",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Value: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(input.to_string(), Style::default().fg(Color::White).bold()),
+            Span::styled("▌", Style::default().fg(color)),
+        ]),
+    ];
+
+    if let Some(err) = error {
+        content.push(Line::from(""));
+        content.push(Line::from(Span::styled(
+            format!("  {}", err),
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    let paragraph = Paragraph::new(content);
+    f.render_widget(paragraph, inner);
+}
+
+#[allow(dead_code)]
+fn render_conversion_mode(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let selected = match wizard.current_step() {
+        Some(WizardStep::ConversionMode { selected }) => *selected,
+        _ => return,
+    };
+
+    let color = Color::Cyan;
+    let popup = centered_fixed_rect(50, 10, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .title(" Conversion Mode ")
+        .title_style(Style::default().fg(color).bold());
+
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let options = ["Fast (parallel)", "Memory-efficient (streaming)"];
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(color).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", opt)).style(style)
+        })
+        .collect();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .split(inner);
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    f.render_stateful_widget(list, chunks[0], &mut list_state);
+
+    let help_text = Line::from(vec![
+        Span::styled("  ↑/↓", Style::default().fg(Color::Cyan)),
+        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::styled(" confirm", Style::default().fg(Color::DarkGray)),
+    ]);
+    f.render_widget(Paragraph::new(help_text), chunks[1]);
+}
+
+// ============================================================================
+// Event Handlers
+// ============================================================================
 
 fn handle_task_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
     match key.code {
@@ -961,27 +2013,6 @@ fn handle_task_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<Step
         }
         _ => Ok(StepAction::Stay),
     }
-}
-
-#[allow(dead_code)]
-fn render_file_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let text = if let Some(input) = &wizard.data.input {
-        format!(
-            "Input file:\n\n  {}\n\nPress Enter to continue",
-            input.display()
-        )
-    } else {
-        "Press Enter to open file selector...".to_string()
-    };
-
-    let paragraph = Paragraph::new(text).alignment(Alignment::Center).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title("Select Input File"),
-    );
-
-    f.render_widget(paragraph, area);
 }
 
 fn handle_file_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
@@ -1021,65 +2052,6 @@ fn handle_file_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<Step
     } else {
         Ok(StepAction::Stay)
     }
-}
-
-#[allow(dead_code)]
-fn render_target_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let (search, filtered, selected) = match wizard.current_step() {
-        Some(WizardStep::TargetSelection {
-            search,
-            filtered,
-            selected,
-        }) => (search, filtered, *selected),
-        _ => return,
-    };
-
-    // Split area into search box and list
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
-    // Render search box
-    let search_text = format!("> {}_", search);
-    let search_para = Paragraph::new(search_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title("Search Target Column"),
-    );
-    f.render_widget(search_para, chunks[0]);
-
-    // Get filtered columns
-    let filtered_cols: Vec<&String> = filtered
-        .iter()
-        .map(|&i| &wizard.data.available_columns[i])
-        .collect();
-
-    // Render filtered list
-    let items: Vec<ListItem> = filtered_cols
-        .iter()
-        .enumerate()
-        .map(|(i, col)| {
-            let style = if i == selected {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(format!("  {}", col)).style(style)
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(format!("Columns ({} matches)", filtered_cols.len())),
-    );
-
-    f.render_widget(list, chunks[1]);
 }
 
 fn handle_target_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
@@ -1150,27 +2122,6 @@ fn handle_target_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<St
     }
 }
 
-#[allow(dead_code)]
-fn render_target_mapping(f: &mut Frame, area: Rect, _wizard: &WizardState) {
-    let text = "Target Mapping\n\n\
-        Target mapping will be handled automatically during pipeline execution.\n\n\
-        For binary targets (0/1), the wizard will detect and map them correctly.\n\
-        For non-binary targets, you can specify event/non-event values via CLI.\n\n\
-        Press Enter to continue...";
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title("Target Mapping"),
-        );
-
-    f.render_widget(paragraph, area);
-}
-
 fn handle_target_mapping(_wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
     // Auto-advance on Enter
     if key.code == KeyCode::Enter {
@@ -1178,44 +2129,6 @@ fn handle_target_mapping(_wizard: &mut WizardState, key: KeyEvent) -> Result<Ste
     } else {
         Ok(StepAction::Stay)
     }
-}
-
-#[allow(dead_code)]
-fn render_missing_threshold(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let (input, error) = match wizard.current_step() {
-        Some(WizardStep::MissingThreshold { input, error }) => (input, error),
-        _ => return,
-    };
-
-    let mut text = format!(
-        "Missing Value Threshold\n\n\
-        Drop columns with missing value ratio above this threshold.\n\
-        Range: 0.0 to 1.0 (e.g., 0.30 = 30%)\n\n\
-        > {}_",
-        input
-    );
-
-    if let Some(err) = error {
-        text.push_str(&format!("\n\nError: {}", err));
-    }
-
-    let style = if error.is_some() {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(style)
-                .title("Missing Threshold"),
-        );
-
-    f.render_widget(paragraph, area);
 }
 
 fn handle_missing_threshold(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
@@ -1257,44 +2170,6 @@ fn handle_missing_threshold(wizard: &mut WizardState, key: KeyEvent) -> Result<S
     }
 }
 
-#[allow(dead_code)]
-fn render_gini_threshold(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let (input, error) = match wizard.current_step() {
-        Some(WizardStep::GiniThreshold { input, error }) => (input, error),
-        _ => return,
-    };
-
-    let mut text = format!(
-        "Gini/IV Threshold\n\n\
-        Drop features with Gini coefficient below this threshold.\n\
-        Range: 0.0 to 1.0 (e.g., 0.05 = 5%)\n\n\
-        > {}_",
-        input
-    );
-
-    if let Some(err) = error {
-        text.push_str(&format!("\n\nError: {}", err));
-    }
-
-    let style = if error.is_some() {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(style)
-                .title("Gini Threshold"),
-        );
-
-    f.render_widget(paragraph, area);
-}
-
 fn handle_gini_threshold(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
     let step = wizard.current_step_mut();
     let (input, error) = match step {
@@ -1332,44 +2207,6 @@ fn handle_gini_threshold(wizard: &mut WizardState, key: KeyEvent) -> Result<Step
         },
         _ => Ok(StepAction::Stay),
     }
-}
-
-#[allow(dead_code)]
-fn render_correlation_threshold(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let (input, error) = match wizard.current_step() {
-        Some(WizardStep::CorrelationThreshold { input, error }) => (input, error),
-        _ => return,
-    };
-
-    let mut text = format!(
-        "Correlation Threshold\n\n\
-        Drop one feature from pairs with correlation above this threshold.\n\
-        Range: 0.0 to 1.0 (e.g., 0.40 = 40%)\n\n\
-        > {}_",
-        input
-    );
-
-    if let Some(err) = error {
-        text.push_str(&format!("\n\nError: {}", err));
-    }
-
-    let style = if error.is_some() {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(style)
-                .title("Correlation Threshold"),
-        );
-
-    f.render_widget(paragraph, area);
 }
 
 fn handle_correlation_threshold(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
@@ -1411,41 +2248,6 @@ fn handle_correlation_threshold(wizard: &mut WizardState, key: KeyEvent) -> Resu
     }
 }
 
-#[allow(dead_code)]
-fn render_optional_settings_prompt(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let options = ["Yes", "No"];
-    let selected = if wizard.optional_yes { 0 } else { 1 };
-
-    let mut text = String::from(
-        "Would you like to configure optional settings?\n\n\
-        Current defaults:\n\
-        - Solver: Enabled, Trend: none\n\
-        - Weight: None\n\
-        - Drop columns: None\n\
-        - Schema: 10000 rows\n\n",
-    );
-
-    for (i, opt) in options.iter().enumerate() {
-        if i == selected {
-            text.push_str(&format!("  > {} <\n", opt));
-        } else {
-            text.push_str(&format!("    {}\n", opt));
-        }
-    }
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title("Optional Settings"),
-        );
-
-    f.render_widget(paragraph, area);
-}
-
 fn handle_optional_settings_prompt(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
     match key.code {
         KeyCode::Up | KeyCode::Down => {
@@ -1460,42 +2262,6 @@ fn handle_optional_settings_prompt(wizard: &mut WizardState, key: KeyEvent) -> R
         }
         _ => Ok(StepAction::Stay),
     }
-}
-
-#[allow(dead_code)]
-fn render_solver_toggle(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let selected = match wizard.current_step() {
-        Some(WizardStep::SolverToggle { selected }) => *selected,
-        _ => return,
-    };
-
-    let options = ["Enabled", "Disabled"];
-    let current_idx = if selected { 0 } else { 1 };
-
-    let mut text = String::from(
-        "Solver Configuration\n\n\
-        Use optimization solver for WoE binning?\n\n",
-    );
-
-    for (i, opt) in options.iter().enumerate() {
-        if i == current_idx {
-            text.push_str(&format!("  > {} <\n", opt));
-        } else {
-            text.push_str(&format!("    {}\n", opt));
-        }
-    }
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title("Solver"),
-        );
-
-    f.render_widget(paragraph, area);
 }
 
 fn handle_solver_toggle(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
@@ -1516,48 +2282,6 @@ fn handle_solver_toggle(wizard: &mut WizardState, key: KeyEvent) -> Result<StepA
         }
         _ => Ok(StepAction::Stay),
     }
-}
-
-#[allow(dead_code)]
-fn render_monotonicity_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let selected = match wizard.current_step() {
-        Some(WizardStep::MonotonicitySelection { selected }) => *selected,
-        _ => return,
-    };
-
-    let options = [
-        ("none", "No monotonicity constraint"),
-        ("ascending", "WoE increases with feature value"),
-        ("descending", "WoE decreases with feature value"),
-        ("peak", "WoE increases then decreases"),
-        ("valley", "WoE decreases then increases"),
-        ("auto", "Automatically detect best constraint"),
-    ];
-
-    let items: Vec<ListItem> = options
-        .iter()
-        .enumerate()
-        .map(|(i, (name, desc))| {
-            let style = if i == selected {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            let content = format!("  {} - {}", name, desc);
-            ListItem::new(content).style(style)
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title("Monotonicity Constraint"),
-    );
-
-    f.render_widget(list, area);
 }
 
 fn handle_monotonicity_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
@@ -1587,67 +2311,6 @@ fn handle_monotonicity_selection(wizard: &mut WizardState, key: KeyEvent) -> Res
         }
         _ => Ok(StepAction::Stay),
     }
-}
-
-#[allow(dead_code)]
-fn render_weight_column(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let (search, filtered, selected) = match wizard.current_step() {
-        Some(WizardStep::WeightColumn {
-            search,
-            filtered,
-            selected,
-        }) => (search, filtered, *selected),
-        _ => return,
-    };
-
-    // Split area into search box and list
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
-    // Render search box
-    let search_text = format!("> {}_", search);
-    let search_para = Paragraph::new(search_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title("Search Weight Column"),
-    );
-    f.render_widget(search_para, chunks[0]);
-
-    // Build option list: "None" + filtered columns
-    let mut options = vec!["None".to_string()];
-    let filtered_cols: Vec<String> = filtered
-        .iter()
-        .map(|&i| wizard.data.available_columns[i].clone())
-        .collect();
-    options.extend(filtered_cols);
-
-    // Render filtered list
-    let items: Vec<ListItem> = options
-        .iter()
-        .enumerate()
-        .map(|(i, col)| {
-            let style = if i == selected {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(format!("  {}", col)).style(style)
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(format!("Options ({} matches)", options.len())),
-    );
-
-    f.render_widget(list, chunks[1]);
 }
 
 fn handle_weight_column(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
@@ -1717,67 +2380,6 @@ fn handle_weight_column(wizard: &mut WizardState, key: KeyEvent) -> Result<StepA
         }
         _ => Ok(StepAction::Stay),
     }
-}
-
-#[allow(dead_code)]
-fn render_drop_columns(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let (search, filtered, selected, checked) = match wizard.current_step() {
-        Some(WizardStep::DropColumns {
-            search,
-            filtered,
-            selected,
-            checked,
-        }) => (search, filtered, *selected, checked),
-        _ => return,
-    };
-
-    // Split area into search box and list
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
-    // Render search box
-    let search_text = format!("> {}_", search);
-    let search_para = Paragraph::new(search_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title("Search Columns to Drop (Space to toggle, Enter to confirm)"),
-    );
-    f.render_widget(search_para, chunks[0]);
-
-    // Get filtered columns
-    let filtered_cols: Vec<&String> = filtered
-        .iter()
-        .map(|&i| &wizard.data.available_columns[i])
-        .collect();
-
-    // Render filtered list with checkboxes
-    let items: Vec<ListItem> = filtered_cols
-        .iter()
-        .enumerate()
-        .map(|(i, col)| {
-            let checkbox = if checked[i] { "[X]" } else { "[ ]" };
-            let style = if i == selected {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(format!("  {} {}", checkbox, col)).style(style)
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(format!("Columns ({} matches)", filtered_cols.len())),
-    );
-
-    f.render_widget(list, chunks[1]);
 }
 
 fn handle_drop_columns(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
@@ -1861,44 +2463,6 @@ fn handle_drop_columns(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAc
     }
 }
 
-#[allow(dead_code)]
-fn render_schema_inference(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let (input, error) = match wizard.current_step() {
-        Some(WizardStep::SchemaInference { input, error }) => (input, error),
-        _ => return,
-    };
-
-    let mut text = format!(
-        "Schema Inference Length\n\n\
-        Number of rows to scan for schema inference.\n\
-        0 = full scan, >= 100 = sample size\n\n\
-        > {}_",
-        input
-    );
-
-    if let Some(err) = error {
-        text.push_str(&format!("\n\nError: {}", err));
-    }
-
-    let style = if error.is_some() {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(style)
-                .title("Schema Inference"),
-        );
-
-    f.render_widget(paragraph, area);
-}
-
 fn handle_schema_inference(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
     let step = wizard.current_step_mut();
     let (input, error) = match step {
@@ -1938,150 +2502,12 @@ fn handle_schema_inference(wizard: &mut WizardState, key: KeyEvent) -> Result<St
     }
 }
 
-#[allow(dead_code)]
-fn render_summary(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let text = match wizard.data.task {
-        Some(WizardTask::Reduction) => {
-            let input = wizard
-                .data
-                .input
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "None".to_string());
-            let target = wizard.data.target.as_deref().unwrap_or("None");
-            let weight = wizard.data.weight_column.as_deref().unwrap_or("None");
-            let drop_cols = if wizard.data.columns_to_drop.is_empty() {
-                "None".to_string()
-            } else {
-                wizard.data.columns_to_drop.join(", ")
-            };
-
-            format!(
-                "Configuration Summary - Feature Reduction\n\n\
-                Input File: {}\n\
-                Target: {}\n\n\
-                Thresholds:\n\
-                  Missing: {:.2}\n\
-                  Gini: {:.2}\n\
-                  Correlation: {:.2}\n\n\
-                Solver: {}\n\
-                Monotonicity: {}\n\
-                Weight Column: {}\n\
-                Drop Columns: {}\n\
-                Schema Inference: {} rows\n\n\
-                Press Enter to execute",
-                input,
-                target,
-                wizard.data.missing_threshold,
-                wizard.data.gini_threshold,
-                wizard.data.correlation_threshold,
-                if wizard.data.use_solver {
-                    "Enabled"
-                } else {
-                    "Disabled"
-                },
-                wizard.data.monotonicity,
-                weight,
-                drop_cols,
-                wizard.data.infer_schema_length
-            )
-        }
-        Some(WizardTask::Conversion) => {
-            let input = wizard
-                .data
-                .input
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "None".to_string());
-            let output = wizard
-                .data
-                .conversion_output
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "None".to_string());
-            let mode = if wizard.data.conversion_fast {
-                "Fast (parallel)"
-            } else {
-                "Memory-efficient (streaming)"
-            };
-
-            format!(
-                "Configuration Summary - CSV to Parquet Conversion\n\n\
-                Input File: {}\n\
-                Output File: {}\n\
-                Conversion Mode: {}\n\
-                Schema Inference: {} rows\n\n\
-                Press Enter to execute",
-                input, output, mode, wizard.data.infer_schema_length
-            )
-        }
-        None => "Error: No task selected".to_string(),
-    };
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Green))
-                .title("Summary"),
-        );
-
-    f.render_widget(paragraph, area);
-}
-
 fn handle_summary(wizard: &WizardState, key: KeyEvent) -> Result<StepAction> {
     if key.code == KeyCode::Enter {
         generate_result(wizard)
     } else {
         Ok(StepAction::Stay)
     }
-}
-
-#[allow(dead_code)]
-fn render_output_path(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let (input, error) = match wizard.current_step() {
-        Some(WizardStep::OutputPath { input, error }) => (input, error),
-        _ => return,
-    };
-
-    let input_file = wizard
-        .data
-        .input
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "None".to_string());
-
-    let mut text = format!(
-        "Output Path\n\n\
-        Input: {}\n\n\
-        Output file path (must end with .parquet):\n\n\
-        > {}_",
-        input_file, input
-    );
-
-    if let Some(err) = error {
-        text.push_str(&format!("\n\nError: {}", err));
-    }
-
-    let style = if error.is_some() {
-        Style::default().fg(Color::Red)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
-
-    let paragraph = Paragraph::new(text)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(style)
-                .title("Output Path"),
-        );
-
-    f.render_widget(paragraph, area);
 }
 
 fn handle_output_path(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
@@ -2115,50 +2541,6 @@ fn handle_output_path(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAct
         }
         _ => Ok(StepAction::Stay),
     }
-}
-
-#[allow(dead_code)]
-fn render_conversion_mode(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let selected = match wizard.current_step() {
-        Some(WizardStep::ConversionMode { selected }) => *selected,
-        _ => return,
-    };
-
-    let options = [
-        (
-            "Fast (parallel)",
-            "In-memory conversion with parallel processing",
-        ),
-        (
-            "Memory-efficient (streaming)",
-            "Streaming conversion for large files",
-        ),
-    ];
-
-    let items: Vec<ListItem> = options
-        .iter()
-        .enumerate()
-        .map(|(i, (name, desc))| {
-            let style = if i == selected {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            let content = format!("  {} - {}", name, desc);
-            ListItem::new(content).style(style)
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title("Conversion Mode"),
-    );
-
-    f.render_widget(list, area);
 }
 
 fn handle_conversion_mode(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
