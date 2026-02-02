@@ -2427,11 +2427,15 @@ fn list_directory(path: &std::path::Path) -> Vec<FileEntry> {
     entries
 }
 
-/// Check if a file is a valid data file (CSV or Parquet)
+/// Check if a file is a valid data file (CSV, Parquet, or SAS7BDAT)
 fn is_valid_data_file(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("csv") || e.eq_ignore_ascii_case("parquet"))
+        .map(|e| {
+            e.eq_ignore_ascii_case("csv")
+                || e.eq_ignore_ascii_case("parquet")
+                || e.eq_ignore_ascii_case("sas7bdat")
+        })
         .unwrap_or(false)
 }
 

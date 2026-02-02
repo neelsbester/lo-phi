@@ -102,7 +102,13 @@ fn main() -> Result<()> {
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("parquet");
-        parent.join(format!("{}_reduced.{}", stem, extension))
+        // SAS7BDAT input defaults to Parquet output (no SAS7BDAT write support)
+        let output_ext = if extension.eq_ignore_ascii_case("sas7bdat") {
+            "parquet"
+        } else {
+            extension
+        };
+        parent.join(format!("{}_reduced.{}", stem, output_ext))
     });
 
     // Setup configuration (interactive or CLI-based)
@@ -329,7 +335,7 @@ fn setup_configuration(
                 }
                 ConfigResult::Convert(boxed_cfg) => {
                     let cfg = *boxed_cfg;
-                    // Run CSV to Parquet conversion
+                    // Run CSV/SAS7BDAT to Parquet conversion
                     cli::convert::run_convert(
                         &cfg.input,
                         None, // Auto-generate output path

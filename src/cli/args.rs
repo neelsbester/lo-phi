@@ -11,7 +11,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Input file path (CSV or Parquet)
+    /// Input file path (CSV, Parquet, or SAS7BDAT)
     #[arg(short, long)]
     pub input: Option<PathBuf>,
 
@@ -37,7 +37,8 @@ pub struct Cli {
     pub weight_column: Option<String>,
 
     /// Output file path (CSV or Parquet, determined by extension).
-    /// Defaults to input directory with '_reduced' suffix (e.g., data.csv → data_reduced.csv)
+    /// Defaults to input directory with '_reduced' suffix (e.g., data.csv → data_reduced.csv).
+    /// SAS7BDAT input defaults to Parquet output.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
@@ -121,12 +122,12 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Convert CSV file to Parquet format
+    /// Convert CSV or SAS7BDAT file to Parquet format
     Convert {
-        /// Input CSV file path
+        /// Input file path (CSV or SAS7BDAT)
         input: PathBuf,
 
-        /// Output Parquet file path (optional, defaults to input with .parquet extension)
+        /// Output file path (optional, defaults to input with .parquet extension)
         output: Option<PathBuf>,
 
         /// Number of rows to use for schema inference.

@@ -4,6 +4,7 @@ pub mod correlation;
 pub mod iv;
 pub mod loader;
 pub mod missing;
+pub mod sas7bdat;
 pub mod solver;
 pub mod target;
 pub mod weights;

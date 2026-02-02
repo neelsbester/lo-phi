@@ -63,6 +63,9 @@ good_lp = { version = "1.8", default-features = false, features = ["highs"] }
 # Fast pure-Rust linear algebra for matrix-based correlation computation
 faer = "0.20"
 
+# Character encoding conversion for SAS7BDAT file support
+encoding_rs = "0.8"
+
 [dev-dependencies]
 # Temporary files for testing
 tempfile = "3.10"
