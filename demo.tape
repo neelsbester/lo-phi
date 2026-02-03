@@ -13,54 +13,48 @@ Set Padding 20
 Set Shell "bash"
 Set TypingSpeed 80ms
 
-
-
-# Launch lo-phi with the test file
+# Launch lo-phi wizard with pre-selected input file
 Type "./target/release/lophi -i test_data/wide_test.parquet"
 Enter
 Sleep 2s
 
-# The TUI config menu should now be visible
-# Select target column with 'T'
-Type "t"
-Sleep 1s
-
-# Type to search/filter for target
-Type "target"
-Sleep 500ms
-
-# Press Enter to select
+# Step 1: Task Selection - "Reduce features" is already highlighted
+# Press Enter to select it
 Enter
-Sleep 1s
-
-# Show threshold editing with 'C'
-Type "c"
-Sleep 800ms
-
-# Clear and type new missing threshold
-Ctrl+U
-Enter
-Sleep 500ms
-
-# Gini threshold
-Ctrl+U
-Enter
-Sleep 500ms
-
-# Correlation threshold
-Ctrl+U
-Enter
-Sleep 1s
-
-# Show the updated config
 Sleep 1.5s
 
-# Run the pipeline with Enter
+# Step 2: Target Selection - search for "target" column
+Type "target"
+Sleep 800ms
+
+# Select the target column
 Enter
-Sleep 13s
+Sleep 1.5s
 
-# Show completion
+# Step 3: Target Mapping - binary target auto-detected, continue
+Enter
+Sleep 1.5s
+
+# Step 4: Missing Threshold - accept default 0.30
+Enter
+Sleep 1s
+
+# Step 5: Gini Threshold - accept default 0.05
+Enter
+Sleep 1s
+
+# Step 6: Correlation Threshold - accept default 0.40
+Enter
+Sleep 1.5s
+
+# Step 7: Optional Settings - "No - use defaults" is pre-selected
+Enter
+Sleep 1.5s
+
+# Step 8: Summary - review configuration then run
 Sleep 2s
+Enter
+Sleep 15s
 
-# Final pause to show results
+# Show completion results
 Sleep 3s

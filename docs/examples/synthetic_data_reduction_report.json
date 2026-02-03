@@ -1,0 +1,174 @@
+{
+  "metadata": {
+    "timestamp": "2026-02-01T13:19:59.604363748+00:00",
+    "lophi_version": "0.1.0",
+    "input_file": "/home/neelsbester/lo-phi/docs/examples/synthetic_data.csv",
+    "output_file": "/home/neelsbester/lo-phi/docs/examples/synthetic_data_reduced.csv",
+    "thresholds": {
+      "missing_ratio": 0.3,
+      "gini": 0.05,
+      "correlation": 0.4
+    },
+    "settings": {
+      "target_column": "target",
+      "binning_strategy": "cart",
+      "num_bins": 10
+    }
+  },
+  "summary": {
+    "initial_features": 5,
+    "final_features": 1,
+    "dropped_count": 4,
+    "by_stage": {
+      "missing": {
+        "dropped": 1,
+        "threshold_used": 0.3
+      },
+      "gini": {
+        "dropped": 1,
+        "threshold_used": 0.05
+      },
+      "correlation": {
+        "dropped": 2,
+        "threshold_used": 0.4
+      }
+    },
+    "timing": {
+      "load_ms": 3,
+      "missing_ms": 0,
+      "gini_ms": 1,
+      "correlation_ms": 0,
+      "save_ms": 0,
+      "total_ms": 6
+    }
+  },
+  "features": [
+    {
+      "name": "employment",
+      "status": "kept",
+      "analysis": {
+        "missing": {
+          "ratio": -0.0,
+          "threshold": 0.3,
+          "passed": true
+        },
+        "gini": {
+          "gini": 0.8125,
+          "iv": 3.0381673573923953,
+          "threshold": 0.05,
+          "passed": true,
+          "feature_type": "Categorical"
+        },
+        "correlation": {
+          "threshold": 0.4,
+          "passed": true
+        }
+      }
+    },
+    {
+      "name": "debt_ratio",
+      "status": "dropped",
+      "dropped_at_stage": "missing",
+      "reason": "Missing ratio 0.45 exceeded threshold 0.30",
+      "analysis": {
+        "missing": {
+          "ratio": 0.45,
+          "threshold": 0.3,
+          "passed": false
+        }
+      }
+    },
+    {
+      "name": "region",
+      "status": "dropped",
+      "dropped_at_stage": "gini",
+      "reason": "Gini coefficient 0.0000 below threshold 0.0500",
+      "analysis": {
+        "missing": {
+          "ratio": -0.0,
+          "threshold": 0.3,
+          "passed": true
+        },
+        "gini": {
+          "gini": 0.0,
+          "iv": 0.0,
+          "threshold": 0.05,
+          "passed": false,
+          "feature_type": "Categorical"
+        }
+      }
+    },
+    {
+      "name": "age",
+      "status": "dropped",
+      "dropped_at_stage": "correlation",
+      "reason": "Correlated with income (r=0.9906), dropped due to higher correlation frequency",
+      "analysis": {
+        "missing": {
+          "ratio": -0.0,
+          "threshold": 0.3,
+          "passed": true
+        },
+        "gini": {
+          "gini": 1.0,
+          "iv": 5.756674527455793,
+          "threshold": 0.05,
+          "passed": true,
+          "feature_type": "Numeric"
+        },
+        "correlation": {
+          "max_correlation": 0.9906041144212815,
+          "correlated_with": "income",
+          "threshold": 0.4,
+          "passed": false,
+          "all_correlations": [
+            {
+              "feature": "income",
+              "correlation": 0.9906041144212815
+            },
+            {
+              "feature": "target",
+              "correlation": -0.8043881978311005
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "income",
+      "status": "dropped",
+      "dropped_at_stage": "correlation",
+      "reason": "Correlated with age (r=0.9906), dropped due to higher correlation frequency",
+      "analysis": {
+        "missing": {
+          "ratio": -0.0,
+          "threshold": 0.3,
+          "passed": true
+        },
+        "gini": {
+          "gini": 1.0,
+          "iv": 5.756674527455793,
+          "threshold": 0.05,
+          "passed": true,
+          "feature_type": "Numeric"
+        },
+        "correlation": {
+          "max_correlation": 0.9906041144212815,
+          "correlated_with": "age",
+          "threshold": 0.4,
+          "passed": false,
+          "all_correlations": [
+            {
+              "feature": "age",
+              "correlation": 0.9906041144212815
+            },
+            {
+              "feature": "target",
+              "correlation": -0.8649006347414253
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

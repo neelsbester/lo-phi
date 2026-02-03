@@ -1,0 +1,6 @@
+feature,status,dropped_at_stage,reason,missing_ratio,gini,iv,feature_type,max_correlation,correlated_with
+employment,kept,,,-0.0000,0.8125,3.0382,Categorical,,
+debt_ratio,dropped,missing,Missing ratio 0.45 exceeded threshold 0.30,0.4500,,,,,
+region,dropped,gini,Gini coefficient 0.0000 below threshold 0.0500,-0.0000,0.0000,0.0000,Categorical,,
+age,dropped,correlation,"Correlated with income (r=0.9906), dropped due to higher correlation frequency",-0.0000,1.0000,5.7567,Numeric,0.9906,"income: 0.9906 | target: -0.8044"
+income,dropped,correlation,"Correlated with age (r=0.9906), dropped due to higher correlation frequency",-0.0000,1.0000,5.7567,Numeric,0.9906,"age: 0.9906 | target: -0.8649"

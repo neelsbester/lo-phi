@@ -13,8 +13,8 @@ fn test_cli_default_values() {
         "Default missing threshold should be 0.3"
     );
     assert_eq!(
-        cli.correlation_threshold, 0.95,
-        "Default correlation threshold should be 0.95"
+        cli.correlation_threshold, 0.40,
+        "Default correlation threshold should be 0.40"
     );
     assert_eq!(
         cli.gini_threshold, 0.05,
@@ -258,4 +258,119 @@ fn test_cli_no_input_returns_none() {
 
     assert!(cli.input().is_none());
     assert!(cli.output_path().is_none());
+}
+
+// ============================================================================
+// T050-T052: Tests for --manual flag and wizard mode
+// ============================================================================
+
+#[test]
+fn test_manual_flag_parsing() {
+    // T050: Test --manual flag parsing
+    let cli = Cli::parse_from(["lophi", "--manual", "-i", "data.csv"]);
+
+    assert!(cli.manual, "--manual flag should be true");
+    assert!(
+        !cli.no_confirm,
+        "no_confirm should still be false by default"
+    );
+}
+
+#[test]
+fn test_default_mode_no_flags() {
+    // T051: Test default mode (no flags) - manual=false, no_confirm=false
+    let cli = Cli::parse_from(["lophi"]);
+
+    assert!(!cli.manual, "Default manual should be false (wizard mode)");
+    assert!(
+        !cli.no_confirm,
+        "Default no_confirm should be false (prompts enabled)"
+    );
+}
+
+#[test]
+fn test_manual_and_no_confirm_together() {
+    // T052: Test --no-confirm with --manual together - both can be true
+    let cli = Cli::parse_from([
+        "lophi",
+        "--manual",
+        "--no-confirm",
+        "-i",
+        "data.csv",
+        "-t",
+        "target",
+    ]);
+
+    assert!(cli.manual, "--manual should be true");
+    assert!(cli.no_confirm, "--no-confirm should be true");
+    assert_eq!(
+        cli.input(),
+        Some(&PathBuf::from("data.csv")),
+        "Input should be parsed"
+    );
+    assert_eq!(
+        cli.target,
+        Some("target".to_string()),
+        "Target should be parsed"
+    );
+}
+
+#[test]
+fn test_wizard_mode_with_prepopulated_values() {
+    // Test wizard mode (no --manual) with CLI args prepopulated
+    let cli = Cli::parse_from([
+        "lophi",
+        "-i",
+        "data.csv",
+        "-t",
+        "target",
+        "--missing-threshold",
+        "0.25",
+        "--gini-threshold",
+        "0.08",
+    ]);
+
+    assert!(!cli.manual, "Should be in wizard mode (manual=false)");
+    assert_eq!(cli.input(), Some(&PathBuf::from("data.csv")));
+    assert_eq!(cli.target, Some("target".to_string()));
+    assert_eq!(cli.missing_threshold, 0.25);
+    assert_eq!(cli.gini_threshold, 0.08);
+}
+
+#[test]
+fn test_manual_mode_short_form() {
+    // Test that --manual can be used with short flags
+    let cli = Cli::parse_from([
+        "lophi", "--manual", "-i", "data.csv", "-t", "y", "-o", "out.csv",
+    ]);
+
+    assert!(cli.manual);
+    assert_eq!(cli.input(), Some(&PathBuf::from("data.csv")));
+    assert_eq!(cli.target, Some("y".to_string()));
+    assert_eq!(cli.output_path().unwrap(), PathBuf::from("out.csv"));
+}
+
+#[test]
+fn test_cli_only_mode_with_all_flags() {
+    // Test CLI-only mode: --no-confirm without --manual
+    let cli = Cli::parse_from([
+        "lophi",
+        "--no-confirm",
+        "-i",
+        "data.csv",
+        "-t",
+        "target",
+        "--missing-threshold",
+        "0.4",
+        "--correlation-threshold",
+        "0.7",
+        "--gini-threshold",
+        "0.06",
+    ]);
+
+    assert!(!cli.manual, "Should not be in manual mode");
+    assert!(cli.no_confirm, "Should skip prompts");
+    assert_eq!(cli.missing_threshold, 0.4);
+    assert_eq!(cli.correlation_threshold, 0.7);
+    assert_eq!(cli.gini_threshold, 0.06);
 }

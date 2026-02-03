@@ -3,15 +3,22 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-/// Lo-phi - Reduce dataset features using missing value and correlation analysis
+/// Lo-phi - Feature reduction tool with guided wizard interface
 #[derive(Parser, Debug)]
 #[command(name = "lophi")]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = Some("\
+Lo-phi - Feature reduction tool with guided wizard interface\n\n\
+USAGE MODES:\n  \
+  Wizard (default):     lophi\n  \
+  Manual Dashboard:     lophi --manual --input data.csv\n  \
+  CLI Only:             lophi --no-confirm --input data.csv --target y ...\n\n\
+The wizard guides you through configuration step-by-step.\n\
+Use --manual for the full dashboard with all settings visible at once."))]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Input file path (CSV or Parquet)
+    /// Input file path (CSV, Parquet, or SAS7BDAT)
     #[arg(short, long)]
     pub input: Option<PathBuf>,
 
@@ -37,7 +44,8 @@ pub struct Cli {
     pub weight_column: Option<String>,
 
     /// Output file path (CSV or Parquet, determined by extension).
-    /// Defaults to input directory with '_reduced' suffix (e.g., data.csv → data_reduced.csv)
+    /// Defaults to input directory with '_reduced' suffix (e.g., data.csv → data_reduced.csv).
+    /// SAS7BDAT input defaults to Parquet output.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
@@ -112,6 +120,11 @@ pub struct Cli {
     #[arg(long, default_value = "false")]
     pub no_confirm: bool,
 
+    /// Launch expert dashboard mode instead of the guided wizard.
+    /// Use this flag for full control over all settings in a single screen.
+    #[arg(long, default_value = "false")]
+    pub manual: bool,
+
     /// Number of rows to use for schema inference (CSV only).
     /// Higher values improve type detection for ambiguous columns but may be slower.
     /// Use 0 for full table scan (very slow for large files).
@@ -121,12 +134,12 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Convert CSV file to Parquet format
+    /// Convert CSV or SAS7BDAT file to Parquet format
     Convert {
-        /// Input CSV file path
+        /// Input file path (CSV or SAS7BDAT)
         input: PathBuf,
 
-        /// Output Parquet file path (optional, defaults to input with .parquet extension)
+        /// Output file path (optional, defaults to input with .parquet extension)
         output: Option<PathBuf>,
 
         /// Number of rows to use for schema inference.
