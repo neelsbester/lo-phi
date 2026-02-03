@@ -134,12 +134,12 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Convert CSV or SAS7BDAT file to Parquet format
+    /// Convert between CSV, Parquet, and SAS7BDAT formats
     Convert {
-        /// Input file path (CSV or SAS7BDAT)
+        /// Input file path (CSV, Parquet, or SAS7BDAT)
         input: PathBuf,
 
-        /// Output file path (optional, defaults to input with .parquet extension)
+        /// Output file path (optional, auto-detected: CSV->Parquet, Parquet->CSV, SAS7BDAT->Parquet)
         output: Option<PathBuf>,
 
         /// Number of rows to use for schema inference.

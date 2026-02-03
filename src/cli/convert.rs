@@ -1,4 +1,4 @@
-//! CSV/SAS7BDAT to Parquet conversion utility with streaming and fast in-memory modes
+//! Bidirectional conversion utility between CSV, Parquet, and SAS7BDAT formats
 
 use std::path::Path;
 use std::time::Instant;
@@ -30,35 +30,40 @@ fn format_duration(duration: std::time::Duration) -> String {
     }
 }
 
-/// Run the CSV/SAS7BDAT to Parquet conversion
+/// Run file format conversion
 ///
 /// # Arguments
-/// * `input` - Path to the input file (CSV or SAS7BDAT)
-/// * `output` - Optional output path. If not provided, uses input path with .parquet extension
+/// * `input` - Path to the input file (CSV, Parquet, or SAS7BDAT)
+/// * `output` - Optional output path. If not provided, auto-generates based on input format
 /// * `infer_schema_length` - Number of rows to use for schema inference (CSV only)
 /// * `fast` - If true, uses in-memory conversion (more RAM, all CPU cores).
 ///   If false, uses streaming conversion (low RAM, single-threaded).
-///   Note: SAS7BDAT always uses in-memory mode.
+///   Note: SAS7BDAT and Parquet always use in-memory mode.
 ///
-/// # Performance Notes
-/// - **Streaming mode (default)**: Uses `sink_parquet()` for memory efficiency. Single-threaded.
-/// - **Fast mode (`--fast`)**: Loads entire dataset into memory, parallelizes across all cores.
-/// - **SAS7BDAT mode**: Always loads fully into memory (binary format requires sequential parsing).
+/// # Supported Conversions
+/// - CSV -> Parquet (streaming or fast mode)
+/// - Parquet -> CSV (always in-memory)
+/// - SAS7BDAT -> Parquet or CSV (always in-memory)
 pub fn run_convert(
     input: &Path,
     output: Option<&Path>,
     infer_schema_length: usize,
     fast: bool,
 ) -> Result<()> {
-    // Detect SAS7BDAT input and route to dedicated handler
     let input_ext = input
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
 
-    if input_ext == "sas7bdat" {
-        return run_convert_sas7bdat(input, output);
+    match input_ext.as_str() {
+        "sas7bdat" => return run_convert_sas7bdat(input, output),
+        "parquet" => return run_convert_parquet(input, output),
+        "csv" => {} // Fall through to existing CSV-to-Parquet logic below
+        _ => anyhow::bail!(
+            "Unsupported input format: .{}. Supported: .csv, .parquet, .sas7bdat",
+            input_ext
+        ),
     }
 
     let total_start = Instant::now();
@@ -317,6 +322,142 @@ pub fn run_convert(
     if fast {
         println!("      Load:    {}", format_duration(load_time));
     }
+    println!("      Write:   {}", format_duration(write_time));
+    println!(
+        "      {}",
+        style(format!("Total:   {}", format_duration(total_time))).bold()
+    );
+    println!("      Throughput: {:.1} MB/s", throughput_mb_s);
+
+    println!();
+    println!(" {} Conversion complete!", style("✓").green().bold());
+
+    Ok(())
+}
+
+/// Run Parquet to CSV conversion
+///
+/// Loads the Parquet file and writes to CSV.
+fn run_convert_parquet(input: &Path, output: Option<&Path>) -> Result<()> {
+    let total_start = Instant::now();
+
+    // Determine output path
+    let output_path = match output {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let parent = input.parent().unwrap_or_else(|| Path::new("."));
+            let stem = input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("output");
+            parent.join(format!("{}.csv", stem))
+        }
+    };
+
+    println!(
+        "\n {} Converting Parquet to CSV  {}",
+        style("◆").cyan().bold(),
+        style(format!("[started {}]", timestamp())).dim()
+    );
+    println!("   Input:  {}", style(input.display()).dim());
+    println!("   Output: {}", style(output_path.display()).dim());
+    println!();
+
+    // Step 1: Load Parquet file
+    println!(
+        "   {} [{}] Loading Parquet file...",
+        style("→").blue(),
+        style(timestamp()).dim()
+    );
+    let step_start = Instant::now();
+    let spinner = create_spinner("Loading Parquet file...");
+    let lf = LazyFrame::scan_parquet(input, Default::default())
+        .with_context(|| format!("Failed to read Parquet file: {}", input.display()))?;
+    let schema = lf.clone().collect_schema()?;
+    let num_cols = schema.len();
+    let init_time = step_start.elapsed();
+    spinner.finish_with_message(format!(
+        "{} [{}] Parquet reader initialized: {} columns ({})",
+        style("✓").green(),
+        style(timestamp()).dim(),
+        style(num_cols).yellow(),
+        style(format_duration(init_time)).cyan()
+    ));
+
+    // Step 2: Collect into memory
+    println!(
+        "   {} [{}] Loading into memory...",
+        style("→").blue(),
+        style(timestamp()).dim()
+    );
+    let step_start = Instant::now();
+    let spinner = create_spinner("Loading dataset into memory...");
+    let mut df = lf
+        .collect()
+        .with_context(|| "Failed to load Parquet into memory")?;
+    let row_count = df.height();
+    let load_time = step_start.elapsed();
+    spinner.finish_with_message(format!(
+        "{} [{}] Loaded: {} rows ({})",
+        style("✓").green(),
+        style(timestamp()).dim(),
+        style(row_count).yellow(),
+        style(format_duration(load_time)).cyan()
+    ));
+
+    // Step 3: Write CSV
+    println!(
+        "   {} [{}] Writing CSV...",
+        style("→").blue(),
+        style(timestamp()).dim()
+    );
+    let step_start = Instant::now();
+    let spinner = create_spinner("Writing CSV file...");
+    let file = std::fs::File::create(&output_path)
+        .with_context(|| format!("Failed to create output file: {}", output_path.display()))?;
+    CsvWriter::new(file)
+        .finish(&mut df)
+        .with_context(|| format!("Failed to write CSV file: {}", output_path.display()))?;
+    let write_time = step_start.elapsed();
+    spinner.finish_with_message(format!(
+        "{} [{}] CSV written ({})",
+        style("✓").green(),
+        style(timestamp()).dim(),
+        style(format_duration(write_time)).cyan()
+    ));
+
+    // Show file size comparison
+    let input_size_bytes = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
+    let output_size_bytes = std::fs::metadata(&output_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let input_size = input_size_bytes as f64 / (1024.0 * 1024.0);
+    let output_size = output_size_bytes as f64 / (1024.0 * 1024.0);
+    let total_time = total_start.elapsed();
+    let throughput_mb_s = input_size / total_time.as_secs_f64();
+
+    println!();
+    println!(
+        "   {} rows x {} columns",
+        style(row_count).yellow(),
+        style(num_cols).yellow()
+    );
+    println!("   {} File sizes:", style("✧").cyan());
+    println!("      Parquet: {:.2} MB", input_size);
+    println!("      CSV:     {:.2} MB", output_size);
+
+    if output_size < input_size {
+        let reduction = ((input_size - output_size) / input_size) * 100.0;
+        println!(
+            "      {}",
+            style(format!("↓ {:.1}% smaller", reduction)).green()
+        );
+    }
+
+    println!();
+    println!("   {} Timing breakdown:", style("⏱").cyan());
+    println!("      Init:    {}", format_duration(init_time));
+    println!("      Load:    {}", format_duration(load_time));
     println!("      Write:   {}", format_duration(write_time));
     println!(
         "      {}",

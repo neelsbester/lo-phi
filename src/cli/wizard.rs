@@ -1,9 +1,9 @@
-//! Interactive TUI Wizard for Lo-phi feature reduction and CSV-to-Parquet conversion
+//! Interactive TUI Wizard for Lo-phi feature reduction and file format conversion
 //!
 //! This module provides a step-by-step guided wizard interface that walks users through
 //! configuring and executing either:
 //! - Feature reduction pipeline with comprehensive parameter configuration
-//! - CSV to Parquet file conversion
+//! - File format conversion (CSV/SAS7BDAT to Parquet, Parquet to CSV)
 //!
 //! The wizard uses a multi-phase approach with dynamic step sequencing based on user choices.
 //! It integrates with the existing config_menu module for file selection and reuses the
@@ -70,13 +70,13 @@ pub enum WizardResult {
     Quit,
 }
 
-/// Configuration for CSV to Parquet conversion
+/// Configuration for file format conversion
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ConversionConfig {
-    /// Input CSV file path
+    /// Input file path (CSV, Parquet, or SAS7BDAT)
     pub input: PathBuf,
-    /// Output Parquet file path
+    /// Output file path (Parquet or CSV)
     pub output: PathBuf,
     /// Number of rows for schema inference (0 = full scan)
     pub infer_schema_length: usize,
@@ -414,12 +414,20 @@ impl WizardState {
                 self.steps = steps;
             }
             WizardTask::Conversion => {
-                // Initialize output path with default based on input
+                // Initialize output path with default based on input format
                 let default_output = self
                     .data
                     .input
                     .as_ref()
-                    .map(|p| p.with_extension("parquet").display().to_string())
+                    .map(|p| {
+                        let ext = p
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        let target_ext = if ext == "parquet" { "csv" } else { "parquet" };
+                        p.with_extension(target_ext).display().to_string()
+                    })
                     .unwrap_or_default();
 
                 self.steps = vec![
@@ -612,7 +620,6 @@ fn run_wizard_loop(
     }
 }
 
-
 fn handle_step_event(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
     // Dispatch to step-specific handlers (Backspace handled per-step)
     let step = wizard.current_step().cloned();
@@ -728,7 +735,6 @@ fn generate_output_path(input: &std::path::Path, suffix: &str) -> Result<PathBuf
     Ok(output)
 }
 
-
 // ============================================================================
 // Rendering Helpers
 // ============================================================================
@@ -775,9 +781,8 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
     // Box dimensions (matching dashboard: 66 wide)
     let box_width = 66u16;
     let ideal_box_height = 22u16;
-    let box_height = ideal_box_height.min(
-        area.height.saturating_sub(logo_height + hint_height + 2),
-    );
+    let box_height =
+        ideal_box_height.min(area.height.saturating_sub(logo_height + hint_height + 2));
 
     // Center the whole unit vertically
     let total_height = logo_height + box_height + hint_height;
@@ -798,7 +803,10 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
     // Build step title for the box header
     let current = wizard.current_index + 1;
     let total = wizard.steps.len();
-    let step_title = wizard.current_step().map(|s| s.title()).unwrap_or("Unknown");
+    let step_title = wizard
+        .current_step()
+        .map(|s| s.title())
+        .unwrap_or("Unknown");
     let title_text = format!(" Step {}/{} \u{00b7} {} ", current, total, step_title);
 
     let block = Block::default()
@@ -816,20 +824,38 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
 
     // 4. Render count indicator on bottom border (right) for list steps
     let count_text = match wizard.current_step() {
-        Some(WizardStep::TargetSelection { filtered, selected, .. }) => {
+        Some(WizardStep::TargetSelection {
+            filtered, selected, ..
+        }) => {
             if !filtered.is_empty() {
                 Some(format!(" {}/{} columns ", selected + 1, filtered.len()))
-            } else { None }
+            } else {
+                None
+            }
         }
-        Some(WizardStep::WeightColumn { filtered, selected, .. }) => {
+        Some(WizardStep::WeightColumn {
+            filtered, selected, ..
+        }) => {
             let total_opts = filtered.len() + 1;
             Some(format!(" {}/{} options ", selected + 1, total_opts))
         }
-        Some(WizardStep::DropColumns { filtered, selected, checked, .. }) => {
+        Some(WizardStep::DropColumns {
+            filtered,
+            selected,
+            checked,
+            ..
+        }) => {
             let sel_count = checked.iter().filter(|&&c| c).count();
             if !filtered.is_empty() {
-                Some(format!(" {} sel · {}/{} ", sel_count, selected + 1, filtered.len()))
-            } else { None }
+                Some(format!(
+                    " {} sel · {}/{} ",
+                    sel_count,
+                    selected + 1,
+                    filtered.len()
+                ))
+            } else {
+                None
+            }
         }
         _ => None,
     };
@@ -838,7 +864,8 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
         let ct_area = Rect::new(
             box_area.x + box_area.width - ct_len - 1,
             box_area.y + box_area.height - 1,
-            ct_len, 1,
+            ct_len,
+            1,
         );
         f.render_widget(
             Paragraph::new(Span::styled(ct, Style::default().fg(Color::DarkGray))),
@@ -953,29 +980,47 @@ fn render_help_bar(f: &mut Frame, area: Rect, wizard: &WizardState) {
 
     if wizard.is_last_step() {
         spans.push(Span::styled("  Enter", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(" execute  ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            " execute  ",
+            Style::default().fg(Color::DarkGray),
+        ));
     } else {
         spans.push(Span::styled("  Enter", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(" next  ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            " next  ",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 
     if is_drop {
         spans.push(Span::styled("Space", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            " toggle  ",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 
     if has_search {
         spans.push(Span::styled("Type", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(" search  ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            " search  ",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 
     if wizard.current_index > 0 {
         if is_input || has_search {
             spans.push(Span::styled("Bksp", Style::default().fg(Color::Cyan)));
-            spans.push(Span::styled(" delete/back  ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                " delete/back  ",
+                Style::default().fg(Color::DarkGray),
+            ));
         } else {
             spans.push(Span::styled("Bksp", Style::default().fg(Color::Cyan)));
-            spans.push(Span::styled(" back  ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(
+                " back  ",
+                Style::default().fg(Color::DarkGray),
+            ));
         }
     }
 
@@ -1067,13 +1112,13 @@ fn render_threshold_content(
 }
 
 fn render_task_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let options = ["Reduce features", "Convert to Parquet (csv, sas7bdat)"];
+    let options = ["Reduce features", "Convert format (csv, parquet, sas7bdat)"];
     let color = Color::Cyan;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Title area
+            Constraint::Length(3), // Title area
             Constraint::Min(1),    // List area
         ])
         .split(area);
@@ -1669,7 +1714,7 @@ fn render_output_path(f: &mut Frame, area: Rect, wizard: &WizardState) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "  Output file path (must end with .parquet):",
+            "  Output file path (must end with .parquet or .csv):",
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(""),
@@ -1729,7 +1774,6 @@ fn render_conversion_mode(f: &mut Frame, area: Rect, wizard: &WizardState) {
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 
-
 // ============================================================================
 // Event Handlers
 // ============================================================================
@@ -1766,8 +1810,7 @@ fn handle_task_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<Step
 
                 match result {
                     super::config_menu::FileSelectResult::Selected(path) => {
-                        wizard.data.available_columns =
-                            crate::pipeline::get_column_names(&path)?;
+                        wizard.data.available_columns = crate::pipeline::get_column_names(&path)?;
                         wizard.data.input = Some(path);
                     }
                     super::config_menu::FileSelectResult::Cancelled => {
@@ -2276,7 +2319,7 @@ fn handle_output_path(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAct
             Ok(StepAction::Stay)
         }
         KeyCode::Enter => {
-            if let Err(e) = validate_parquet_extension(input) {
+            if let Err(e) = validate_output_extension(input) {
                 *error = Some(e);
                 Ok(StepAction::Stay)
             } else {
@@ -2341,11 +2384,12 @@ pub fn validate_schema_inference(value: usize) -> Result<(), String> {
     }
 }
 
-/// Validate Parquet file extension
+/// Validate output file extension (must be .parquet or .csv)
 #[allow(dead_code)]
-pub fn validate_parquet_extension(path: &str) -> Result<(), String> {
-    if !path.to_lowercase().ends_with(".parquet") {
-        Err("Output file must have .parquet extension".to_string())
+pub fn validate_output_extension(path: &str) -> Result<(), String> {
+    let lower = path.to_lowercase();
+    if !lower.ends_with(".parquet") && !lower.ends_with(".csv") {
+        Err("Output file must have .parquet or .csv extension".to_string())
     } else {
         Ok(())
     }

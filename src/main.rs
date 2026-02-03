@@ -201,6 +201,12 @@ fn main() -> Result<()> {
     summary.display();
     print_completion();
 
+    // Prompt before closing so double-click users can see results
+    if !cli.no_confirm {
+        println!("\n    Press Enter to exit...");
+        let _ = std::io::stdin().read_line(&mut String::new());
+    }
+
     Ok(())
 }
 
@@ -351,7 +357,7 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
                 }
                 ConfigResult::Convert(boxed_cfg) => {
                     let cfg = *boxed_cfg;
-                    // Run CSV/SAS7BDAT to Parquet conversion
+                    // Run file format conversion
                     cli::convert::run_convert(
                         &cfg.input,
                         None, // Auto-generate output path
@@ -359,8 +365,20 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
                         true, // Use fast mode
                     )?;
 
-                    let parquet_path = cfg.input.with_extension("parquet");
-                    current_input = parquet_path.clone();
+                    // Determine the converted file's path based on input format
+                    let input_ext = cfg
+                        .input
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let converted_ext = if input_ext == "parquet" {
+                        "csv"
+                    } else {
+                        "parquet"
+                    };
+                    let converted_path = cfg.input.with_extension(converted_ext);
+                    current_input = converted_path.clone();
                     columns = get_column_names(&current_input)?;
 
                     let new_output = {
@@ -371,7 +389,11 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
                             .file_stem()
                             .and_then(|s| s.to_str())
                             .unwrap_or("output");
-                        parent.join(format!("{}_reduced.parquet", stem))
+                        let out_ext = current_input
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("parquet");
+                        parent.join(format!("{}_reduced.{}", stem, out_ext))
                     };
 
                     config = Config {

@@ -124,7 +124,7 @@ enum MenuState {
 pub enum ConfigResult {
     /// User confirmed, proceed with these settings
     Proceed(Box<Config>),
-    /// User requested CSV to Parquet conversion
+    /// User requested file format conversion
     Convert(Box<Config>),
     /// User quit
     Quit,
@@ -1428,7 +1428,7 @@ fn build_content(
         Span::styled("] Select target ", Style::default().fg(Color::White)),
         Span::styled("[", Style::default().fg(Color::DarkGray)),
         Span::styled("F", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Convert file", Style::default().fg(Color::White)),
+        Span::styled("] Convert format", Style::default().fg(Color::White)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  [", Style::default().fg(Color::DarkGray)),

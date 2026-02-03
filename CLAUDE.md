@@ -60,7 +60,7 @@ Configuration → Load Dataset → Missing Analysis → Gini/IV Analysis → Cor
 
 ### Module Structure
 
-- **`src/cli/`** - CLI argument parsing (`args.rs`), interactive TUI wizard (`wizard.rs`), dashboard menu (`config_menu.rs`), CSV/SAS7BDAT-to-Parquet conversion (`convert.rs`)
+- **`src/cli/`** - CLI argument parsing (`args.rs`), interactive TUI wizard (`wizard.rs`), dashboard menu (`config_menu.rs`), bidirectional format conversion (`convert.rs`: CSV/SAS7BDAT to Parquet, Parquet to CSV)
 - **`src/pipeline/`** - Core analysis algorithms:
   - `loader.rs` - CSV/Parquet/SAS7BDAT loading with progress
   - `missing.rs` - Null ratio calculation per column
@@ -131,7 +131,7 @@ SasEncoding { Utf8, Ascii, Latin1, Windows1252, Other { id, name }, Unspecified 
 - `loader.rs` - `"sas7bdat"` arms in `get_column_names()` and `load_dataset_with_progress()`
 - `main.rs` - SAS7BDAT input defaults output extension to `.parquet`
 - `config_menu.rs` - `is_valid_data_file()` accepts `.sas7bdat`
-- `convert.rs` - `run_convert()` detects SAS7BDAT and routes to `run_convert_sas7bdat()`
+- `convert.rs` - `run_convert()` routes by input extension: CSV->Parquet, Parquet->CSV (`run_convert_parquet()`), SAS7BDAT->Parquet/CSV (`run_convert_sas7bdat()`)
 - `args.rs` - CLI help text updated for SAS7BDAT support
 
 ### Test Structure
@@ -215,11 +215,11 @@ Pure command-line mode bypasses all interactive prompts. Required for scripting,
 7. **Advanced Options** - Schema inference row limit (default: 10000)
 8. **Confirmation** - Review all settings before execution
 
-**CSV-to-Parquet Conversion Workflow (5 steps):**
-1. **Select Input File** - File browser with CSV filtering
-2. **Select Output Path** - Destination for Parquet file
+**File Format Conversion Workflow (5 steps):**
+1. **Select Input File** - File browser (CSV, Parquet, SAS7BDAT)
+2. **Select Output Path** - Destination file (.parquet or .csv, auto-detected from input)
 3. **Schema Inference** - Row limit for type inference (default: 10000)
-4. **Compression** - Choose compression codec (Snappy, Gzip, LZ4, Zstd, None)
+4. **Conversion Mode** - Fast (parallel) vs Memory-efficient (streaming, CSV-to-Parquet only)
 5. **Confirmation** - Review conversion settings
 
 #### Wizard Architecture
@@ -274,7 +274,7 @@ The interactive configuration menu (`src/cli/config_menu.rs`) provides keyboard 
 **Keyboard Shortcuts:**
 - `[Enter]` - Run with current settings (requires target selected)
 - `[T]` - Select target column
-- `[F]` - Convert CSV/SAS7BDAT to Parquet (fast in-memory mode)
+- `[F]` - Convert format (CSV/SAS7BDAT to Parquet, Parquet to CSV)
 - `[D]` - Select columns to drop (now in DATA column)
 - `[C]` - Edit thresholds (Missing → Gini → Correlation, chained flow)
 - `[S]` - Edit solver options (Use Solver toggle → Trend/Monotonicity selection)
@@ -303,6 +303,25 @@ Binning parameters use sensible defaults and are only configurable via CLI:
 - `--min-category-samples` (default: 5)
 - `--solver-timeout` (default: 30s)
 - `--solver-gap` (default: 0.01)
+
+## Build Infrastructure
+
+### Icon and Branding
+- **`assets/icon.svg`** - Source SVG icon (gradient phi symbol, cyan-to-magenta)
+- **`assets/icon.ico`** - Windows icon (16/32/48/64/128/256px multi-size)
+- **`assets/icon_512.png`** - High-res PNG for README and macOS .app
+- **`build.rs`** - Embeds `.ico` into Windows binary via `winres` (conditional, no-op on non-Windows)
+
+### Release Workflow
+- **`release.yml`** triggers on tag push (`v*`) or manual dispatch
+- **Windows**: Builds `.exe` with embedded icon
+- **macOS**: Packages as `.app` bundle (launcher opens Terminal.app, runs lophi inside)
+- Release job creates GitHub Release with both artifacts
+
+### Interactive Exit Prompt
+- `main.rs` shows "Press Enter to exit..." after pipeline completion in interactive mode
+- Skipped with `--no-confirm` to preserve automation compatibility
+- Enables double-click-to-run UX on both Windows and macOS
 
 ## Future Enhancements (TODO)
 

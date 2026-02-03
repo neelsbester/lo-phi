@@ -174,8 +174,8 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
         // subheader entries on META and MIX pages (compression != 0, subheader_type == 1).
         // Each entry is decompressed to row_length bytes to recover one row.
         // COMP pages (0x9000) are padding/marker pages with no useful data -- skip them.
-        let has_subheaders = is_page_meta(page_header.page_type)
-            || is_page_mix(page_header.page_type);
+        let has_subheaders =
+            is_page_meta(page_header.page_type) || is_page_mix(page_header.page_type);
 
         if has_subheaders && sas_header.compression != Compression::None {
             let pointers = parse_subheader_pointers(
@@ -208,25 +208,20 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
                     let compressed_data = &page_buf[offset..offset + length];
                     let row_length = sas_header.row_length as usize;
 
-                    let decompressed = match sas_header.compression {
-                        Compression::Rle => {
-                            decompress_rle(compressed_data, row_length).map_err(|e| {
-                                SasError::DecompressionError {
+                    let decompressed =
+                        match sas_header.compression {
+                            Compression::Rle => decompress_rle(compressed_data, row_length)
+                                .map_err(|e| SasError::DecompressionError {
                                     page_index: page_idx,
                                     message: format!("Compressed row RLE: {}", e),
-                                }
-                            })?
-                        }
-                        Compression::Rdc => {
-                            decompress_rdc(compressed_data, row_length).map_err(|e| {
-                                SasError::DecompressionError {
+                                })?,
+                            Compression::Rdc => decompress_rdc(compressed_data, row_length)
+                                .map_err(|e| SasError::DecompressionError {
                                     page_index: page_idx,
                                     message: format!("Compressed row RDC: {}", e),
-                                }
-                            })?
-                        }
-                        Compression::None => unreachable!(),
-                    };
+                                })?,
+                            Compression::None => unreachable!(),
+                        };
 
                     let row_values = extract_row_values(
                         &decompressed,
@@ -266,9 +261,7 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
                 }
                 rows_collected += page_rows.len() as u64;
             }
-        } else if is_page_data(page_header.page_type)
-            || is_page_mix(page_header.page_type)
-        {
+        } else if is_page_data(page_header.page_type) || is_page_mix(page_header.page_type) {
             // Uncompressed DATA and MIX pages: extract rows directly.
             let page_rows = extract_rows_from_page(
                 &page_buf,
@@ -556,13 +549,12 @@ mod integration_tests {
         }
 
         // Test get_columns
-        let cols = super::get_sas7bdat_columns(&path)
-            .map_err(|e| format!("get_columns: {}", e))?;
+        let cols = super::get_sas7bdat_columns(&path).map_err(|e| format!("get_columns: {}", e))?;
         println!("  {} columns: {:?}", name, &cols[..cols.len().min(10)]);
 
         // Test full load
-        let (df, rows, col_count, memory_mb) = super::load_sas7bdat(&path)
-            .map_err(|e| format!("load: {}", e))?;
+        let (df, rows, col_count, memory_mb) =
+            super::load_sas7bdat(&path).map_err(|e| format!("load: {}", e))?;
         println!(
             "  {} loaded: {} rows x {} cols ({:.2} MB)",
             name, rows, col_count, memory_mb
@@ -581,22 +573,22 @@ mod integration_tests {
         let test_files = [
             // (filename, expected_rows, expected_cols)
             // test1-16: same dataset in different format variants (32/64-bit, LE/BE, uncompressed/RLE/RDC)
-            ("test1.sas7bdat", 10, 100),   // 32-bit LE, uncompressed
-            ("test2.sas7bdat", 10, 100),   // 32-bit LE, RLE compressed
-            ("test3.sas7bdat", 10, 100),   // 32-bit LE, RDC compressed
-            ("test4.sas7bdat", 10, 100),   // 32-bit LE, uncompressed (v9)
-            ("test5.sas7bdat", 10, 100),   // 32-bit LE, RLE compressed (v9)
-            ("test6.sas7bdat", 10, 100),   // 32-bit LE, RDC compressed (v9)
-            ("test7.sas7bdat", 10, 100),   // 64-bit LE, uncompressed
-            ("test8.sas7bdat", 10, 100),   // 64-bit LE, RDC compressed
-            ("test9.sas7bdat", 10, 100),   // 64-bit LE, RLE compressed
-            ("test10.sas7bdat", 10, 100),  // 32-bit BE, uncompressed
-            ("test11.sas7bdat", 10, 100),  // 32-bit BE, RDC compressed
-            ("test12.sas7bdat", 10, 100),  // 32-bit BE, RLE compressed
-            ("test13.sas7bdat", 10, 100),  // 64-bit BE, uncompressed
-            ("test14.sas7bdat", 10, 100),  // 64-bit BE, RDC compressed
-            ("test15.sas7bdat", 10, 100),  // 64-bit BE, RLE compressed
-            ("test16.sas7bdat", 10, 100),  // 64-bit LE, uncompressed (v8)
+            ("test1.sas7bdat", 10, 100),  // 32-bit LE, uncompressed
+            ("test2.sas7bdat", 10, 100),  // 32-bit LE, RLE compressed
+            ("test3.sas7bdat", 10, 100),  // 32-bit LE, RDC compressed
+            ("test4.sas7bdat", 10, 100),  // 32-bit LE, uncompressed (v9)
+            ("test5.sas7bdat", 10, 100),  // 32-bit LE, RLE compressed (v9)
+            ("test6.sas7bdat", 10, 100),  // 32-bit LE, RDC compressed (v9)
+            ("test7.sas7bdat", 10, 100),  // 64-bit LE, uncompressed
+            ("test8.sas7bdat", 10, 100),  // 64-bit LE, RDC compressed
+            ("test9.sas7bdat", 10, 100),  // 64-bit LE, RLE compressed
+            ("test10.sas7bdat", 10, 100), // 32-bit BE, uncompressed
+            ("test11.sas7bdat", 10, 100), // 32-bit BE, RDC compressed
+            ("test12.sas7bdat", 10, 100), // 32-bit BE, RLE compressed
+            ("test13.sas7bdat", 10, 100), // 64-bit BE, uncompressed
+            ("test14.sas7bdat", 10, 100), // 64-bit BE, RDC compressed
+            ("test15.sas7bdat", 10, 100), // 64-bit BE, RLE compressed
+            ("test16.sas7bdat", 10, 100), // 64-bit LE, uncompressed (v8)
             ("cars.sas7bdat", 392, 4),
             ("productsales.sas7bdat", 1440, 10),
             ("datetime.sas7bdat", 4, 5),
@@ -631,7 +623,10 @@ mod integration_tests {
             }
         }
 
-        println!("\n=== Summary: {} passed, {} failed, {} skipped ===", passed, failed, skipped);
+        println!(
+            "\n=== Summary: {} passed, {} failed, {} skipped ===",
+            passed, failed, skipped
+        );
         if !failures.is_empty() {
             println!("\nFailures:");
             for f in &failures {
@@ -668,8 +663,7 @@ mod integration_tests {
                 continue;
             }
 
-            let (ref_df, ref_rows, ref_cols, _) =
-                super::load_sas7bdat(&uncompressed_path).unwrap();
+            let (ref_df, ref_rows, ref_cols, _) = super::load_sas7bdat(&uncompressed_path).unwrap();
 
             for compressed_name in *compressed_names {
                 let compressed_path = Path::new(TEST_DIR).join(compressed_name);
@@ -705,7 +699,8 @@ mod integration_tests {
                     ref_df.dtypes(),
                     comp_df.dtypes(),
                     "{} vs {}: dtypes differ",
-                    uncompressed_name, compressed_name
+                    uncompressed_name,
+                    compressed_name
                 );
 
                 // Compare actual values column by column

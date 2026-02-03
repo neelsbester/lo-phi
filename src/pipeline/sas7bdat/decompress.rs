@@ -824,7 +824,7 @@ mod tests {
         input.extend_from_slice(b"QRST"); // 4 more literals (total 20: A..T)
         input.push(0x34); // cmd=3, cnt=4
         input.push(0x00); // offset_byte=0 -> offset = 4+3+0 = 7
-        // At position 20, offset 7 -> copies from position 13 = "NOP" (3 bytes)
+                          // At position 20, offset 7 -> copies from position 13 = "NOP" (3 bytes)
         let result = decompress_rdc(&input, 23).unwrap();
         assert_eq!(&result[..20], b"ABCDEFGHIJKLMNOPQRST");
         assert_eq!(&result[20..23], b"NOP");
@@ -867,9 +867,9 @@ mod tests {
         // 7th control word: 4 literals then command at bit 11
         input.extend_from_slice(&[0x08, 0x00]);
         input.extend_from_slice(&[b'Y'; 4]); // 4 literals -> total 100 bytes
-        // Command: 0x30 (cmd=3, cnt=0), offset_byte=0x05
-        // offset = 0 + 3 + (5 << 4) = 0 + 3 + 80 = 83
-        // At position 100, offset 83 -> copies from position 17, 3 bytes
+                                             // Command: 0x30 (cmd=3, cnt=0), offset_byte=0x05
+                                             // offset = 0 + 3 + (5 << 4) = 0 + 3 + 80 = 83
+                                             // At position 100, offset 83 -> copies from position 17, 3 bytes
         input.push(0x30); // cmd=3, cnt=0
         input.push(0x05); // offset_byte=5 -> offset = 83
         let result = decompress_rdc(&input, 103).unwrap();

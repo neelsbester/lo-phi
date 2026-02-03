@@ -343,7 +343,7 @@ fn process_columnname_subheader(
     state: &mut SubheaderState,
 ) -> Result<(), SasError> {
     let entry_size = 8; // Same for both 32-bit and 64-bit
-    // Entries start after signature (4/8 bytes) + 8 bytes of metadata
+                        // Entries start after signature (4/8 bytes) + 8 bytes of metadata
     let entries_start = if is_64bit { 16 } else { 12 };
 
     if data.len() < entries_start {

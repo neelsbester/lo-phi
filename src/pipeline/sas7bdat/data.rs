@@ -87,8 +87,7 @@ pub fn extract_rows_from_page(
     } else if is_page_mix(page_header.page_type) {
         // Mix page: rows start after subheader pointer table, aligned to 8 bytes
         let pointer_size: usize = if header.is_64bit { 24 } else { 12 };
-        let raw_offset =
-            page_header_size + (page_header.subheader_count as usize * pointer_size);
+        let raw_offset = page_header_size + (page_header.subheader_count as usize * pointer_size);
         // Align to 8-byte boundary (required by SAS7BDAT spec)
         let offset = (raw_offset + 7) & !7;
 

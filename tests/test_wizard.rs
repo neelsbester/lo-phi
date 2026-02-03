@@ -10,7 +10,7 @@
 //! integration tests with mocked terminal interfaces.
 
 use lophi::cli::wizard::{
-    validate_parquet_extension, validate_schema_inference, validate_threshold,
+    validate_output_extension, validate_schema_inference, validate_threshold,
 };
 use lophi::cli::wizard::{WizardData, WizardState, WizardStep, WizardTask};
 
@@ -296,42 +296,50 @@ fn test_schema_inference_validation_invalid_values() {
 // ============================================================================
 
 #[test]
-fn test_parquet_extension_validation_valid() {
+fn test_output_extension_validation_valid() {
     assert!(
-        validate_parquet_extension("output.parquet").is_ok(),
+        validate_output_extension("output.parquet").is_ok(),
         "output.parquet should be valid"
     );
     assert!(
-        validate_parquet_extension("/path/to/file.parquet").is_ok(),
+        validate_output_extension("/path/to/file.parquet").is_ok(),
         "Full path with .parquet should be valid"
     );
     assert!(
-        validate_parquet_extension("FILE.PARQUET").is_ok(),
+        validate_output_extension("FILE.PARQUET").is_ok(),
         "Uppercase .PARQUET should be valid"
     );
     assert!(
-        validate_parquet_extension("file.Parquet").is_ok(),
+        validate_output_extension("file.Parquet").is_ok(),
         "Mixed case .Parquet should be valid"
+    );
+    assert!(
+        validate_output_extension("output.csv").is_ok(),
+        "output.csv should be valid"
+    );
+    assert!(
+        validate_output_extension("/path/to/file.CSV").is_ok(),
+        "Uppercase .CSV should be valid"
     );
 }
 
 #[test]
-fn test_parquet_extension_validation_invalid() {
+fn test_output_extension_validation_invalid() {
     assert!(
-        validate_parquet_extension("output.csv").is_err(),
-        "output.csv should be invalid"
-    );
-    assert!(
-        validate_parquet_extension("output.txt").is_err(),
+        validate_output_extension("output.txt").is_err(),
         "output.txt should be invalid"
     );
     assert!(
-        validate_parquet_extension("output").is_err(),
+        validate_output_extension("output").is_err(),
         "No extension should be invalid"
     );
     assert!(
-        validate_parquet_extension("parquet").is_err(),
+        validate_output_extension("parquet").is_err(),
         "Just 'parquet' should be invalid"
+    );
+    assert!(
+        validate_output_extension("output.sas7bdat").is_err(),
+        "output.sas7bdat should be invalid (not a valid output format)"
     );
 }
 
