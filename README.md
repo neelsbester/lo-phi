@@ -32,6 +32,13 @@ brew install neelsbester/tap/lophi
 
 Intel Mac users are covered via Rosetta 2 running the ARM64 binary.
 
+#### Scoop (Windows)
+
+```powershell
+scoop bucket add lophi https://github.com/neelsbester/scoop-bucket
+scoop install lophi
+```
+
 #### Pre-built Binaries
 
 Download from [GitHub Releases](https://github.com/neelsbester/lo-phi/releases/latest):

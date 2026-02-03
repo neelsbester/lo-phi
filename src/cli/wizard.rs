@@ -175,11 +175,8 @@ pub enum WizardStep {
     /// Final summary before execution
     Summary,
 
-    /// Output path for conversion
-    OutputPath {
-        input: String,
-        error: Option<String>,
-    },
+    /// Output format selection for conversion (SAS7BDAT only)
+    OutputFormat { selected: usize },
 
     /// Conversion mode selection (fast vs streaming)
     ConversionMode { selected: usize },
@@ -216,7 +213,7 @@ impl WizardStep {
             WizardStep::DropColumns { .. } => "Drop Columns",
             WizardStep::SchemaInference { .. } => "Schema Inference",
             WizardStep::Summary => "Summary",
-            WizardStep::OutputPath { .. } => "Output Path",
+            WizardStep::OutputFormat { .. } => "Output Format",
             WizardStep::ConversionMode { .. } => "Conversion Mode",
         }
     }
@@ -414,32 +411,49 @@ impl WizardState {
                 self.steps = steps;
             }
             WizardTask::Conversion => {
-                // Initialize output path with default based on input format
-                let default_output = self
+                let ext = self
                     .data
                     .input
                     .as_ref()
-                    .map(|p| {
-                        let ext = p
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("")
-                            .to_lowercase();
-                        let target_ext = if ext == "parquet" { "csv" } else { "parquet" };
-                        p.with_extension(target_ext).display().to_string()
-                    })
-                    .unwrap_or_default();
+                    .and_then(|p| p.extension())
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
 
-                self.steps = vec![
-                    WizardStep::TaskSelection,
-                    WizardStep::OutputPath {
-                        input: default_output,
-                        error: None,
-                    },
-                    WizardStep::ConversionMode { selected: 0 },
-                    WizardStep::Summary,
-                ];
+                let mut steps = vec![WizardStep::TaskSelection];
+
+                // Always show OutputFormat step for all conversion inputs
+                steps.push(WizardStep::OutputFormat { selected: 0 });
+
+                match ext.as_str() {
+                    "sas7bdat" => {
+                        // SAS7BDAT: always fast (in-memory), output chosen in OutputFormat step
+                        self.data.conversion_fast = true;
+                    }
+                    "csv" => {
+                        // CSV->Parquet: show conversion mode (fast vs streaming)
+                        steps.push(WizardStep::ConversionMode { selected: 0 });
+                    }
+                    "parquet" => {
+                        // Parquet->CSV: always fast
+                        self.data.conversion_fast = true;
+                    }
+                    _ => {
+                        // Unknown: default with mode selection
+                        steps.push(WizardStep::ConversionMode { selected: 0 });
+                    }
+                }
+
+                steps.push(WizardStep::Summary);
+                self.steps = steps;
             }
+        }
+    }
+
+    /// Set conversion output path by replacing the input file's extension
+    fn auto_generate_conversion_output(&mut self, ext: &str) {
+        if let Some(input) = &self.data.input {
+            self.data.conversion_output = Some(input.with_extension(ext));
         }
     }
 
@@ -639,7 +653,7 @@ fn handle_step_event(wizard: &mut WizardState, key: KeyEvent) -> Result<StepActi
         Some(WizardStep::DropColumns { .. }) => handle_drop_columns(wizard, key),
         Some(WizardStep::SchemaInference { .. }) => handle_schema_inference(wizard, key),
         Some(WizardStep::Summary) => handle_summary(wizard, key),
-        Some(WizardStep::OutputPath { .. }) => handle_output_path(wizard, key),
+        Some(WizardStep::OutputFormat { .. }) => handle_output_format(wizard, key),
         Some(WizardStep::ConversionMode { .. }) => handle_conversion_mode(wizard, key),
         None => Ok(StepAction::Stay),
     }
@@ -753,8 +767,7 @@ fn step_color(step: &WizardStep) -> Color {
         WizardStep::MissingThreshold { .. }
         | WizardStep::GiniThreshold { .. }
         | WizardStep::CorrelationThreshold { .. }
-        | WizardStep::SchemaInference { .. }
-        | WizardStep::OutputPath { .. } => Color::Yellow,
+        | WizardStep::SchemaInference { .. } => Color::Yellow,
         WizardStep::DropColumns { .. } => Color::Red,
         WizardStep::SolverToggle { .. }
         | WizardStep::MonotonicitySelection { .. }
@@ -762,6 +775,7 @@ fn step_color(step: &WizardStep) -> Color {
         | WizardStep::Summary => Color::Green,
         WizardStep::TaskSelection
         | WizardStep::OptionalSettingsPrompt
+        | WizardStep::OutputFormat { .. }
         | WizardStep::ConversionMode { .. } => Color::Cyan,
     }
 }
@@ -856,6 +870,10 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
             } else {
                 None
             }
+        }
+        Some(WizardStep::OutputFormat { selected }) => {
+            let total = output_format_options(wizard.data.input.as_deref()).len();
+            Some(format!(" {}/{} formats ", selected + 1, total))
         }
         _ => None,
     };
@@ -952,7 +970,7 @@ fn render_step(f: &mut Frame, area: Rect, wizard: &WizardState) {
         WizardStep::DropColumns { .. } => render_drop_columns(f, area, wizard),
         WizardStep::SchemaInference { .. } => render_schema_inference(f, area, wizard),
         WizardStep::Summary => render_summary(f, area, wizard),
-        WizardStep::OutputPath { .. } => render_output_path(f, area, wizard),
+        WizardStep::OutputFormat { .. } => render_output_format(f, area, wizard),
         WizardStep::ConversionMode { .. } => render_conversion_mode(f, area, wizard),
     }
 }
@@ -967,7 +985,6 @@ fn render_help_bar(f: &mut Frame, area: Rect, wizard: &WizardState) {
             | Some(WizardStep::GiniThreshold { .. })
             | Some(WizardStep::CorrelationThreshold { .. })
             | Some(WizardStep::SchemaInference { .. })
-            | Some(WizardStep::OutputPath { .. })
     );
     let has_search = matches!(
         step,
@@ -1688,50 +1705,68 @@ fn render_summary(f: &mut Frame, area: Rect, wizard: &WizardState) {
     f.render_widget(Paragraph::new(content), area);
 }
 
-fn render_output_path(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let (input, error) = match wizard.current_step() {
-        Some(WizardStep::OutputPath { input, error }) => (input, error),
+/// Get available output format options based on input file extension
+fn output_format_options(input: Option<&std::path::Path>) -> Vec<&'static str> {
+    let ext = input
+        .and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        "csv" => vec!["Parquet (.parquet)"],
+        "parquet" => vec!["CSV (.csv)"],
+        _ => vec!["Parquet (.parquet)", "CSV (.csv)"], // SAS7BDAT and unknown
+    }
+}
+
+/// Map output format option label to file extension
+fn output_format_extension(option: &str) -> &str {
+    if option.contains("Parquet") {
+        "parquet"
+    } else {
+        "csv"
+    }
+}
+
+fn render_output_format(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let selected = match wizard.current_step() {
+        Some(WizardStep::OutputFormat { selected }) => *selected,
         _ => return,
     };
-    let color = Color::Yellow;
-    let input_file = wizard
-        .data
-        .input
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "None".to_string());
+    let color = Color::Cyan;
+    let options = output_format_options(wizard.data.input.as_deref());
 
-    let mut content = vec![
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    let desc = Paragraph::new(vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  Output Path",
+            "  Output Format",
             Style::default().fg(Color::DarkGray).bold(),
         )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Input: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(input_file, Style::default().fg(Color::White)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Output file path (must end with .parquet or .csv):",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Value: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(input.to_string(), Style::default().fg(Color::White).bold()),
-            Span::styled("\u{258c}", Style::default().fg(color)),
-        ]),
-    ];
-    if let Some(err) = error {
-        content.push(Line::from(""));
-        content.push(Line::from(Span::styled(
-            format!("  {}", err),
-            Style::default().fg(Color::Red),
-        )));
-    }
-    f.render_widget(Paragraph::new(content), area);
+    ]);
+    f.render_widget(desc, chunks[0]);
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Black).bg(color).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {}", opt)).style(style)
+        })
+        .collect();
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 
 fn render_conversion_mode(f: &mut Frame, area: Rect, wizard: &WizardState) {
@@ -2297,36 +2332,47 @@ fn handle_summary(wizard: &WizardState, key: KeyEvent) -> Result<StepAction> {
     }
 }
 
-fn handle_output_path(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
+fn handle_output_format(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
+    let options = output_format_options(wizard.data.input.as_deref());
+    let max_idx = options.len().saturating_sub(1);
+
     let step = wizard.current_step_mut();
-    let (input, error) = match step {
-        Some(WizardStep::OutputPath { input, error }) => (input, error),
+    let selected = match step {
+        Some(WizardStep::OutputFormat { selected }) => selected,
         _ => return Ok(StepAction::Stay),
     };
 
     match key.code {
-        KeyCode::Char(c) => {
-            input.push(c);
-            *error = None;
+        KeyCode::Up => {
+            if *selected > 0 {
+                *selected -= 1;
+            }
             Ok(StepAction::Stay)
         }
-        KeyCode::Backspace => {
-            if input.is_empty() {
-                return Ok(StepAction::PrevStep);
+        KeyCode::Down => {
+            if *selected < max_idx {
+                *selected += 1;
             }
-            input.pop();
-            *error = None;
             Ok(StepAction::Stay)
         }
         KeyCode::Enter => {
-            if let Err(e) = validate_output_extension(input) {
-                *error = Some(e);
-                Ok(StepAction::Stay)
-            } else {
-                wizard.data.conversion_output = Some(PathBuf::from(input.clone()));
-                Ok(StepAction::NextStep)
+            let ext = output_format_extension(options[*selected]);
+            wizard.auto_generate_conversion_output(ext);
+            // SAS7BDAT and Parquet are always fast; CSV fast is decided in ConversionMode step
+            let input_ext = wizard
+                .data
+                .input
+                .as_ref()
+                .and_then(|p| p.extension())
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if input_ext != "csv" {
+                wizard.data.conversion_fast = true;
             }
+            Ok(StepAction::NextStep)
         }
+        KeyCode::Backspace => Ok(StepAction::PrevStep),
         _ => Ok(StepAction::Stay),
     }
 }
@@ -2384,13 +2430,3 @@ pub fn validate_schema_inference(value: usize) -> Result<(), String> {
     }
 }
 
-/// Validate output file extension (must be .parquet or .csv)
-#[allow(dead_code)]
-pub fn validate_output_extension(path: &str) -> Result<(), String> {
-    let lower = path.to_lowercase();
-    if !lower.ends_with(".parquet") && !lower.ends_with(".csv") {
-        Err("Output file must have .parquet or .csv extension".to_string())
-    } else {
-        Ok(())
-    }
-}

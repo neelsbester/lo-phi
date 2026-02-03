@@ -9,9 +9,7 @@
 //! DO NOT test TUI rendering or terminal operations here - those require
 //! integration tests with mocked terminal interfaces.
 
-use lophi::cli::wizard::{
-    validate_output_extension, validate_schema_inference, validate_threshold,
-};
+use lophi::cli::wizard::{validate_schema_inference, validate_threshold};
 use lophi::cli::wizard::{WizardData, WizardState, WizardStep, WizardTask};
 
 // ============================================================================
@@ -75,26 +73,27 @@ fn test_reduction_path_step_sequencing() {
 // ============================================================================
 
 #[test]
-fn test_conversion_path_step_sequencing() {
+fn test_csv_conversion_path_step_sequencing() {
     let mut wizard = WizardState::new();
 
-    // Set task to Conversion and build steps
+    // CSV input: TaskSelection -> OutputFormat -> ConversionMode -> Summary
     wizard.data.task = Some(WizardTask::Conversion);
     wizard.data.input = Some(std::path::PathBuf::from("test.csv"));
     wizard.build_steps();
 
-    // Verify we have exactly 4 steps for conversion
-    // (FileSelection removed - file selector opens inline from TaskSelection)
-    assert_eq!(wizard.steps.len(), 4, "Conversion path should have 4 steps");
+    assert_eq!(
+        wizard.steps.len(),
+        4,
+        "CSV conversion path should have 4 steps"
+    );
 
-    // Verify step order
     assert!(
         matches!(wizard.steps[0], WizardStep::TaskSelection),
         "Step 0 should be TaskSelection"
     );
     assert!(
-        matches!(wizard.steps[1], WizardStep::OutputPath { .. }),
-        "Step 1 should be OutputPath"
+        matches!(wizard.steps[1], WizardStep::OutputFormat { .. }),
+        "Step 1 should be OutputFormat"
     );
     assert!(
         matches!(wizard.steps[2], WizardStep::ConversionMode { .. }),
@@ -103,6 +102,76 @@ fn test_conversion_path_step_sequencing() {
     assert!(
         matches!(wizard.steps[3], WizardStep::Summary),
         "Step 3 should be Summary"
+    );
+}
+
+#[test]
+fn test_sas7bdat_conversion_path_step_sequencing() {
+    let mut wizard = WizardState::new();
+
+    // SAS7BDAT input: TaskSelection -> OutputFormat -> Summary
+    wizard.data.task = Some(WizardTask::Conversion);
+    wizard.data.input = Some(std::path::PathBuf::from("data.sas7bdat"));
+    wizard.build_steps();
+
+    assert_eq!(
+        wizard.steps.len(),
+        3,
+        "SAS7BDAT conversion path should have 3 steps"
+    );
+
+    assert!(
+        matches!(wizard.steps[0], WizardStep::TaskSelection),
+        "Step 0 should be TaskSelection"
+    );
+    assert!(
+        matches!(wizard.steps[1], WizardStep::OutputFormat { .. }),
+        "Step 1 should be OutputFormat"
+    );
+    assert!(
+        matches!(wizard.steps[2], WizardStep::Summary),
+        "Step 2 should be Summary"
+    );
+
+    // SAS7BDAT should always use fast mode
+    assert!(
+        wizard.data.conversion_fast,
+        "SAS7BDAT conversion should always use fast mode"
+    );
+}
+
+#[test]
+fn test_parquet_conversion_path_step_sequencing() {
+    let mut wizard = WizardState::new();
+
+    // Parquet input: TaskSelection -> OutputFormat -> Summary
+    wizard.data.task = Some(WizardTask::Conversion);
+    wizard.data.input = Some(std::path::PathBuf::from("data.parquet"));
+    wizard.build_steps();
+
+    assert_eq!(
+        wizard.steps.len(),
+        3,
+        "Parquet conversion path should have 3 steps"
+    );
+
+    assert!(
+        matches!(wizard.steps[0], WizardStep::TaskSelection),
+        "Step 0 should be TaskSelection"
+    );
+    assert!(
+        matches!(wizard.steps[1], WizardStep::OutputFormat { .. }),
+        "Step 1 should be OutputFormat"
+    );
+    assert!(
+        matches!(wizard.steps[2], WizardStep::Summary),
+        "Step 2 should be Summary"
+    );
+
+    // Parquet should always use fast mode
+    assert!(
+        wizard.data.conversion_fast,
+        "Parquet conversion should always use fast mode"
     );
 }
 
@@ -173,7 +242,7 @@ fn test_next_step_boundary_at_last() {
     wizard.data.input = Some(std::path::PathBuf::from("test.csv"));
     wizard.build_steps();
 
-    // Advance to last step (index 3 for 4 steps)
+    // Advance to last step (index 3 for 4 steps: TaskSelection, OutputFormat, ConversionMode, Summary)
     wizard.current_index = 3;
     assert!(wizard.is_last_step());
 
@@ -288,58 +357,6 @@ fn test_schema_inference_validation_invalid_values() {
     assert!(
         validate_schema_inference(99).is_err(),
         "99 should be invalid (< 100)"
-    );
-}
-
-// ============================================================================
-// T046: Tests for output path validation
-// ============================================================================
-
-#[test]
-fn test_output_extension_validation_valid() {
-    assert!(
-        validate_output_extension("output.parquet").is_ok(),
-        "output.parquet should be valid"
-    );
-    assert!(
-        validate_output_extension("/path/to/file.parquet").is_ok(),
-        "Full path with .parquet should be valid"
-    );
-    assert!(
-        validate_output_extension("FILE.PARQUET").is_ok(),
-        "Uppercase .PARQUET should be valid"
-    );
-    assert!(
-        validate_output_extension("file.Parquet").is_ok(),
-        "Mixed case .Parquet should be valid"
-    );
-    assert!(
-        validate_output_extension("output.csv").is_ok(),
-        "output.csv should be valid"
-    );
-    assert!(
-        validate_output_extension("/path/to/file.CSV").is_ok(),
-        "Uppercase .CSV should be valid"
-    );
-}
-
-#[test]
-fn test_output_extension_validation_invalid() {
-    assert!(
-        validate_output_extension("output.txt").is_err(),
-        "output.txt should be invalid"
-    );
-    assert!(
-        validate_output_extension("output").is_err(),
-        "No extension should be invalid"
-    );
-    assert!(
-        validate_output_extension("parquet").is_err(),
-        "Just 'parquet' should be invalid"
-    );
-    assert!(
-        validate_output_extension("output.sas7bdat").is_err(),
-        "output.sas7bdat should be invalid (not a valid output format)"
     );
 }
 
@@ -460,11 +477,15 @@ fn test_wizard_state_build_steps_produces_correct_count() {
         "Reduction with optional settings should have 13 steps (8 base + 5 optional)"
     );
 
-    // Test Conversion
+    // Test Conversion (CSV: TaskSelection, OutputFormat, ConversionMode, Summary)
     wizard.data.task = Some(WizardTask::Conversion);
     wizard.data.input = Some(std::path::PathBuf::from("test.csv"));
     wizard.build_steps();
-    assert_eq!(wizard.steps.len(), 4, "Conversion should have 4 steps");
+    assert_eq!(
+        wizard.steps.len(),
+        4,
+        "CSV conversion should have 4 steps"
+    );
 }
 
 // ============================================================================
@@ -574,13 +595,7 @@ fn test_step_titles_are_correct() {
             "Schema Inference",
         ),
         (WizardStep::Summary, "Summary"),
-        (
-            WizardStep::OutputPath {
-                input: String::new(),
-                error: None,
-            },
-            "Output Path",
-        ),
+        (WizardStep::OutputFormat { selected: 0 }, "Output Format"),
         (
             WizardStep::ConversionMode { selected: 0 },
             "Conversion Mode",
@@ -737,10 +752,10 @@ fn test_current_step_returns_correct_step() {
     assert!(step.is_some());
     assert!(matches!(step.unwrap(), WizardStep::TaskSelection));
 
-    // Advance and check again (FileSelection removed, next is OutputPath)
+    // Advance and check again (CSV: next step is OutputFormat)
     wizard.next_step().unwrap();
     let step = wizard.current_step();
-    assert!(matches!(step.unwrap(), WizardStep::OutputPath { .. }));
+    assert!(matches!(step.unwrap(), WizardStep::OutputFormat { .. }));
 }
 
 #[test]
