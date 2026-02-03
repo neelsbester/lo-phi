@@ -20,6 +20,18 @@ Thumbs.db
 # Logs
 *.log
 
+# AI/agent tooling
+CLAUDE.md
+.cursor/
+.specify/
+
+# Planning and presentation artifacts
+plan.md
+presentation_presenterm.md
+presentation_slides.md
+project_summary.md
+specs/
+
 # Test data (large generated files)
 /test_data/
 *.parquet
@@ -29,15 +41,3 @@ Thumbs.db
 !docs/examples/*.csv
 !docs/examples/*.json
 !docs/examples/*.zip
-
-# IDE
-.idea/
-.vscode/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Environment
-.env*
-*.log
