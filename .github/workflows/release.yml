@@ -17,17 +17,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS Apple Silicon (ARM64)
+          - target: aarch64-apple-darwin
+            os: macos-14
+            artifact_name: lophi
+            asset_name: lophi-macos-aarch64.tar.gz
+
+          # Linux x86_64
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact_name: lophi
+            asset_name: lophi-linux-x86_64.tar.gz
+
           # Windows x86_64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact_name: lophi.exe
             asset_name: lophi-windows-x86_64.exe
-
-          # macOS Apple Silicon (ARM64)
-          - target: aarch64-apple-darwin
-            os: macos-14  # macos-14 runs on Apple Silicon
-            artifact_name: lophi
-            asset_name: Lo-phi-macos-apple-silicon.zip
 
     steps:
       - name: Checkout repository
@@ -38,78 +44,37 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Create macOS .app bundle
-        if: matrix.target == 'aarch64-apple-darwin'
+      - name: Package tarball (Unix)
+        if: runner.os != 'Windows'
         run: |
-          APP_DIR="Lo-phi.app/Contents"
-          mkdir -p "$APP_DIR/MacOS"
-          mkdir -p "$APP_DIR/Resources"
-
-          # Copy binary
-          cp target/${{ matrix.target }}/release/lophi "$APP_DIR/MacOS/lophi"
-
-          # Create launcher script
-          cat > "$APP_DIR/MacOS/lophi-launcher" << 'LAUNCHER'
-          #!/bin/bash
-          DIR="$(cd "$(dirname "$0")" && pwd)"
-          osascript -e "tell application \"Terminal\"
-            activate
-            do script \"'$DIR/lophi'; exit\"
-          end tell"
-          LAUNCHER
-          chmod +x "$APP_DIR/MacOS/lophi-launcher"
-
-          # Create Info.plist
-          cat > "$APP_DIR/Info.plist" << 'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleExecutable</key>
-            <string>lophi-launcher</string>
-            <key>CFBundleIdentifier</key>
-            <string>com.lophi.app</string>
-            <key>CFBundleName</key>
-            <string>Lo-phi</string>
-            <key>CFBundleDisplayName</key>
-            <string>Lo-phi</string>
-            <key>CFBundleVersion</key>
-            <string>1.0.0</string>
-            <key>CFBundleShortVersionString</key>
-            <string>1.0.0</string>
-            <key>CFBundlePackageType</key>
-            <string>APPL</string>
-            <key>CFBundleIconFile</key>
-            <string>AppIcon</string>
-            <key>LSMinimumSystemVersion</key>
-            <string>11.0</string>
-            <key>NSHighResolutionCapable</key>
-            <true/>
-          </dict>
-          </plist>
-          PLIST
-
-          # Copy icon if available
-          if [ -f assets/icon_512.png ]; then
-            cp assets/icon_512.png "$APP_DIR/Resources/AppIcon.png"
-          fi
-
-          # Zip the .app bundle
-          zip -r "Lo-phi-macos-apple-silicon.zip" "Lo-phi.app"
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.asset_name }} ${{ matrix.artifact_name }}
+          cd ../../..
 
       - name: Rename binary (Windows)
         if: runner.os == 'Windows'
         run: |
-          Move-Item -Path target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -Destination target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+          Copy-Item -Path target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -Destination ${{ matrix.asset_name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: ${{ matrix.target == 'aarch64-apple-darwin' && 'Lo-phi-macos-apple-silicon.zip' || format('target/{0}/release/{1}', matrix.target, matrix.asset_name) }}
+          path: ${{ matrix.asset_name }}
           retention-days: 7
 
   # Create a release when a tag is pushed
@@ -133,9 +98,79 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            artifacts/lophi-macos-aarch64.tar.gz/lophi-macos-aarch64.tar.gz
+            artifacts/lophi-linux-x86_64.tar.gz/lophi-linux-x86_64.tar.gz
             artifacts/lophi-windows-x86_64.exe/lophi-windows-x86_64.exe
-            artifacts/Lo-phi-macos-apple-silicon.zip/Lo-phi-macos-apple-silicon.zip
           generate_release_notes: true
           draft: false
           prerelease: false
 
+  # Update Homebrew tap formula with new release hashes
+  update-homebrew:
+    name: Update Homebrew Tap
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "v${{ steps.version.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "lophi-macos-aarch64.tar.gz" \
+            --pattern "lophi-linux-x86_64.tar.gz"
+
+      - name: Compute SHA256 hashes
+        id: hashes
+        run: |
+          echo "macos_sha256=$(sha256sum lophi-macos-aarch64.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "linux_sha256=$(sha256sum lophi-linux-x86_64.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Clone homebrew-tap and update formula
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          MACOS_SHA256: ${{ steps.hashes.outputs.macos_sha256 }}
+          LINUX_SHA256: ${{ steps.hashes.outputs.linux_sha256 }}
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/neelsbester/homebrew-tap.git"
+          cd homebrew-tap
+          mkdir -p Formula
+
+          cat > Formula/lophi.rb << FORMULA
+          class Lophi < Formula
+            desc "Feature reduction using missing value, Gini/IV, and correlation analysis"
+            homepage "https://github.com/neelsbester/lo-phi"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              url "https://github.com/neelsbester/lo-phi/releases/download/v${VERSION}/lophi-macos-aarch64.tar.gz"
+              sha256 "${MACOS_SHA256}"
+            end
+
+            on_linux do
+              url "https://github.com/neelsbester/lo-phi/releases/download/v${VERSION}/lophi-linux-x86_64.tar.gz"
+              sha256 "${LINUX_SHA256}"
+            end
+
+            def install
+              bin.install "lophi"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/lophi --version")
+            end
+          end
+          FORMULA
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/lophi.rb
+          git commit -m "Update lophi to ${VERSION}"
+          git push

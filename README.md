@@ -24,6 +24,24 @@
 
 ### Installation
 
+#### Homebrew (macOS and Linux)
+
+```bash
+brew install neelsbester/tap/lophi
+```
+
+Intel Mac users are covered via Rosetta 2 running the ARM64 binary.
+
+#### Pre-built Binaries
+
+Download from [GitHub Releases](https://github.com/neelsbester/lo-phi/releases/latest):
+
+- **macOS ARM64** (Apple Silicon): `lophi-macos-aarch64.tar.gz`
+- **Linux x86_64**: `lophi-linux-x86_64.tar.gz`
+- **Windows x86_64**: `lophi-windows-x86_64.exe`
+
+#### From Source
+
 ```bash
 cargo install --path .
 ```

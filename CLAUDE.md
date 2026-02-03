@@ -314,9 +314,21 @@ Binning parameters use sensible defaults and are only configurable via CLI:
 
 ### Release Workflow
 - **`release.yml`** triggers on tag push (`v*`) or manual dispatch
-- **Windows**: Builds `.exe` with embedded icon
-- **macOS**: Packages as `.app` bundle (launcher opens Terminal.app, runs lophi inside)
-- Release job creates GitHub Release with both artifacts
+- **Build matrix** (3 targets):
+  - `aarch64-apple-darwin` on `macos-14` → `lophi-macos-aarch64.tar.gz`
+  - `x86_64-unknown-linux-gnu` on `ubuntu-latest` → `lophi-linux-x86_64.tar.gz`
+  - `x86_64-pc-windows-msvc` on `windows-latest` → `lophi-windows-x86_64.exe`
+- **Windows**: Builds `.exe` with embedded icon (standalone binary)
+- **Unix**: Tarballs contain the `lophi` binary
+- **Release job**: Creates GitHub Release with 3 assets
+- **Update-homebrew job**: Downloads macOS + Linux tarballs, computes SHA256 hashes, clones `neelsbester/homebrew-tap`, templates `Formula/lophi.rb` with version + hashes, commits and pushes
+
+### Homebrew Tap Distribution
+- **Tap repo**: `neelsbester/homebrew-tap` — install via `brew install neelsbester/tap/lophi`
+- **Formula**: `Formula/lophi.rb` — precompiled binary formula with `on_macos` / `on_linux` platform detection
+- **Auto-updated**: The `update-homebrew` job in `release.yml` rewrites the formula on every tagged release
+- **PAT secret**: `HOMEBREW_TAP_TOKEN` (fine-grained PAT with Contents: Read & Write on `neelsbester/homebrew-tap`) must be set in lo-phi repo Actions secrets
+- **Intel Mac**: Covered via Rosetta 2 running the ARM64 binary
 
 ### Interactive Exit Prompt
 - `main.rs` shows "Press Enter to exit..." after pipeline completion in interactive mode
