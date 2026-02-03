@@ -27,11 +27,12 @@ fn test_reduction_path_step_sequencing() {
     wizard.data.available_columns = vec!["col1".to_string(), "col2".to_string()];
     wizard.build_steps();
 
-    // Verify we have exactly 9 steps for reduction without optional settings
+    // Verify we have exactly 8 steps for reduction without optional settings
+    // (FileSelection removed - file selector opens inline from TaskSelection)
     assert_eq!(
         wizard.steps.len(),
-        9,
-        "Reduction path without optional settings should have 9 steps"
+        8,
+        "Reduction path without optional settings should have 8 steps"
     );
 
     // Verify step order
@@ -40,36 +41,32 @@ fn test_reduction_path_step_sequencing() {
         "Step 0 should be TaskSelection"
     );
     assert!(
-        matches!(wizard.steps[1], WizardStep::FileSelection),
-        "Step 1 should be FileSelection"
+        matches!(wizard.steps[1], WizardStep::TargetSelection { .. }),
+        "Step 1 should be TargetSelection"
     );
     assert!(
-        matches!(wizard.steps[2], WizardStep::TargetSelection { .. }),
-        "Step 2 should be TargetSelection"
+        matches!(wizard.steps[2], WizardStep::TargetMapping { .. }),
+        "Step 2 should be TargetMapping"
     );
     assert!(
-        matches!(wizard.steps[3], WizardStep::TargetMapping { .. }),
-        "Step 3 should be TargetMapping"
+        matches!(wizard.steps[3], WizardStep::MissingThreshold { .. }),
+        "Step 3 should be MissingThreshold"
     );
     assert!(
-        matches!(wizard.steps[4], WizardStep::MissingThreshold { .. }),
-        "Step 4 should be MissingThreshold"
+        matches!(wizard.steps[4], WizardStep::GiniThreshold { .. }),
+        "Step 4 should be GiniThreshold"
     );
     assert!(
-        matches!(wizard.steps[5], WizardStep::GiniThreshold { .. }),
-        "Step 5 should be GiniThreshold"
+        matches!(wizard.steps[5], WizardStep::CorrelationThreshold { .. }),
+        "Step 5 should be CorrelationThreshold"
     );
     assert!(
-        matches!(wizard.steps[6], WizardStep::CorrelationThreshold { .. }),
-        "Step 6 should be CorrelationThreshold"
+        matches!(wizard.steps[6], WizardStep::OptionalSettingsPrompt),
+        "Step 6 should be OptionalSettingsPrompt"
     );
     assert!(
-        matches!(wizard.steps[7], WizardStep::OptionalSettingsPrompt),
-        "Step 7 should be OptionalSettingsPrompt"
-    );
-    assert!(
-        matches!(wizard.steps[8], WizardStep::Summary),
-        "Step 8 should be Summary"
+        matches!(wizard.steps[7], WizardStep::Summary),
+        "Step 7 should be Summary"
     );
 }
 
@@ -86,8 +83,9 @@ fn test_conversion_path_step_sequencing() {
     wizard.data.input = Some(std::path::PathBuf::from("test.csv"));
     wizard.build_steps();
 
-    // Verify we have exactly 5 steps for conversion
-    assert_eq!(wizard.steps.len(), 5, "Conversion path should have 5 steps");
+    // Verify we have exactly 4 steps for conversion
+    // (FileSelection removed - file selector opens inline from TaskSelection)
+    assert_eq!(wizard.steps.len(), 4, "Conversion path should have 4 steps");
 
     // Verify step order
     assert!(
@@ -95,20 +93,16 @@ fn test_conversion_path_step_sequencing() {
         "Step 0 should be TaskSelection"
     );
     assert!(
-        matches!(wizard.steps[1], WizardStep::FileSelection),
-        "Step 1 should be FileSelection"
+        matches!(wizard.steps[1], WizardStep::OutputPath { .. }),
+        "Step 1 should be OutputPath"
     );
     assert!(
-        matches!(wizard.steps[2], WizardStep::OutputPath { .. }),
-        "Step 2 should be OutputPath"
+        matches!(wizard.steps[2], WizardStep::ConversionMode { .. }),
+        "Step 2 should be ConversionMode"
     );
     assert!(
-        matches!(wizard.steps[3], WizardStep::ConversionMode { .. }),
-        "Step 3 should be ConversionMode"
-    );
-    assert!(
-        matches!(wizard.steps[4], WizardStep::Summary),
-        "Step 4 should be Summary"
+        matches!(wizard.steps[3], WizardStep::Summary),
+        "Step 3 should be Summary"
     );
 }
 
@@ -179,14 +173,14 @@ fn test_next_step_boundary_at_last() {
     wizard.data.input = Some(std::path::PathBuf::from("test.csv"));
     wizard.build_steps();
 
-    // Advance to last step (index 4 for 5 steps)
-    wizard.current_index = 4;
+    // Advance to last step (index 3 for 4 steps)
+    wizard.current_index = 3;
     assert!(wizard.is_last_step());
 
     // Try to advance - should stay at last step
     wizard.next_step().unwrap();
     assert_eq!(
-        wizard.current_index, 4,
+        wizard.current_index, 3,
         "Should stay at last step when trying to advance past end"
     );
 }
@@ -445,8 +439,8 @@ fn test_wizard_state_build_steps_produces_correct_count() {
     wizard.build_steps();
     assert_eq!(
         wizard.steps.len(),
-        9,
-        "Reduction without optional settings should have 9 steps"
+        8,
+        "Reduction without optional settings should have 8 steps"
     );
 
     // Test Reduction with optional settings
@@ -454,15 +448,15 @@ fn test_wizard_state_build_steps_produces_correct_count() {
     wizard.build_steps();
     assert_eq!(
         wizard.steps.len(),
-        14,
-        "Reduction with optional settings should have 14 steps (9 base + 5 optional)"
+        13,
+        "Reduction with optional settings should have 13 steps (8 base + 5 optional)"
     );
 
     // Test Conversion
     wizard.data.task = Some(WizardTask::Conversion);
     wizard.data.input = Some(std::path::PathBuf::from("test.csv"));
     wizard.build_steps();
-    assert_eq!(wizard.steps.len(), 5, "Conversion should have 5 steps");
+    assert_eq!(wizard.steps.len(), 4, "Conversion should have 4 steps");
 }
 
 // ============================================================================
@@ -500,7 +494,6 @@ fn test_step_titles_are_correct() {
     // Test each step variant has the correct title
     let steps = [
         (WizardStep::TaskSelection, "Task Selection"),
-        (WizardStep::FileSelection, "File Selection"),
         (
             WizardStep::TargetSelection {
                 search: String::new(),
@@ -609,22 +602,22 @@ fn test_optional_steps_insertion_when_yes() {
     wizard.optional_yes = true;
     wizard.build_steps();
 
-    // Should have 14 steps total (9 base + 5 optional)
-    assert_eq!(wizard.steps.len(), 14);
+    // Should have 13 steps total (8 base + 5 optional)
+    assert_eq!(wizard.steps.len(), 13);
 
     // Verify optional steps are inserted before Summary
-    assert!(matches!(wizard.steps[8], WizardStep::SolverToggle { .. }));
+    assert!(matches!(wizard.steps[7], WizardStep::SolverToggle { .. }));
     assert!(matches!(
-        wizard.steps[9],
+        wizard.steps[8],
         WizardStep::MonotonicitySelection { .. }
     ));
-    assert!(matches!(wizard.steps[10], WizardStep::WeightColumn { .. }));
-    assert!(matches!(wizard.steps[11], WizardStep::DropColumns { .. }));
+    assert!(matches!(wizard.steps[9], WizardStep::WeightColumn { .. }));
+    assert!(matches!(wizard.steps[10], WizardStep::DropColumns { .. }));
     assert!(matches!(
-        wizard.steps[12],
+        wizard.steps[11],
         WizardStep::SchemaInference { .. }
     ));
-    assert!(matches!(wizard.steps[13], WizardStep::Summary));
+    assert!(matches!(wizard.steps[12], WizardStep::Summary));
 }
 
 // ============================================================================
@@ -640,13 +633,13 @@ fn test_reduction_with_empty_columns() {
     wizard.build_steps();
 
     // Should still build steps properly
-    assert_eq!(wizard.steps.len(), 9);
+    assert_eq!(wizard.steps.len(), 8);
 
     // Check that TargetSelection has empty filtered list
-    if let WizardStep::TargetSelection { filtered, .. } = &wizard.steps[2] {
+    if let WizardStep::TargetSelection { filtered, .. } = &wizard.steps[1] {
         assert!(filtered.is_empty(), "Filtered list should be empty");
     } else {
-        panic!("Step 2 should be TargetSelection");
+        panic!("Step 1 should be TargetSelection");
     }
 }
 
@@ -695,10 +688,10 @@ fn test_navigation_after_optional_steps_inserted() {
     wizard.optional_yes = false;
     wizard.build_steps();
 
-    // Navigate to OptionalSettingsPrompt (step 7)
-    wizard.current_index = 7;
+    // Navigate to OptionalSettingsPrompt (step 6)
+    wizard.current_index = 6;
     assert!(matches!(
-        wizard.steps[7],
+        wizard.steps[6],
         WizardStep::OptionalSettingsPrompt
     ));
 
@@ -706,8 +699,8 @@ fn test_navigation_after_optional_steps_inserted() {
     wizard.optional_yes = true;
     wizard.build_steps();
 
-    // Should now have 14 steps
-    assert_eq!(wizard.steps.len(), 14);
+    // Should now have 13 steps
+    assert_eq!(wizard.steps.len(), 13);
 
     // Current index should still be valid
     assert!(wizard.current_index < wizard.steps.len());
@@ -736,10 +729,10 @@ fn test_current_step_returns_correct_step() {
     assert!(step.is_some());
     assert!(matches!(step.unwrap(), WizardStep::TaskSelection));
 
-    // Advance and check again
+    // Advance and check again (FileSelection removed, next is OutputPath)
     wizard.next_step().unwrap();
     let step = wizard.current_step();
-    assert!(matches!(step.unwrap(), WizardStep::FileSelection));
+    assert!(matches!(step.unwrap(), WizardStep::OutputPath { .. }));
 }
 
 #[test]

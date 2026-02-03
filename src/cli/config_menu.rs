@@ -2480,18 +2480,17 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
     ];
     let logo_height = 9u16;
 
-    // Calculate dimensions
-    let popup_width = 70u16;
+    // Calculate dimensions (matching wizard layout exactly)
+    let popup_width = 66u16;
     let popup_height = 22u16;
-    let total_height = logo_height + popup_height;
+    let hint_height = 1u16;
+    let total_height = logo_height + popup_height + hint_height;
 
     let x = area.width.saturating_sub(popup_width) / 2;
     let y = area.height.saturating_sub(total_height) / 2;
 
-    // Draw logo
-    let logo_width = 43u16;
-    let logo_x = area.width.saturating_sub(logo_width) / 2;
-    let logo_area = Rect::new(logo_x, y, logo_width.min(area.width), logo_height);
+    // Draw logo (same width as box for alignment)
+    let logo_area = Rect::new(x, y, popup_width.min(area.width), logo_height);
     let logo_paragraph = Paragraph::new(logo_lines).alignment(Alignment::Center);
     frame.render_widget(logo_paragraph, logo_area);
 
@@ -2510,7 +2509,8 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
         .title(" Select Input File ")
-        .title_style(Style::default().fg(Color::Cyan).bold());
+        .title_style(Style::default().fg(Color::Cyan).bold())
+        .title_alignment(Alignment::Center);
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);

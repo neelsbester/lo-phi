@@ -231,19 +231,33 @@ Pure command-line mode bypasses all interactive prompts. Required for scripting,
 - **Navigation:** Users can go back to previous steps to revise choices, maintaining consistency across the configuration
 - **Visual Design:** Aligned with dashboard (`config_menu.rs`) design language — ASCII logo, fixed-size centered popups, semantic colors per step type, styled help bar, search cursors (▌), count indicators
 
-#### Wizard Visual Design
+#### Wizard Visual Design (Dashboard-Shell Layout)
 
-The wizard shares the dashboard's visual language:
+The wizard reuses the dashboard's persistent layout as its canvas — logo above, a single 66-wide centered box for all step content, and a help bar below:
 
-- **Logo:** Lo-phi ASCII art + "Feature Reduction as simple as phi" tagline at top
-- **Progress Bar:** Color matches current step's semantic color
-- **Centered Popups:** Fixed-size popups (not full-screen), e.g. 50x18 for target selection, 45x9 for thresholds
-- **Semantic Colors:** Magenta (target), Yellow (thresholds/inputs), Red (drop columns), Green (solver/weight/summary), Cyan (navigation/general)
-- **Help Bar:** Borderless, 1-row, Cyan keys + DarkGray descriptions, context-sensitive per step
-- **Search Fields:** DarkGray bordered, White text + semantic-colored cursor (▌)
+```
+              ┌─ Lo-phi ASCII logo (Cyan bold, Magenta phi) ─┐
+              │    "Feature Reduction as simple as phi"       │
+              └───────────────────────────────────────────────┘
+         ┌──────────────── Step Title ────────────────┐
+         │                                            │
+         │   (step content renders inside this box)   │
+         │                                            │
+         ├──── Step 3/8 ──────────── 5/12 columns ───┤
+         └────────────────────────────────────────────┘
+           Enter next  Backspace back  Q/Esc quit
+```
+
+- **Persistent Shell:** Single 66-wide centered box (matching dashboard's `draw_ui`); all wizard steps render inside its inner area — no per-step floating popups
+- **Logo:** Lo-phi ASCII art + tagline centered above the box (9 rows, identical to dashboard)
+- **Progress:** `" Step N/M "` rendered as overlay Paragraph on the box's bottom border (centered)
+- **Semantic Colors:** Border/title color changes per step type — Magenta (target), Yellow (thresholds/inputs), Red (drop columns), Green (solver/weight/summary), Cyan (navigation/general)
+- **Help Bar:** Borderless row below the box; Cyan keys + DarkGray descriptions, context-sensitive per step
+- **Search Fields:** DarkGray bordered inner block, White text + semantic-colored cursor (▌)
 - **List Selection:** `fg(Black).bg(semantic_color).bold()` (inverted background)
-- **Count Indicators:** DarkGray `" 3/12 columns "` at bottom-right of list popups
-- **Helper Functions:** `centered_fixed_rect()`, `step_color()`, `render_threshold_popup()` (shared by all threshold renderers)
+- **Count Indicators:** `" 3/12 columns "` at bottom-right of box border for list-based steps
+- **Backspace Handling:** Per-step — in input fields, Backspace deletes characters when input is non-empty; only navigates to previous step when input is empty. Non-input steps use Backspace solely for navigation.
+- **Helper Functions:** `centered_fixed_rect()` (quit overlay only), `step_color()`, `render_threshold_content()` (shared by missing/gini/correlation threshold renderers), `render_logo()`
 
 ### Interactive TUI Options (Dashboard Mode)
 
