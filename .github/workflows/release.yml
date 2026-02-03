@@ -1,6 +1,9 @@
 name: Build and Release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 env:
@@ -24,7 +27,7 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14  # macos-14 runs on Apple Silicon
             artifact_name: lophi
-            asset_name: lophi-macos-apple-silicon
+            asset_name: Lo-phi-macos-apple-silicon.zip
 
     steps:
       - name: Checkout repository
@@ -38,10 +41,64 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Rename binary (Unix)
-        if: runner.os != 'Windows'
+      - name: Create macOS .app bundle
+        if: matrix.target == 'aarch64-apple-darwin'
         run: |
-          mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+          APP_DIR="Lo-phi.app/Contents"
+          mkdir -p "$APP_DIR/MacOS"
+          mkdir -p "$APP_DIR/Resources"
+
+          # Copy binary
+          cp target/${{ matrix.target }}/release/lophi "$APP_DIR/MacOS/lophi"
+
+          # Create launcher script
+          cat > "$APP_DIR/MacOS/lophi-launcher" << 'LAUNCHER'
+          #!/bin/bash
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          osascript -e "tell application \"Terminal\"
+            activate
+            do script \"'$DIR/lophi'; exit\"
+          end tell"
+          LAUNCHER
+          chmod +x "$APP_DIR/MacOS/lophi-launcher"
+
+          # Create Info.plist
+          cat > "$APP_DIR/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>lophi-launcher</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.lophi.app</string>
+            <key>CFBundleName</key>
+            <string>Lo-phi</string>
+            <key>CFBundleDisplayName</key>
+            <string>Lo-phi</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleIconFile</key>
+            <string>AppIcon</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>11.0</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          # Copy icon if available
+          if [ -f assets/icon_512.png ]; then
+            cp assets/icon_512.png "$APP_DIR/Resources/AppIcon.png"
+          fi
+
+          # Zip the .app bundle
+          zip -r "Lo-phi-macos-apple-silicon.zip" "Lo-phi.app"
 
       - name: Rename binary (Windows)
         if: runner.os == 'Windows'
@@ -52,7 +109,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+          path: ${{ matrix.target == 'aarch64-apple-darwin' && 'Lo-phi-macos-apple-silicon.zip' || format('target/{0}/release/{1}', matrix.target, matrix.asset_name) }}
           retention-days: 7
 
   # Create a release when a tag is pushed
@@ -77,7 +134,7 @@ jobs:
         with:
           files: |
             artifacts/lophi-windows-x86_64.exe/lophi-windows-x86_64.exe
-            artifacts/lophi-macos-apple-silicon/lophi-macos-apple-silicon
+            artifacts/Lo-phi-macos-apple-silicon.zip/Lo-phi-macos-apple-silicon.zip
           generate_release_notes: true
           draft: false
           prerelease: false

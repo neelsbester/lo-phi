@@ -1,9 +1,15 @@
 [package]
 name = "lophi"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Lo-phi: A CLI tool for feature reduction using missing value and correlation analysis"
 authors = ["Neels Bester"]
+license = "MIT"
+repository = "https://github.com/neelsbester/lo-phi"
+homepage = "https://github.com/neelsbester/lo-phi"
+readme = "README.md"
+keywords = ["feature-reduction", "machine-learning", "data-science", "gini", "correlation"]
+categories = ["command-line-utilities", "science"]
 
 [[bin]]
 name = "lophi"
@@ -87,3 +93,6 @@ harness = false
 [[bench]]
 name = "correlation_benchmark"
 harness = false
+
+[build-dependencies]
+winres = "0.1"

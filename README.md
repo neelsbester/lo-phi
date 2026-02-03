@@ -1,6 +1,24 @@
-# Lo-phi
+<p align="center">
+  <img src="assets/icon_512.png" alt="Lo-phi" width="128" height="128">
+</p>
 
-A Rust CLI tool for intelligent feature reduction in datasets. Lo-phi analyzes and removes features based on missing values, predictive power (Gini/IV), and correlation, helping you build cleaner datasets for machine learning.
+<h1 align="center">Lo-phi</h1>
+
+<p align="center">
+  <strong>Feature Reduction as simple as phi</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/neelsbester/lo-phi/actions/workflows/ci.yml"><img src="https://github.com/neelsbester/lo-phi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/neelsbester/lo-phi/releases/latest"><img src="https://img.shields.io/github/v/release/neelsbester/lo-phi" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+</p>
+
+<p align="center">
+  <img src="demo.gif" alt="Lo-phi Demo" width="600">
+</p>
+
+---
 
 ## Quick Start
 
@@ -260,8 +278,15 @@ Pearson correlation computed using Welford's online algorithm for numerical stab
 
 ## License
 
-[Add your license here]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Contributing
 
-[Add contribution guidelines here]
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Run the test suite (`cargo test --all-features`)
+4. Commit your changes
+5. Push to the branch
+6. Open a Pull Request
