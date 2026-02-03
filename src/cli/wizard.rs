@@ -2429,4 +2429,3 @@ pub fn validate_schema_inference(value: usize) -> Result<(), String> {
         Ok(())
     }
 }
-

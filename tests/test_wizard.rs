@@ -481,11 +481,7 @@ fn test_wizard_state_build_steps_produces_correct_count() {
     wizard.data.task = Some(WizardTask::Conversion);
     wizard.data.input = Some(std::path::PathBuf::from("test.csv"));
     wizard.build_steps();
-    assert_eq!(
-        wizard.steps.len(),
-        4,
-        "CSV conversion should have 4 steps"
-    );
+    assert_eq!(wizard.steps.len(), 4, "CSV conversion should have 4 steps");
 }
 
 // ============================================================================
