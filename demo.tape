@@ -14,8 +14,14 @@ Set Shell "bash"
 Set TypingSpeed 80ms
 
 # Launch lo-phi wizard with pre-selected input file
+Hide
+Type "clear"
+Enter
+Sleep 500ms
 Type "./target/release/lophi -i test_data/wide_test.parquet"
 Enter
+Sleep 2s
+Show
 Sleep 2s
 
 # Step 1: Task Selection - "Reduce features" is already highlighted
@@ -57,4 +63,4 @@ Enter
 Sleep 15s
 
 # Show completion results
-Sleep 3s
+Sleep 8s

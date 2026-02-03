@@ -522,11 +522,8 @@ fn validate_target_and_weights(
 
     // Extract sample weights
     let weights = get_weights(df, config.weight_column.as_deref())?;
-    if config.weight_column.is_some() {
-        print_success(&format!(
-            "Using weight column: '{}'",
-            config.weight_column.as_ref().unwrap()
-        ));
+    if let Some(weight_col) = &config.weight_column {
+        print_success(&format!("Using weight column: '{}'", weight_col));
     }
 
     // Analyze target column to determine if mapping is needed
@@ -580,9 +577,8 @@ fn validate_target_and_weights(
                 }
             }
         }
-    } else {
+    } else if let Some(mapping) = &config.target_mapping {
         // Mapping was provided via CLI - display it
-        let mapping = config.target_mapping.as_ref().unwrap();
         println!(
             "   {} Using target mapping: '{}' → 1, '{}' → 0",
             style("✓").green(),
