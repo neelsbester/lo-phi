@@ -34,6 +34,15 @@ Intel Mac users are covered via Rosetta 2 running the ARM64 binary.
 
 #### Scoop (Windows)
 
+If you don't have Scoop installed, run this in PowerShell first:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+Invoke-RestMethod -Uri https://get.scoop.sh | Invoke-Expression
+```
+
+Then install lo-phi:
+
 ```powershell
 scoop bucket add lophi https://github.com/neelsbester/scoop-bucket
 scoop install lophi
