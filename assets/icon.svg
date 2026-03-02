@@ -1,24 +1,73 @@
 <svg viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
-  <!-- Gradient definition -->
-  <defs>
-    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#06B6D4;stop-opacity:1" />
-      <stop offset="100%" style="stop-color:#D946EF;stop-opacity:1" />
-    </linearGradient>
-  </defs>
+  <!-- 8-bit pixel art phi (φ) — 16x16 grid, 32px per cell -->
+  <!-- V1 Cyan Monochrome: #06B6D4 on #0a0e14 -->
 
-  <!-- Rounded square background with gradient -->
-  <rect width="512" height="512" rx="100" fill="url(#bgGradient)"/>
+  <!-- Rounded square background -->
+  <rect width="512" height="512" rx="80" fill="#0a0e14"/>
 
-  <!-- Phi symbol - shifted up to compensate for descender -->
-  <text
-    x="256"
-    y="256"
-    font-family="system-ui, -apple-system, Arial, sans-serif"
-    font-size="400"
-    font-weight="700"
-    fill="white"
-    text-anchor="middle"
-    dominant-baseline="central"
-    dy="-0.08em">φ</text>
+  <!-- Phi circle — Row 2: top cap -->
+  <rect x="192" y="64" width="32" height="32" fill="#06B6D4"/>
+  <rect x="224" y="64" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="64" width="32" height="32" fill="#06B6D4"/>
+  <rect x="288" y="64" width="32" height="32" fill="#06B6D4"/>
+
+  <!-- Row 3: upper shoulders -->
+  <rect x="128" y="96" width="32" height="32" fill="#06B6D4"/>
+  <rect x="160" y="96" width="32" height="32" fill="#06B6D4"/>
+  <rect x="320" y="96" width="32" height="32" fill="#06B6D4"/>
+  <rect x="352" y="96" width="32" height="32" fill="#06B6D4"/>
+
+  <!-- Row 4: sides + stem -->
+  <rect x="96" y="128" width="32" height="32" fill="#06B6D4"/>
+  <rect x="128" y="128" width="32" height="32" fill="#06B6D4"/>
+  <rect x="224" y="128" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="128" width="32" height="32" fill="#06B6D4"/>
+  <rect x="352" y="128" width="32" height="32" fill="#06B6D4"/>
+  <rect x="384" y="128" width="32" height="32" fill="#06B6D4"/>
+
+  <!-- Row 5: sides + stem -->
+  <rect x="96" y="160" width="32" height="32" fill="#06B6D4"/>
+  <rect x="128" y="160" width="32" height="32" fill="#06B6D4"/>
+  <rect x="224" y="160" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="160" width="32" height="32" fill="#06B6D4"/>
+  <rect x="352" y="160" width="32" height="32" fill="#06B6D4"/>
+  <rect x="384" y="160" width="32" height="32" fill="#06B6D4"/>
+
+  <!-- Row 6: sides + stem -->
+  <rect x="96" y="192" width="32" height="32" fill="#06B6D4"/>
+  <rect x="128" y="192" width="32" height="32" fill="#06B6D4"/>
+  <rect x="224" y="192" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="192" width="32" height="32" fill="#06B6D4"/>
+  <rect x="352" y="192" width="32" height="32" fill="#06B6D4"/>
+  <rect x="384" y="192" width="32" height="32" fill="#06B6D4"/>
+
+  <!-- Row 7: sides + stem -->
+  <rect x="96" y="224" width="32" height="32" fill="#06B6D4"/>
+  <rect x="128" y="224" width="32" height="32" fill="#06B6D4"/>
+  <rect x="224" y="224" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="224" width="32" height="32" fill="#06B6D4"/>
+  <rect x="352" y="224" width="32" height="32" fill="#06B6D4"/>
+  <rect x="384" y="224" width="32" height="32" fill="#06B6D4"/>
+
+  <!-- Row 8: lower shoulders -->
+  <rect x="128" y="256" width="32" height="32" fill="#06B6D4"/>
+  <rect x="160" y="256" width="32" height="32" fill="#06B6D4"/>
+  <rect x="320" y="256" width="32" height="32" fill="#06B6D4"/>
+  <rect x="352" y="256" width="32" height="32" fill="#06B6D4"/>
+
+  <!-- Row 9: bottom cap -->
+  <rect x="192" y="288" width="32" height="32" fill="#06B6D4"/>
+  <rect x="224" y="288" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="288" width="32" height="32" fill="#06B6D4"/>
+  <rect x="288" y="288" width="32" height="32" fill="#06B6D4"/>
+
+  <!-- Descender stem — Rows 10-13 -->
+  <rect x="224" y="320" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="320" width="32" height="32" fill="#06B6D4"/>
+  <rect x="224" y="352" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="352" width="32" height="32" fill="#06B6D4"/>
+  <rect x="224" y="384" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="384" width="32" height="32" fill="#06B6D4"/>
+  <rect x="224" y="416" width="32" height="32" fill="#06B6D4"/>
+  <rect x="256" y="416" width="32" height="32" fill="#06B6D4"/>
 </svg>
