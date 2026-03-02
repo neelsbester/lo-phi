@@ -288,3 +288,70 @@ fn test_analyze_nonexistent_target_fails() {
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
+
+// ── T-C6: count_mapped_records ─────────────────────────────────────────────
+
+#[test]
+fn test_count_mapped_records_correct_count() {
+    let df = df! {
+        "target"  => ["G", "B", "G", "B", "X"],
+        "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+    }
+    .unwrap();
+
+    let mapping = TargetMapping::new("B".to_string(), "G".to_string());
+    let (events, non_events, ignored) = count_mapped_records(&df, "target", &mapping).unwrap();
+
+    assert_eq!(events, 2, "Expected 2 events (B)");
+    assert_eq!(non_events, 2, "Expected 2 non-events (G)");
+    assert_eq!(ignored, 1, "Expected 1 ignored (X)");
+}
+
+#[test]
+fn test_count_mapped_records_all_mapped() {
+    // No unknown values -- all rows map to event or non-event.
+    let df = df! {
+        "target"  => ["B", "G", "B", "G", "B"],
+        "feature" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+    }
+    .unwrap();
+
+    let mapping = TargetMapping::new("B".to_string(), "G".to_string());
+    let (events, non_events, ignored) = count_mapped_records(&df, "target", &mapping).unwrap();
+
+    assert_eq!(events + non_events, 5, "All 5 records should be mapped");
+    assert_eq!(ignored, 0, "No records should be ignored");
+}
+
+#[test]
+fn test_count_mapped_records_none_mapped() {
+    // All values are unknown -- nothing maps to event or non-event.
+    let df = df! {
+        "target"  => ["X", "Y", "Z"],
+        "feature" => [1.0f64, 2.0, 3.0],
+    }
+    .unwrap();
+
+    let mapping = TargetMapping::new("B".to_string(), "G".to_string());
+    let (events, non_events, ignored) = count_mapped_records(&df, "target", &mapping).unwrap();
+
+    assert_eq!(events, 0, "No events expected");
+    assert_eq!(non_events, 0, "No non-events expected");
+    assert_eq!(ignored, 3, "All 3 records should be ignored");
+}
+
+#[test]
+fn test_count_mapped_records_empty_series() {
+    let df = df! {
+        "target"  => Vec::<&str>::new(),
+        "feature" => Vec::<f64>::new(),
+    }
+    .unwrap();
+
+    let mapping = TargetMapping::new("B".to_string(), "G".to_string());
+    let (events, non_events, ignored) = count_mapped_records(&df, "target", &mapping).unwrap();
+
+    assert_eq!(events, 0);
+    assert_eq!(non_events, 0);
+    assert_eq!(ignored, 0);
+}

@@ -192,8 +192,30 @@ pub fn process_subheader(
         return Ok(()); // Empty subheader, skip
     }
 
-    let start = pointer.offset as usize;
-    let end = start + pointer.length as usize;
+    let start = usize::try_from(pointer.offset).map_err(|_| {
+        SasError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Subheader offset {} exceeds platform address space",
+                pointer.offset
+            ),
+        ))
+    })?;
+    let length = usize::try_from(pointer.length).map_err(|_| {
+        SasError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "Subheader length {} exceeds platform address space",
+                pointer.length
+            ),
+        ))
+    })?;
+    let end = start.checked_add(length).ok_or_else(|| {
+        SasError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Subheader offset + length overflows",
+        ))
+    })?;
     if end > page_data.len() {
         return Err(SasError::Io(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
@@ -478,6 +500,9 @@ fn process_format_subheader(
 // Helper functions for reading integers from slices
 
 fn read_u16_from_slice(data: &[u8], offset: usize, is_little_endian: bool) -> u16 {
+    if offset + 2 > data.len() {
+        return 0;
+    }
     if is_little_endian {
         u16::from_le_bytes([data[offset], data[offset + 1]])
     } else {
@@ -486,6 +511,9 @@ fn read_u16_from_slice(data: &[u8], offset: usize, is_little_endian: bool) -> u1
 }
 
 fn read_u32_from_slice(data: &[u8], offset: usize, is_little_endian: bool) -> u32 {
+    if offset + 4 > data.len() {
+        return 0;
+    }
     if is_little_endian {
         u32::from_le_bytes([
             data[offset],
@@ -504,6 +532,9 @@ fn read_u32_from_slice(data: &[u8], offset: usize, is_little_endian: bool) -> u3
 }
 
 fn read_u64_from_slice(data: &[u8], offset: usize, is_little_endian: bool) -> u64 {
+    if offset + 8 > data.len() {
+        return 0;
+    }
     if is_little_endian {
         u64::from_le_bytes([
             data[offset],

@@ -285,3 +285,29 @@ fn test_weight_column_excluded_from_analysis() {
         "Should only have 'feature' column"
     );
 }
+
+// ── T-E3: all-zero weights vector ──────────────────────────────────────────
+
+#[test]
+fn test_all_zero_weights_does_not_divide_by_zero() {
+    // When all weights are 0.0 the total weight is 0; the implementation must
+    // not panic (no divide-by-zero crash). It should return a graceful error.
+    let df = df! {
+        "feature" => [Some(1.0f64), None, Some(3.0)],
+    }
+    .unwrap();
+    let weights = vec![0.0, 0.0, 0.0];
+
+    let result = analyze_missing_values(&df, &weights, None);
+
+    // Zero total weight should produce a graceful error, not a panic or NaN.
+    assert!(
+        result.is_err(),
+        "All-zero weights should return an error to prevent NaN propagation"
+    );
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.to_lowercase().contains("zero"),
+        "Error message should mention zero weight, got: {err_msg}"
+    );
+}

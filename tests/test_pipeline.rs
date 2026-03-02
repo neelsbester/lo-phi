@@ -243,8 +243,19 @@ fn test_pipeline_large_dataset() {
     assert_eq!(missing_ratios.len(), 21);
 
     let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
-    // Random data unlikely to have high correlations, but this shouldn't error
-    let _ = select_features_to_drop(&pairs, "target");
+    // Seeded random data is very unlikely to have high correlations at 0.95 threshold
+    let drop_list = select_features_to_drop(&pairs, "target");
+    assert!(
+        drop_list.len() <= 5,
+        "Seeded random data should produce few correlated pairs; got {} drops: {:?}",
+        drop_list.len(),
+        drop_list
+    );
+    // Target must never appear in the drop list
+    assert!(
+        !drop_list.contains(&"target".to_string()),
+        "Target column must not appear in drop list"
+    );
 }
 
 #[test]
@@ -503,4 +514,86 @@ fn test_cart_categorical_respects_min_bin_size() {
             bin_pct
         );
     }
+}
+
+// ── T-C1: get_low_gini_features ────────────────────────────────────────────
+
+/// Helper that constructs a minimal IvAnalysis with only the fields we need.
+fn make_iv_analysis(name: &str, gini: f64) -> IvAnalysis {
+    IvAnalysis {
+        feature_name: name.to_string(),
+        feature_type: FeatureType::Numeric,
+        bins: vec![],
+        categories: vec![],
+        missing_bin: None,
+        iv: 0.0,
+        gini,
+    }
+}
+
+#[test]
+fn test_get_low_gini_features_basic_filtering() {
+    let analyses = vec![
+        make_iv_analysis("high_gini", 0.20),
+        make_iv_analysis("low_gini", 0.02),
+        make_iv_analysis("medium_gini", 0.10),
+    ];
+
+    let result = get_low_gini_features(&analyses, 0.05);
+
+    assert_eq!(result.len(), 1, "Only one feature below threshold 0.05");
+    assert!(result.contains(&"low_gini".to_string()));
+    assert!(!result.contains(&"high_gini".to_string()));
+    assert!(!result.contains(&"medium_gini".to_string()));
+}
+
+#[test]
+fn test_get_low_gini_features_exactly_at_threshold_not_returned() {
+    // The filter is `gini.abs() < threshold`, so exactly equal is NOT dropped.
+    let analyses = vec![make_iv_analysis("exact", 0.05)];
+
+    let result = get_low_gini_features(&analyses, 0.05);
+
+    assert!(
+        result.is_empty(),
+        "Feature with Gini exactly equal to threshold should NOT be returned"
+    );
+}
+
+#[test]
+fn test_get_low_gini_features_empty_input() {
+    let result = get_low_gini_features(&[], 0.05);
+    assert!(result.is_empty(), "Empty input should produce empty output");
+}
+
+#[test]
+fn test_get_low_gini_features_all_below_threshold() {
+    let analyses = vec![
+        make_iv_analysis("a", 0.01),
+        make_iv_analysis("b", 0.02),
+        make_iv_analysis("c", 0.03),
+    ];
+
+    let result = get_low_gini_features(&analyses, 0.05);
+
+    assert_eq!(result.len(), 3, "All features should be returned");
+    assert!(result.contains(&"a".to_string()));
+    assert!(result.contains(&"b".to_string()));
+    assert!(result.contains(&"c".to_string()));
+}
+
+#[test]
+fn test_get_low_gini_features_none_below_threshold() {
+    let analyses = vec![
+        make_iv_analysis("a", 0.10),
+        make_iv_analysis("b", 0.20),
+        make_iv_analysis("c", 0.30),
+    ];
+
+    let result = get_low_gini_features(&analyses, 0.05);
+
+    assert!(
+        result.is_empty(),
+        "No features should be returned when all are above threshold"
+    );
 }

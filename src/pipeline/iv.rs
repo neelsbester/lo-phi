@@ -27,6 +27,9 @@ const SMOOTHING: f64 = 0.5;
 /// Default minimum samples per category before merging into "OTHER"
 const DEFAULT_MIN_CATEGORY_SAMPLES: usize = 5;
 
+/// How often (in features processed) to update the progress bar
+const PROGRESS_UPDATE_INTERVAL: u64 = 10;
+
 /// Binning strategy for pre-bin creation
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub enum BinningStrategy {
@@ -670,6 +673,10 @@ pub fn analyze_features_iv(
     weight_column: Option<&str>,
     solver_config: Option<&SolverConfig>,
 ) -> Result<Vec<IvAnalysis>> {
+    if df.height() == 0 {
+        return Ok(Vec::new());
+    }
+
     let min_cat_samples = min_category_samples.unwrap_or(DEFAULT_MIN_CATEGORY_SAMPLES);
 
     // Calculate CART min bin samples from percentage
@@ -752,9 +759,9 @@ pub fn analyze_features_iv(
     let solver_config_arc = solver_config.map(|c| Arc::new(c.clone()));
 
     // Process numeric features in parallel
-    let numeric_analyses: Vec<IvAnalysis> = numeric_cols
+    let numeric_results: Vec<(String, Result<IvAnalysis>)> = numeric_cols
         .par_iter()
-        .filter_map(|col_name| {
+        .map(|col_name| {
             let result = analyze_single_numeric_feature(
                 df,
                 col_name,
@@ -769,22 +776,32 @@ pub fn analyze_features_iv(
 
             // Update progress
             let count = progress_counter.fetch_add(1, Ordering::Relaxed);
-            if count.is_multiple_of(10) || count == (total_features as u64 - 1) {
+            if count.is_multiple_of(PROGRESS_UPDATE_INTERVAL)
+                || count == (total_features as u64 - 1)
+            {
                 pb.set_position(count + 1);
             }
 
-            result.ok() // Skip features that fail (e.g., all null)
+            (col_name.clone(), result)
         })
         .collect();
+
+    let mut numeric_analyses: Vec<IvAnalysis> = Vec::with_capacity(numeric_results.len());
+    for (col_name, result) in numeric_results {
+        match result {
+            Ok(analysis) => numeric_analyses.push(analysis),
+            Err(e) => eprintln!("Warning: Skipped feature '{}': {}", col_name, e),
+        }
+    }
 
     // Process categorical features in parallel
     // Note: For categorical CART, we use a fixed small min_samples (1) because the pairs array
     // in find_categorical_cart_splits has at most 2 entries per category (not one per sample).
     // The percentage-based cart_min_samples would be too restrictive for categoricals.
     let categorical_cart_min_samples = 1;
-    let categorical_analyses: Vec<IvAnalysis> = categorical_cols
+    let categorical_results: Vec<(String, Result<IvAnalysis>)> = categorical_cols
         .par_iter()
-        .filter_map(|col_name| {
+        .map(|col_name| {
             let result = analyze_categorical_feature(
                 df,
                 col_name,
@@ -799,13 +816,23 @@ pub fn analyze_features_iv(
 
             // Update progress
             let count = progress_counter.fetch_add(1, Ordering::Relaxed);
-            if count.is_multiple_of(10) || count == (total_features as u64 - 1) {
+            if count.is_multiple_of(PROGRESS_UPDATE_INTERVAL)
+                || count == (total_features as u64 - 1)
+            {
                 pb.set_position(count + 1);
             }
 
-            result.ok() // Skip features that fail
+            (col_name.clone(), result)
         })
         .collect();
+
+    let mut categorical_analyses: Vec<IvAnalysis> = Vec::with_capacity(categorical_results.len());
+    for (col_name, result) in categorical_results {
+        match result {
+            Ok(analysis) => categorical_analyses.push(analysis),
+            Err(e) => eprintln!("Warning: Skipped feature '{}': {}", col_name, e),
+        }
+    }
 
     pb.finish_with_message(format!(
         "   [OK] Analyzed {} features ({} numeric, {} categorical)",
@@ -1128,8 +1155,9 @@ fn analyze_categorical_feature(
     let values = string_col.str()?;
 
     // Collect category/target pairs with weighted counts, including MISSING for null values
-    let mut category_stats: std::collections::HashMap<String, (f64, f64, usize)> =
-        std::collections::HashMap::new();
+    // Use BTreeMap for deterministic iteration order to ensure reproducible merging
+    let mut category_stats: std::collections::BTreeMap<String, (f64, f64, usize)> =
+        std::collections::BTreeMap::new();
     // (weighted_events, weighted_non_events, raw_count)
     let mut missing_events: f64 = 0.0;
     let mut missing_non_events: f64 = 0.0;
@@ -1635,20 +1663,34 @@ fn calculate_gini_on_categories_with_missing(
     2.0 * auc - 1.0
 }
 
-/// Find the WoE value for a given feature value
+/// Find the WoE value for a given feature value using binary search.
+///
+/// Bins are sorted by lower_bound. Each bin covers [lower_bound, upper_bound),
+/// except the last bin which uses [lower_bound, +inf).
 fn find_woe_for_value(value: f64, bins: &[WoeBin]) -> f64 {
-    for bin in bins {
-        if value >= bin.lower_bound && value < bin.upper_bound {
-            return bin.woe;
-        }
+    if bins.is_empty() {
+        return 0.0;
     }
-    // Last bin includes upper bound
-    if let Some(last) = bins.last() {
-        if value >= last.lower_bound {
-            return last.woe;
-        }
+
+    // Binary search for the insertion point of `value` among lower_bounds.
+    // partition_point gives us the first index i where bins[i].lower_bound > value,
+    // so the candidate bin is at i-1.
+    let i = bins.partition_point(|bin| bin.lower_bound <= value);
+
+    if i == 0 {
+        // value is below all bin lower_bounds — use first bin as fallback
+        return bins[0].woe;
     }
-    0.0 // Fallback
+
+    let candidate = &bins[i - 1];
+    // The last bin has no upper bound limit; all others require value < upper_bound
+    if i == bins.len() || value < candidate.upper_bound {
+        candidate.woe
+    } else if i < bins.len() {
+        bins[i].woe
+    } else {
+        bins[bins.len() - 1].woe
+    }
 }
 
 /// Calculate weighted AUC using weighted Mann-Whitney U statistic

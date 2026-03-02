@@ -29,6 +29,10 @@ pub fn find_correlated_pairs(
     weights: &[f64],
     weight_column: Option<&str>,
 ) -> Result<Vec<CorrelatedPair>> {
+    if df.height() == 0 {
+        return Ok(Vec::new());
+    }
+
     // Get numeric columns only - cast all to Float64 for correlation calculation
     // Exclude the weight column as it's metadata, not a feature
     let numeric_cols: Vec<String> = df
@@ -50,10 +54,19 @@ pub fn find_correlated_pairs(
     let float_columns: Vec<(String, Column)> = numeric_cols
         .iter()
         .filter_map(|col_name| {
-            df.column(col_name)
-                .ok()
-                .and_then(|col| col.cast(&DataType::Float64).ok())
-                .map(|col| (col_name.clone(), col))
+            match df
+                .column(col_name)
+                .and_then(|col| col.cast(&DataType::Float64))
+            {
+                Ok(col) => Some((col_name.clone(), col)),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Excluding column '{}' from correlation analysis: {}",
+                        col_name, e
+                    );
+                    None
+                }
+            }
         })
         .collect();
 
@@ -172,7 +185,7 @@ fn compute_weighted_pearson_correlation(s1: &Column, s2: &Column, weights: &[f64
     let std_x = (var_x / sum_w).sqrt();
     let std_y = (var_y / sum_w).sqrt();
 
-    if std_x == 0.0 || std_y == 0.0 {
+    if std_x.abs() < f64::EPSILON || std_y.abs() < f64::EPSILON {
         return None;
     }
 
@@ -186,14 +199,14 @@ fn compute_weighted_pearson_correlation(s1: &Column, s2: &Column, weights: &[f64
 /// 2. Compute weighted means and standardize: Z = (X - mean) / std
 /// 3. Compute correlation matrix: R = Z^T * diag(W) * Z / sum(W)
 ///
-/// Returns the correlation matrix and column names, or None if computation fails.
+/// Returns the correlation matrix and column names.
 fn compute_correlation_matrix_fast(
     float_columns: &[(String, Column)],
     weights: &[f64],
-) -> Option<(Mat<f64>, Vec<String>)> {
+) -> Result<(Mat<f64>, Vec<String>)> {
     let n_cols = float_columns.len();
     if n_cols < 2 {
-        return None;
+        anyhow::bail!("Need at least 2 columns to compute a correlation matrix, got {}", n_cols);
     }
 
     // Extract column names
@@ -201,14 +214,21 @@ fn compute_correlation_matrix_fast(
 
     // Get row count from first column
     let n_rows = float_columns[0].1.len();
-    if n_rows == 0 || weights.len() != n_rows {
-        return None;
+    if n_rows == 0 {
+        anyhow::bail!("Cannot compute correlation matrix: dataset has no rows");
+    }
+    if weights.len() != n_rows {
+        anyhow::bail!(
+            "Weight vector length ({}) does not match number of rows ({})",
+            weights.len(),
+            n_rows
+        );
     }
 
     // Compute total weight
     let sum_w: f64 = weights.iter().sum();
     if sum_w <= 0.0 {
-        return None;
+        anyhow::bail!("Cannot compute correlation matrix: total weight is zero or negative");
     }
 
     // Build data matrix and compute weighted statistics in parallel
@@ -290,7 +310,10 @@ fn compute_correlation_matrix_fast(
     let n_valid_cols = valid_cols.len();
 
     if n_valid_cols < 2 {
-        return None;
+        anyhow::bail!(
+            "Need at least 2 non-constant columns for correlation matrix, but only {} valid columns remain after excluding constant/all-null columns",
+            n_valid_cols
+        );
     }
 
     // Build the standardized data matrix Z (n_rows x n_valid_cols)
@@ -305,7 +328,7 @@ fn compute_correlation_matrix_fast(
     // Since we pre-applied sqrt(w)/sqrt(sum_w) to Z, this gives us weighted correlation
     let corr_matrix = z.transpose() * &z;
 
-    Some((corr_matrix, valid_col_names))
+    Ok((corr_matrix, valid_col_names))
 }
 
 /// Extract correlated pairs from correlation matrix
@@ -353,6 +376,10 @@ pub fn find_correlated_pairs_matrix(
     weights: &[f64],
     weight_column: Option<&str>,
 ) -> Result<Vec<CorrelatedPair>> {
+    if df.height() == 0 {
+        return Ok(Vec::new());
+    }
+
     // Get numeric columns only - cast all to Float64 for correlation calculation
     let numeric_cols: Vec<String> = df
         .get_columns()
@@ -373,10 +400,19 @@ pub fn find_correlated_pairs_matrix(
     let float_columns: Vec<(String, Column)> = numeric_cols
         .iter()
         .filter_map(|col_name| {
-            df.column(col_name)
-                .ok()
-                .and_then(|col| col.cast(&DataType::Float64).ok())
-                .map(|col| (col_name.clone(), col))
+            match df
+                .column(col_name)
+                .and_then(|col| col.cast(&DataType::Float64))
+            {
+                Ok(col) => Some((col_name.clone(), col)),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Excluding column '{}' from correlation analysis: {}",
+                        col_name, e
+                    );
+                    None
+                }
+            }
         })
         .collect();
 
@@ -391,8 +427,7 @@ pub fn find_correlated_pairs_matrix(
     pb.set_message(format!("{} columns", float_columns.len()));
 
     // Compute correlation matrix
-    let (corr_matrix, col_names) = compute_correlation_matrix_fast(&float_columns, weights)
-        .ok_or_else(|| anyhow::anyhow!("Failed to compute correlation matrix"))?;
+    let (corr_matrix, col_names) = compute_correlation_matrix_fast(&float_columns, weights)?;
 
     pb.set_message("extracting pairs");
 

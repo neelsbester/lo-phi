@@ -89,6 +89,13 @@ pub enum SasError {
         message: String,
     },
 
+    /// Header contains values that exceed safe processing limits.
+    ///
+    /// This error is returned when header fields (page size, row count, row length)
+    /// contain values that are implausibly large and would cause unsafe memory
+    /// allocation or processing.
+    InvalidHeader(String),
+
     /// I/O error occurred while reading the file.
     ///
     /// This wraps standard I/O errors (e.g., file not found, permission denied,
@@ -162,6 +169,7 @@ impl fmt::Display for SasError {
                     column, row, message
                 )
             }
+            SasError::InvalidHeader(msg) => write!(f, "Invalid SAS7BDAT header: {}", msg),
             SasError::Io(err) => write!(f, "I/O error: {}", err),
         }
     }

@@ -551,13 +551,13 @@ pub fn run_wizard(cli: &Cli) -> Result<WizardResult> {
     // Setup terminal
     let mut terminal = setup_terminal()?;
 
-    // Run wizard loop
-    let result = run_wizard_loop(&mut terminal, &mut wizard)?;
+    // Run wizard loop -- capture result so teardown always runs before propagating error
+    let result = run_wizard_loop(&mut terminal, &mut wizard);
 
     // Teardown terminal
     teardown_terminal();
 
-    Ok(result)
+    result
 }
 
 // ============================================================================

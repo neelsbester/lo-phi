@@ -84,6 +84,14 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
             .progress_chars("=>-"),
     );
 
+    // Sanity-check page_size before allocating to prevent absurd allocations
+    if sas_header.page_size > 268_435_456 {
+        return Err(SasError::InvalidHeader(format!(
+            "Page size {} exceeds 256MB limit",
+            sas_header.page_size
+        )));
+    }
+
     let mut page_buf = vec![0u8; sas_header.page_size as usize];
 
     // First pass: process metadata pages to get column definitions
@@ -135,6 +143,22 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
     if sas_header.row_count == 0 {
         pb.finish_and_clear();
         return Err(SasError::ZeroRows);
+    }
+
+    // Sanity-check row_count and row_length before pre-allocating accumulators
+    if sas_header.row_count > 500_000_000 {
+        pb.finish_and_clear();
+        return Err(SasError::InvalidHeader(format!(
+            "Row count {} exceeds 500M row limit",
+            sas_header.row_count
+        )));
+    }
+    if sas_header.row_length > 1_048_576 {
+        pb.finish_and_clear();
+        return Err(SasError::InvalidHeader(format!(
+            "Row length {} exceeds 1MB per-row limit",
+            sas_header.row_length
+        )));
     }
 
     // Build column metadata
@@ -220,7 +244,12 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
                                     page_index: page_idx,
                                     message: format!("Compressed row RDC: {}", e),
                                 })?,
-                            Compression::None => unreachable!(),
+                            Compression::None => {
+                                return Err(SasError::DecompressionError {
+                                    page_index: page_idx,
+                                    message: "Attempted to decompress row in a non-compressed file".to_string(),
+                                });
+                            }
                         };
 
                     let row_values = extract_row_values(

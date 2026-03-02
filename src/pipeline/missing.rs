@@ -24,7 +24,7 @@ pub fn analyze_missing_values(
 
     let total_weight: f64 = weights.iter().sum();
 
-    if total_weight == 0.0 {
+    if total_weight.abs() < f64::EPSILON {
         anyhow::bail!("Total weight is zero - cannot compute missing ratios");
     }
 

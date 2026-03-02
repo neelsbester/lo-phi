@@ -435,8 +435,14 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                         copy_from_output(&mut output, offset, count, output_length)?;
                     }
 
-                    // This should be unreachable due to cmd being 4 bits (0-15)
-                    _ => unreachable!(),
+                    // cmd is masked to 4 bits (0-15) so this arm is unreachable in practice,
+                    // but returning an error avoids a panic if the invariant is ever broken.
+                    cmd => {
+                        return Err(SasError::DecompressionError {
+                            page_index: 0,
+                            message: format!("Invalid RDC command byte: {}", cmd),
+                        });
+                    }
                 }
             }
         }

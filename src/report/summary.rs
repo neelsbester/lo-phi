@@ -31,17 +31,17 @@ impl ReductionSummary {
     }
 
     pub fn add_missing_drops(&mut self, features: Vec<String>) {
-        self.final_features -= features.len();
+        self.final_features = self.final_features.saturating_sub(features.len());
         self.dropped_missing = features;
     }
 
     pub fn add_gini_drops(&mut self, features: Vec<String>) {
-        self.final_features -= features.len();
+        self.final_features = self.final_features.saturating_sub(features.len());
         self.dropped_gini = features;
     }
 
     pub fn add_correlation_drops(&mut self, features: Vec<String>) {
-        self.final_features -= features.len();
+        self.final_features = self.final_features.saturating_sub(features.len());
         self.dropped_correlation = features;
     }
 
@@ -207,5 +207,62 @@ impl ReductionSummary {
         for line in timing_table.to_string().lines() {
             println!("    {}", line);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_initialises_correctly() {
+        let summary = ReductionSummary::new(10);
+        assert_eq!(summary.initial_features, 10);
+        assert_eq!(summary.final_features, 10);
+        assert!(summary.dropped_missing.is_empty());
+        assert!(summary.dropped_gini.is_empty());
+        assert!(summary.dropped_correlation.is_empty());
+    }
+
+    #[test]
+    fn test_add_missing_drops_decrements_final_features() {
+        let mut summary = ReductionSummary::new(10);
+        summary.add_missing_drops(vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(summary.final_features, 8);
+        assert_eq!(summary.dropped_missing.len(), 2);
+    }
+
+    #[test]
+    fn test_add_gini_drops_decrements_final_features() {
+        let mut summary = ReductionSummary::new(10);
+        summary.add_gini_drops(vec!["c".to_string()]);
+        assert_eq!(summary.final_features, 9);
+        assert_eq!(summary.dropped_gini.len(), 1);
+    }
+
+    #[test]
+    fn test_add_correlation_drops_decrements_final_features() {
+        let mut summary = ReductionSummary::new(10);
+        summary.add_correlation_drops(vec!["d".to_string(), "e".to_string(), "f".to_string()]);
+        assert_eq!(summary.final_features, 7);
+        assert_eq!(summary.dropped_correlation.len(), 3);
+    }
+
+    #[test]
+    fn test_multiple_stages_compound_correctly() {
+        let mut summary = ReductionSummary::new(10);
+        summary.add_missing_drops(vec!["a".to_string()]);     // 10 -> 9
+        summary.add_gini_drops(vec!["b".to_string()]);         // 9 -> 8
+        summary.add_correlation_drops(vec!["c".to_string()]); // 8 -> 7
+        assert_eq!(summary.final_features, 7);
+    }
+
+    #[test]
+    fn test_underflow_protection_does_not_panic() {
+        // Drop more features than exist -- saturating_sub must prevent wrapping.
+        let mut summary = ReductionSummary::new(3);
+        summary.add_missing_drops(vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()]);
+        // saturating_sub(4) on 3 must yield 0, not wrap to usize::MAX
+        assert_eq!(summary.final_features, 0);
     }
 }

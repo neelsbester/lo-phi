@@ -29,9 +29,6 @@ clap = { version = "4.5", features = ["derive"] }
 # Progress bars - beautiful progress indicators
 indicatif = "0.17"
 
-# Interactive prompts - step confirmations and threshold adjustments
-dialoguer = "0.11"
-
 # Table output - display reduction summaries
 comfy-table = "7.1"
 

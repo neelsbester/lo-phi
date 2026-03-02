@@ -285,7 +285,7 @@ impl ReductionReportBuilder {
                         &pair.feature1
                     };
                     let abs_corr = pair.correlation.abs();
-                    if max_corr.is_none() || abs_corr > max_corr.as_ref().unwrap().1 {
+                    if max_corr.as_ref().is_none_or(|(_, prev)| abs_corr > *prev) {
                         max_corr = Some((other.clone(), abs_corr));
                     }
                 }
@@ -708,9 +708,11 @@ pub fn package_reduction_reports(
     zip.finish().context("Failed to finalize zip file")?;
 
     // Remove the individual files after packaging
-    std::fs::remove_file(gini_analysis_path).ok();
-    std::fs::remove_file(reduction_report_path).ok();
-    std::fs::remove_file(csv_path).ok();
+    for path in [gini_analysis_path, reduction_report_path, csv_path] {
+        if let Err(e) = std::fs::remove_file(path) {
+            eprintln!("Warning: Failed to clean up {}: {}", path.display(), e);
+        }
+    }
 
     Ok(())
 }

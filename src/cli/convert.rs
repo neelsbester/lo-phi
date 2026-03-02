@@ -516,7 +516,7 @@ fn run_convert_sas7bdat(input: &Path, output: Option<&Path>) -> Result<()> {
     // Step 1: Load SAS7BDAT file
     let spinner = create_spinner("Loading SAS7BDAT file...");
     let (mut df, rows, cols, _) =
-        load_sas7bdat(input).map_err(|e| anyhow::anyhow!("Failed to load SAS7BDAT file: {}", e))?;
+        load_sas7bdat(input).context("Failed to load SAS7BDAT file")?;
     let load_time = total_start.elapsed();
     spinner.finish_with_message(format!(
         "{} [{}] SAS7BDAT loaded: {} rows x {} columns ({})",

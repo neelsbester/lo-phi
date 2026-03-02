@@ -79,7 +79,7 @@ pub fn get_weights(df: &DataFrame, weight_column: Option<&str>) -> Result<Vec<f6
 
             if null_count > 0 {
                 eprintln!(
-                    "Warning: Weight column '{}' contains {} null value(s), defaulting to weight 1.0",
+                    "Warning: weight column '{}' contains {} null value(s); defaulting to 1.0",
                     col_name, null_count
                 );
             }

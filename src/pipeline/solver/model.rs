@@ -113,7 +113,7 @@ fn solve_with_auto_monotonicity(
         );
 
         if let Ok(res) = result {
-            if best_result.is_none() || res.total_iv > best_result.as_ref().unwrap().total_iv {
+            if best_result.as_ref().is_none_or(|best| res.total_iv > best.total_iv) {
                 best_result = Some(res);
             }
         }

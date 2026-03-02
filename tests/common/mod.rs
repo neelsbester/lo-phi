@@ -28,8 +28,9 @@ pub fn create_test_dataframe() -> DataFrame {
 
 /// Create a larger test DataFrame for performance/stress tests
 pub fn create_large_test_dataframe(rows: usize, cols: usize) -> DataFrame {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+    let mut rng = StdRng::seed_from_u64(42);
 
     let mut columns: Vec<Column> = Vec::with_capacity(cols + 1);
 

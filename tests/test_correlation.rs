@@ -1,7 +1,8 @@
 //! Unit tests for correlation analysis
 
 use lophi::pipeline::{
-    find_correlated_pairs, find_correlated_pairs_matrix, select_features_to_drop, CorrelatedPair,
+    find_correlated_pairs, find_correlated_pairs_auto, find_correlated_pairs_matrix,
+    select_features_to_drop, CorrelatedPair,
 };
 use polars::prelude::*;
 
@@ -443,5 +444,176 @@ fn test_matrix_method_larger_dataset() {
     assert!(
         ac_pair.unwrap().correlation < -0.99,
         "a-c correlation should be ~-1.0"
+    );
+}
+
+// ── T-C2: find_correlated_pairs_auto ───────────────────────────────────────
+
+/// Build a DataFrame with `n` perfectly correlated column pairs plus a target.
+/// Columns are: target, a0, b0, a1, b1, ... where b_i = 2 * a_i.
+fn build_wide_df(n_pairs: usize, rows: usize) -> DataFrame {
+    use polars::prelude::Column;
+    let mut cols: Vec<Column> = Vec::new();
+    let target: Vec<i32> = (0..rows).map(|i| (i % 2) as i32).collect();
+    cols.push(Column::new("target".into(), target));
+
+    for i in 0..n_pairs {
+        let a: Vec<f64> = (0..rows).map(|j| (j + i) as f64).collect();
+        let b: Vec<f64> = a.iter().map(|x| x * 2.0).collect();
+        cols.push(Column::new(format!("a{}", i).into(), a));
+        cols.push(Column::new(format!("b{}", i).into(), b));
+    }
+
+    DataFrame::new(cols).unwrap()
+}
+
+#[test]
+fn test_auto_uses_pairwise_for_small_column_count() {
+    // 3 pairs = 6 numeric cols + target = 7 total numeric (< 15 threshold)
+    // Results should equal pairwise
+    let df = build_wide_df(3, 20);
+    let weights = vec![1.0; 20];
+    let threshold = 0.9;
+
+    let auto_pairs = find_correlated_pairs_auto(&df, threshold, &weights, Some("target")).unwrap();
+    let pw_pairs = find_correlated_pairs(&df, threshold, &weights, Some("target")).unwrap();
+
+    assert_eq!(
+        auto_pairs.len(),
+        pw_pairs.len(),
+        "auto should select pairwise for < 15 cols: auto={}, pairwise={}",
+        auto_pairs.len(),
+        pw_pairs.len()
+    );
+}
+
+#[test]
+fn test_auto_uses_matrix_for_large_column_count() {
+    // 10 pairs = 20 numeric cols + target -> numeric cols >= 15 threshold
+    let df = build_wide_df(10, 30);
+    let weights = vec![1.0; 30];
+    let threshold = 0.9;
+
+    let auto_pairs = find_correlated_pairs_auto(&df, threshold, &weights, Some("target")).unwrap();
+    let mat_pairs =
+        find_correlated_pairs_matrix(&df, threshold, &weights, Some("target")).unwrap();
+
+    assert_eq!(
+        auto_pairs.len(),
+        mat_pairs.len(),
+        "auto should select matrix for >= 15 cols: auto={}, matrix={}",
+        auto_pairs.len(),
+        mat_pairs.len()
+    );
+}
+
+#[test]
+fn test_auto_empty_dataframe_returns_empty() {
+    let df = DataFrame::empty();
+    let weights: Vec<f64> = vec![];
+
+    let result = find_correlated_pairs_auto(&df, 0.9, &weights, None).unwrap();
+    assert!(result.is_empty(), "Empty DataFrame should yield no pairs");
+}
+
+#[test]
+fn test_auto_single_column_returns_empty() {
+    let df = df! {
+        "only_col" => [1.0f64, 2.0, 3.0],
+    }
+    .unwrap();
+    let weights = vec![1.0; 3];
+
+    let result = find_correlated_pairs_auto(&df, 0.9, &weights, None).unwrap();
+    assert!(
+        result.is_empty(),
+        "Single column cannot correlate with itself"
+    );
+}
+
+// ── T-E1: constant column (zero variance) ──────────────────────────────────
+
+#[test]
+fn test_constant_column_does_not_crash() {
+    // A constant column has zero variance; correlation is undefined.
+    // The library should handle this gracefully (return no pair, NaN, or similar).
+    let df = df! {
+        "constant" => [5.0f64; 10],
+        "normal"   => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+    }
+    .unwrap();
+    let weights = vec![1.0; 10];
+
+    // Must not panic
+    let result = find_correlated_pairs(&df, 0.5, &weights, None);
+    assert!(
+        result.is_ok(),
+        "Constant column should be handled gracefully, got: {:?}",
+        result.err()
+    );
+
+    // Constant column should not appear in valid correlated pairs with a finite correlation
+    if let Ok(pairs) = result {
+        for pair in &pairs {
+            let involves_constant =
+                pair.feature1 == "constant" || pair.feature2 == "constant";
+            if involves_constant {
+                assert!(
+                    pair.correlation.is_finite(),
+                    "If constant column appears in a pair, correlation must not be NaN/Inf"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_constant_column_matrix_does_not_crash() {
+    // Need at least 2 non-constant columns so the matrix method has enough
+    // valid columns after filtering out the constant one.
+    let df = df! {
+        "constant" => [5.0f64; 10],
+        "normal_a" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        "normal_b" => [10.0f64, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+    }
+    .unwrap();
+    let weights = vec![1.0; 10];
+
+    let result = find_correlated_pairs_matrix(&df, 0.5, &weights, None);
+    assert!(
+        result.is_ok(),
+        "Matrix method: constant column should be filtered out gracefully"
+    );
+    // The constant column should not appear in any correlated pair
+    let pairs = result.unwrap();
+    for pair in &pairs {
+        assert_ne!(pair.feature1, "constant", "Constant column should be excluded");
+        assert_ne!(pair.feature2, "constant", "Constant column should be excluded");
+    }
+}
+
+// ── T-E5: empty DataFrame in both pairwise and matrix methods ───────────────
+
+#[test]
+fn test_pairwise_empty_dataframe_returns_empty() {
+    let df = DataFrame::empty();
+    let weights: Vec<f64> = vec![];
+
+    let result = find_correlated_pairs(&df, 0.9, &weights, None).unwrap();
+    assert!(
+        result.is_empty(),
+        "pairwise: empty DataFrame should yield no pairs"
+    );
+}
+
+#[test]
+fn test_matrix_empty_dataframe_returns_empty() {
+    let df = DataFrame::empty();
+    let weights: Vec<f64> = vec![];
+
+    let result = find_correlated_pairs_matrix(&df, 0.9, &weights, None).unwrap();
+    assert!(
+        result.is_empty(),
+        "matrix: empty DataFrame should yield no pairs"
     );
 }

@@ -130,18 +130,39 @@ pub enum ConfigResult {
     Quit,
 }
 
+/// Restore terminal to normal state after TUI use
+fn teardown_terminal_menu() {
+    let _ = disable_raw_mode();
+    let _ = stdout().execute(LeaveAlternateScreen);
+}
+
 /// Run the interactive configuration menu
 pub fn run_config_menu(config: Config, columns: Vec<String>) -> Result<ConfigResult> {
+    // Install panic hook for clean terminal restoration
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        teardown_terminal_menu();
+        original_hook(info);
+    }));
+
     // Setup terminal
     enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    if let Err(e) = stdout().execute(EnterAlternateScreen) {
+        teardown_terminal_menu();
+        return Err(e.into());
+    }
+    let mut terminal = match Terminal::new(CrosstermBackend::new(stdout())) {
+        Ok(t) => t,
+        Err(e) => {
+            teardown_terminal_menu();
+            return Err(e.into());
+        }
+    };
 
     let result = run_menu_loop(&mut terminal, config, columns);
 
-    // Restore terminal
-    disable_raw_mode()?;
-    stdout().execute(LeaveAlternateScreen)?;
+    // Restore terminal (always, success or error)
+    teardown_terminal_menu();
 
     result
 }
@@ -159,14 +180,29 @@ pub enum TargetMappingResult {
 /// This is called from main.rs after loading data and analyzing the target column
 /// when the target column is not already binary 0/1.
 pub fn run_target_mapping_selector(unique_values: Vec<String>) -> Result<TargetMappingResult> {
+    // Install panic hook for clean terminal restoration
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        teardown_terminal_menu();
+        original_hook(info);
+    }));
+
     enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    if let Err(e) = stdout().execute(EnterAlternateScreen) {
+        teardown_terminal_menu();
+        return Err(e.into());
+    }
+    let mut terminal = match Terminal::new(CrosstermBackend::new(stdout())) {
+        Ok(t) => t,
+        Err(e) => {
+            teardown_terminal_menu();
+            return Err(e.into());
+        }
+    };
 
     let result = run_mapping_loop(&mut terminal, unique_values);
 
-    disable_raw_mode()?;
-    stdout().execute(LeaveAlternateScreen)?;
+    teardown_terminal_menu();
 
     result
 }
@@ -2268,16 +2304,31 @@ pub fn run_file_selector() -> Result<FileSelectResult> {
     // Get starting directory (home or fallback to current)
     let start_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
 
+    // Install panic hook for clean terminal restoration
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        teardown_terminal_menu();
+        original_hook(info);
+    }));
+
     // Setup terminal
     enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
+    if let Err(e) = stdout().execute(EnterAlternateScreen) {
+        teardown_terminal_menu();
+        return Err(e.into());
+    }
+    let mut terminal = match Terminal::new(CrosstermBackend::new(stdout())) {
+        Ok(t) => t,
+        Err(e) => {
+            teardown_terminal_menu();
+            return Err(e.into());
+        }
+    };
 
     let result = run_file_selector_loop(&mut terminal, start_dir);
 
     // Restore terminal
-    disable_raw_mode()?;
-    stdout().execute(LeaveAlternateScreen)?;
+    teardown_terminal_menu();
 
     result
 }

@@ -33,8 +33,7 @@ pub fn get_column_names(path: &Path) -> Result<Vec<String>> {
         }
         "sas7bdat" => {
             use super::sas7bdat::get_sas7bdat_columns;
-            get_sas7bdat_columns(path)
-                .map_err(|e| anyhow::anyhow!("Failed to read SAS7BDAT columns: {}", e))
+            get_sas7bdat_columns(path).context("Failed to read SAS7BDAT columns")
         }
         _ => anyhow::bail!(
             "Unsupported file format: {}. Supported formats: csv, parquet, sas7bdat",
@@ -156,8 +155,8 @@ pub fn load_dataset_with_progress(
         "parquet" => load_parquet(path)?,
         "sas7bdat" => {
             use super::sas7bdat::load_sas7bdat;
-            let (df, _, _, _) = load_sas7bdat(path)
-                .map_err(|e| anyhow::anyhow!("Failed to load SAS7BDAT file: {}", e))?;
+            let (df, _, _, _) =
+                load_sas7bdat(path).context("Failed to load SAS7BDAT file")?;
             df
         }
         _ => anyhow::bail!(

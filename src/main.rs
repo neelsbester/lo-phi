@@ -34,6 +34,19 @@ use utils::{
     print_info, print_step_header, print_step_time, print_success,
 };
 
+/// Derive an output path from an input path by appending a suffix and changing the extension.
+///
+/// For example, `derive_output_path("/data/foo.csv", "reduced", "parquet")` returns
+/// `/data/foo_reduced.parquet`.
+fn derive_output_path(input: &std::path::Path, suffix: &str, ext: &str) -> std::path::PathBuf {
+    let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let stem = input
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+    parent.join(format!("{}_{}.{}", stem, suffix, ext))
+}
+
 /// Configuration parameters for the reduction pipeline
 struct PipelineConfig {
     /// Input file path
@@ -81,7 +94,10 @@ fn main() -> Result<()> {
     }
 
     // Setup configuration (handles wizard, manual, and CLI-only modes)
-    let mut config = setup_configuration(&cli)?;
+    // Returns None if the user cancelled or a conversion was completed instead
+    let Some(mut config) = setup_configuration(&cli)? else {
+        return Ok(());
+    };
     let input = config.input.clone();
     let output_path = config.output.clone();
 
@@ -102,8 +118,10 @@ fn main() -> Result<()> {
     let (mut df, _initial_features, mut summary) =
         load_and_prepare_dataset(&input, &config.columns_to_drop, config.infer_schema_length)?;
 
-    // Validate target and setup weights
-    let weights = validate_target_and_weights(&df, &mut config, cli.no_confirm)?;
+    // Validate target and setup weights (returns None if user cancelled)
+    let Some(weights) = validate_target_and_weights(&df, &mut config, cli.no_confirm)? else {
+        return Ok(());
+    };
 
     // Parse binning strategy for report
     let binning_strategy: BinningStrategy = config
@@ -150,44 +168,16 @@ fn main() -> Result<()> {
     // Build and export reduction report
     report_builder.set_timing(&summary);
     let report = report_builder.build();
-    let report_path = {
-        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let stem = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        parent.join(format!("{}_reduction_report.json", stem))
-    };
+    let report_path = derive_output_path(&input, "reduction_report", "json");
     export_reduction_report(&report, &report_path)?;
 
     // Also export CSV summary for easy viewing
-    let csv_report_path = {
-        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let stem = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        parent.join(format!("{}_reduction_report.csv", stem))
-    };
+    let csv_report_path = derive_output_path(&input, "reduction_report", "csv");
     export_reduction_report_csv(&report, &csv_report_path)?;
 
     // Package all three reports into a zip file
-    let gini_analysis_path = {
-        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let stem = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        parent.join(format!("{}_gini_analysis.json", stem))
-    };
-    let zip_path = {
-        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let stem = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        parent.join(format!("{}_reduction_report.zip", stem))
-    };
+    let gini_analysis_path = derive_output_path(&input, "gini_analysis", "json");
+    let zip_path = derive_output_path(&input, "reduction_report", "zip");
     package_reduction_reports(
         &gini_analysis_path,
         &report_path,
@@ -210,8 +200,9 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Resolve the input file path and derive the output path
-fn resolve_paths(cli: &Cli) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+/// Resolve the input file path and derive the output path.
+/// Returns `Ok(None)` if the user cancelled file selection.
+fn resolve_paths(cli: &Cli) -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>> {
     let input = match cli.input() {
         Some(path) => path.clone(),
         None => {
@@ -220,18 +211,13 @@ fn resolve_paths(cli: &Cli) -> Result<(std::path::PathBuf, std::path::PathBuf)> 
                 FileSelectResult::Selected(path) => path,
                 FileSelectResult::Cancelled => {
                     println!("Cancelled by user.");
-                    std::process::exit(0);
+                    return Ok(None);
                 }
             }
         }
     };
 
     let output_path = cli.output.clone().unwrap_or_else(|| {
-        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let stem = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
         let extension = input
             .extension()
             .and_then(|e| e.to_str())
@@ -242,19 +228,19 @@ fn resolve_paths(cli: &Cli) -> Result<(std::path::PathBuf, std::path::PathBuf)> 
         } else {
             extension
         };
-        parent.join(format!("{}_reduced.{}", stem, output_ext))
+        derive_output_path(&input, "reduced", output_ext)
     });
 
-    Ok((input, output_path))
+    Ok(Some((input, output_path)))
 }
 
 /// Convert a Config to PipelineConfig
-fn config_to_pipeline_config(cfg: Config) -> Result<PipelineConfig> {
+fn config_to_pipeline_config(cfg: Config) -> Result<Option<PipelineConfig>> {
     let target = cfg
         .target
         .ok_or_else(|| anyhow::anyhow!("Target column must be selected before proceeding"))?;
 
-    Ok(PipelineConfig {
+    Ok(Some(PipelineConfig {
         input: cfg.input,
         output: cfg.output,
         target,
@@ -274,11 +260,12 @@ fn config_to_pipeline_config(cfg: Config) -> Result<PipelineConfig> {
         solver_timeout: cfg.solver_timeout,
         solver_gap: cfg.solver_gap,
         infer_schema_length: cfg.infer_schema_length,
-    })
+    }))
 }
 
-/// Setup configuration from CLI args, wizard, or interactive dashboard
-fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
+/// Setup configuration from CLI args, wizard, or interactive dashboard.
+/// Returns `Ok(None)` if the user cancelled or a conversion was completed.
+fn setup_configuration(cli: &Cli) -> Result<Option<PipelineConfig>> {
     // Build initial target mapping from CLI args if provided
     let cli_target_mapping = match (&cli.event_value, &cli.non_event_value) {
         (Some(event), Some(non_event)) => {
@@ -292,14 +279,16 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
 
     // Branch 1: --no-confirm (CLI-only, existing behavior)
     if cli.no_confirm {
-        let (input, output_path) = resolve_paths(cli)?;
+        let Some((input, output_path)) = resolve_paths(cli)? else {
+            return Ok(None);
+        };
         let target = cli.target.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "Target column is required when using --no-confirm. Use -t/--target to specify."
             )
         })?;
 
-        return Ok(PipelineConfig {
+        return Ok(Some(PipelineConfig {
             input,
             output: output_path,
             target,
@@ -319,12 +308,14 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
             solver_timeout: cli.solver_timeout,
             solver_gap: cli.solver_gap,
             infer_schema_length: cli.infer_schema_length,
-        });
+        }));
     }
 
     // Branch 2: --manual (Dashboard, existing behavior)
     if cli.manual {
-        let (input, output_path) = resolve_paths(cli)?;
+        let Some((input, output_path)) = resolve_paths(cli)? else {
+            return Ok(None);
+        };
         let mut current_input = input;
         let mut columns = get_column_names(&current_input)?;
 
@@ -351,6 +342,9 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
         };
 
         loop {
+            // `run_config_menu` takes owned Config and may return a modified copy via ConfigResult.
+            // The clone is necessary here because the loop may iterate again after a Convert action,
+            // requiring `config` to remain available for the next iteration.
             match run_config_menu(config.clone(), columns.clone())? {
                 ConfigResult::Proceed(boxed_cfg) => {
                     return config_to_pipeline_config(*boxed_cfg);
@@ -382,18 +376,11 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
                     columns = get_column_names(&current_input)?;
 
                     let new_output = {
-                        let parent = current_input
-                            .parent()
-                            .unwrap_or_else(|| std::path::Path::new("."));
-                        let stem = current_input
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("output");
                         let out_ext = current_input
                             .extension()
                             .and_then(|e| e.to_str())
                             .unwrap_or("parquet");
-                        parent.join(format!("{}_reduced.{}", stem, out_ext))
+                        derive_output_path(&current_input, "reduced", out_ext)
                     };
 
                     config = Config {
@@ -423,7 +410,7 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
                 }
                 ConfigResult::Quit => {
                     println!("Cancelled by user.");
-                    std::process::exit(0);
+                    return Ok(None);
                 }
             }
         }
@@ -443,11 +430,11 @@ fn setup_configuration(cli: &Cli) -> Result<PipelineConfig> {
                 "Conversion complete: {}",
                 conversion_config.output.display()
             );
-            std::process::exit(0);
+            Ok(None)
         }
         WizardResult::Quit => {
             println!("Cancelled by user.");
-            std::process::exit(0);
+            Ok(None)
         }
     }
 }
@@ -500,12 +487,13 @@ fn load_and_prepare_dataset(
     Ok((df, initial_features, summary))
 }
 
-/// Validate target column and setup sample weights
+/// Validate target column and setup sample weights.
+/// Returns `Ok(None)` if the user cancelled the target mapping selection.
 fn validate_target_and_weights(
     df: &polars::prelude::DataFrame,
     config: &mut PipelineConfig,
     no_confirm: bool,
-) -> Result<Vec<f64>> {
+) -> Result<Option<Vec<f64>>> {
     // Verify target column exists
     let column_names: Vec<String> = df
         .get_column_names()
@@ -572,7 +560,7 @@ fn validate_target_and_weights(
                     }
                     TargetMappingResult::Cancelled => {
                         println!("Cancelled by user.");
-                        std::process::exit(0);
+                        return Ok(None);
                     }
                 }
             }
@@ -587,7 +575,7 @@ fn validate_target_and_weights(
         );
     }
 
-    Ok(weights)
+    Ok(Some(weights))
 }
 
 /// Run missing value analysis
@@ -617,7 +605,8 @@ fn run_missing_analysis(
             Some(&format!("(>{:.1}%)", config.missing_threshold * 100.0)),
         );
 
-        *df = df.clone().drop_many(&features_to_drop_missing);
+        let taken = std::mem::take(df);
+        *df = taken.drop_many(&features_to_drop_missing);
         summary.add_missing_drops(features_to_drop_missing.clone());
         print_success("Dropped features with high missing values");
     }
@@ -680,14 +669,7 @@ fn run_gini_analysis(
     let features_to_drop_gini = get_low_gini_features(&gini_analyses, config.gini_threshold);
 
     // Export Gini analysis to JSON
-    let gini_output_path = {
-        let parent = input.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let stem = input
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        parent.join(format!("{}_gini_analysis.json", stem))
-    };
+    let gini_output_path = derive_output_path(input, "gini_analysis", "json");
     let export_params = ExportParams {
         input_file: input.to_str().unwrap_or("unknown"),
         target_column: &config.target,
@@ -762,7 +744,8 @@ fn run_correlation_analysis(
             style(features_to_drop_corr.len()).yellow().bold()
         );
 
-        *df = df.clone().drop_many(&features_to_drop_corr);
+        let taken = std::mem::take(df);
+        *df = taken.drop_many(&features_to_drop_corr);
         summary.add_correlation_drops(features_to_drop_corr.clone());
         print_success("Dropped highly correlated features");
     }

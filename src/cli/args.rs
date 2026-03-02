@@ -50,15 +50,15 @@ pub struct Cli {
     pub output: Option<PathBuf>,
 
     /// Missing value threshold - drop features with missing values above this ratio
-    #[arg(long, default_value = "0.3")]
+    #[arg(long, default_value = "0.3", value_parser = validate_threshold)]
     pub missing_threshold: f64,
 
     /// Correlation threshold - drop one feature from pairs with correlation above this value
-    #[arg(long, default_value = "0.40")]
+    #[arg(long, default_value = "0.40", value_parser = validate_threshold)]
     pub correlation_threshold: f64,
 
     /// Gini threshold - drop features with Gini below this value (calculated via WoE binning)
-    #[arg(long, default_value = "0.05")]
+    #[arg(long, default_value = "0.05", value_parser = validate_threshold)]
     pub gini_threshold: f64,
 
     /// Number of bins for Gini/IV calculation
@@ -189,6 +189,20 @@ impl Cli {
         let stem = input.file_stem().and_then(|s| s.to_str())?;
         Some(parent.join(format!("{}_gini_analysis.json", stem)))
     }
+}
+
+/// Validator for threshold parameters (missing, gini, correlation)
+fn validate_threshold(s: &str) -> Result<f64, String> {
+    let val: f64 = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
+    if !(0.0..=1.0).contains(&val) {
+        return Err(format!(
+            "Threshold must be between 0.0 and 1.0, got {}",
+            val
+        ));
+    }
+    Ok(val)
 }
 
 /// Validator for cart_min_bin_pct parameter
