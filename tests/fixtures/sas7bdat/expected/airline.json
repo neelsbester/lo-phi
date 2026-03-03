@@ -1,0 +1,27 @@
+{
+  "rows": 32,
+  "columns": [
+    "YEAR",
+    "Y",
+    "W",
+    "R",
+    "L",
+    "K"
+  ],
+  "dtypes": {
+    "YEAR": "float64",
+    "Y": "float64",
+    "W": "float64",
+    "R": "float64",
+    "L": "float64",
+    "K": "float64"
+  },
+  "null_counts": {
+    "YEAR": 0,
+    "Y": 0,
+    "W": 0,
+    "R": 0,
+    "L": 0,
+    "K": 0
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "rows": 2,
+  "columns": [
+    "datecol",
+    "datetimecol"
+  ],
+  "dtypes": {
+    "datecol": "datetime64[s]",
+    "datetimecol": "datetime64[ms]"
+  },
+  "null_counts": {
+    "datecol": 1,
+    "datetimecol": 1
+  }
+}

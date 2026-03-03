@@ -1,0 +1,4 @@
+{
+  "error": "EmptyDataError",
+  "message": "No columns to parse from file"
+}

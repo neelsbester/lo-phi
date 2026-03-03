@@ -358,6 +358,12 @@ fn process_columntext_subheader(
 }
 
 /// Processes ColumnName subheader (contains name entries).
+///
+/// Entries start at offset `int_len + 8` (signature + metadata header) from the
+/// subheader start. The entry count uses the pandas formula:
+///   `(subheader_length - 2 * int_len - 12) // 8`
+/// This differs from a naive `entries_data.len() / 8` by excluding the trailing
+/// `(int_len + 4)` padding bytes that otherwise produce phantom entries.
 fn process_columnname_subheader(
     data: &[u8],
     is_64bit: bool,
@@ -365,17 +371,34 @@ fn process_columnname_subheader(
     state: &mut SubheaderState,
 ) -> Result<(), SasError> {
     let entry_size = 8; // Same for both 32-bit and 64-bit
-                        // Entries start after signature (4/8 bytes) + 8 bytes of metadata
-    let entries_start = if is_64bit { 16 } else { 12 };
+    let int_len: usize = if is_64bit { 8 } else { 4 };
+    // Entries follow the subheader signature (int_len bytes) + 8-byte metadata header.
+    let entries_start = int_len + 8;
 
     if data.len() < entries_start {
         return Ok(());
     }
 
     let entries_data = &data[entries_start..];
-    let num_entries = entries_data.len() / entry_size;
 
-    for i in 0..num_entries {
+    // Pandas formula: count = (subheader_length - 2 * int_len - 12) // 8
+    // Excludes trailing (int_len + 4) bytes of padding beyond the entry table.
+    let num_entries = if data.len() >= 2 * int_len + 12 {
+        (data.len() - 2 * int_len - 12) / entry_size
+    } else {
+        0
+    };
+
+    // Additional bounds check against known column count to prevent phantom entries
+    let max_entries = if state.column_count_from_size > 0 {
+        let remaining =
+            state.column_count_from_size as usize - state.column_name_entries.len();
+        num_entries.min(remaining)
+    } else {
+        num_entries
+    };
+
+    for i in 0..max_entries {
         let entry_offset = i * entry_size;
         if entry_offset + entry_size > entries_data.len() {
             break;
@@ -397,23 +420,46 @@ fn process_columnname_subheader(
 }
 
 /// Processes ColumnAttributes subheader (contains type, offset, length).
+///
+/// Entries start at offset `int_len + 8` from the subheader start. Entry count
+/// uses the pandas formula: `(subheader_length - 2 * int_len - 12) // (int_len + 8)`
+/// This prevents phantom entries from trailing padding beyond the entry table.
+/// entry_size is `int_len + 8`: 12 for 32-bit, 16 for 64-bit.
 fn process_columnattrs_subheader(
     data: &[u8],
     is_64bit: bool,
     is_little_endian: bool,
     state: &mut SubheaderState,
 ) -> Result<(), SasError> {
-    let entry_size = if is_64bit { 16 } else { 12 };
-    let entries_start = if is_64bit { 16 } else { 12 };
+    let int_len: usize = if is_64bit { 8 } else { 4 };
+    let entry_size = int_len + 8; // 12 for 32-bit, 16 for 64-bit
+    // Entries follow the subheader signature (int_len bytes) + 8-byte metadata header.
+    let entries_start = int_len + 8;
 
     if data.len() < entries_start {
         return Ok(());
     }
 
     let entries_data = &data[entries_start..];
-    let num_entries = entries_data.len() / entry_size;
 
-    for i in 0..num_entries {
+    // Pandas formula: count = (subheader_length - 2 * int_len - 12) // (int_len + 8)
+    // Excludes trailing padding bytes beyond the entry table.
+    let num_entries = if data.len() >= 2 * int_len + 12 {
+        (data.len() - 2 * int_len - 12) / entry_size
+    } else {
+        0
+    };
+
+    // Bounds-check against known column count to prevent phantom entries
+    let max_entries = if state.column_count_from_size > 0 {
+        let remaining =
+            state.column_count_from_size as usize - state.column_attr_entries.len();
+        num_entries.min(remaining)
+    } else {
+        num_entries
+    };
+
+    for i in 0..max_entries {
         let entry_offset = i * entry_size;
         if entry_offset + entry_size > entries_data.len() {
             break;
@@ -453,46 +499,56 @@ fn process_columnattrs_subheader(
 }
 
 /// Processes FormatAndLabel subheader (contains format and label text references).
+///
+/// Each FormatAndLabel subheader describes exactly ONE column — there is no entry
+/// table. The SAS runtime emits one subheader invocation per column.
+///
+/// Field offsets verified against pandas `sas_constants.py` and
+/// `_process_format_subheader()`:
+///   pandas base formula: `offset + const.FIELD_offset + 3 * int_len`
+///   where the constants are: format_text_sub_index=22, format_offset=24,
+///   format_length=26, label_text_sub_index=28, label_offset=30, label_length=32.
+///
+/// Resolved absolute offsets from subheader start:
+/// - 32-bit (int_len=4): 34, 36, 38, 40, 42, 44
+/// - 64-bit (int_len=8): 46, 48, 50, 52, 54, 56
 fn process_format_subheader(
     data: &[u8],
     is_64bit: bool,
     is_little_endian: bool,
     state: &mut SubheaderState,
 ) -> Result<(), SasError> {
-    let entry_size = if is_64bit { 52 } else { 46 };
-    let entries_start = if is_64bit { 16 } else { 12 };
-
-    if data.len() < entries_start {
+    // Minimum subheader length needed to read all six u16 fields.
+    let min_len: usize = if is_64bit { 58 } else { 46 };
+    if data.len() < min_len {
         return Ok(());
     }
 
-    let entries_data = &data[entries_start..];
-    let num_entries = entries_data.len() / entry_size;
+    // Offsets from subheader start: base + 3 * int_len
+    // where base constants are 22/24/26/28/30/32 and int_len is 4 (32-bit) or 8 (64-bit).
+    let int_len: usize = if is_64bit { 8 } else { 4 };
+    let format_text_index_off = 22 + 3 * int_len;
+    let format_offset_off = 24 + 3 * int_len;
+    let format_length_off = 26 + 3 * int_len;
+    let label_text_index_off = 28 + 3 * int_len;
+    let label_offset_off = 30 + 3 * int_len;
+    let label_length_off = 32 + 3 * int_len;
 
-    for i in 0..num_entries {
-        let entry_offset = i * entry_size;
-        if entry_offset + entry_size > entries_data.len() {
-            break;
-        }
+    let format_text_index = read_u16_from_slice(data, format_text_index_off, is_little_endian);
+    let format_offset = read_u16_from_slice(data, format_offset_off, is_little_endian);
+    let format_length = read_u16_from_slice(data, format_length_off, is_little_endian);
+    let label_text_index = read_u16_from_slice(data, label_text_index_off, is_little_endian);
+    let label_offset = read_u16_from_slice(data, label_offset_off, is_little_endian);
+    let label_length = read_u16_from_slice(data, label_length_off, is_little_endian);
 
-        let entry = &entries_data[entry_offset..entry_offset + entry_size];
-
-        let format_text_index = read_u16_from_slice(entry, 0, is_little_endian);
-        let format_offset = read_u16_from_slice(entry, 2, is_little_endian);
-        let format_length = read_u16_from_slice(entry, 4, is_little_endian);
-        let label_text_index = read_u16_from_slice(entry, 6, is_little_endian);
-        let label_offset = read_u16_from_slice(entry, 8, is_little_endian);
-        let label_length = read_u16_from_slice(entry, 10, is_little_endian);
-
-        state.column_format_entries.push(ColumnFormatEntry {
-            format_text_index,
-            format_offset,
-            format_length,
-            label_text_index,
-            label_offset,
-            label_length,
-        });
-    }
+    state.column_format_entries.push(ColumnFormatEntry {
+        format_text_index,
+        format_offset,
+        format_length,
+        label_text_index,
+        label_offset,
+        label_length,
+    });
 
     Ok(())
 }
@@ -653,5 +709,176 @@ mod tests {
 
         assert_eq!(read_u64_from_slice(&data, 0, true), 0xF0DEBC9A78563412);
         assert_eq!(read_u64_from_slice(&data, 0, false), 0x123456789ABCDEF0);
+    }
+
+    /// Verify that process_format_subheader reads a single entry at the correct
+    /// fixed offsets (per pandas sas_constants.py formula: base + 3 * int_len).
+    /// For 32-bit: offsets 34/36/38/40/42/44. For 64-bit: 46/48/50/52/54/56.
+    #[test]
+    fn test_format_subheader_32bit_single_entry() {
+        let mut state = SubheaderState::default();
+        // Minimum size to hold all fields: 46 bytes
+        let mut data = vec![0u8; 60];
+        // Write known values at 32-bit offsets
+        // format_text_index @ 34: 0x0001
+        data[34] = 0x01;
+        data[35] = 0x00;
+        // format_offset @ 36: 0x0010
+        data[36] = 0x10;
+        data[37] = 0x00;
+        // format_length @ 38: 0x0005
+        data[38] = 0x05;
+        data[39] = 0x00;
+        // label_text_index @ 40: 0x0002
+        data[40] = 0x02;
+        data[41] = 0x00;
+        // label_offset @ 42: 0x0020
+        data[42] = 0x20;
+        data[43] = 0x00;
+        // label_length @ 44: 0x0008
+        data[44] = 0x08;
+        data[45] = 0x00;
+
+        process_format_subheader(&data, false, true, &mut state).unwrap();
+
+        assert_eq!(state.column_format_entries.len(), 1);
+        let entry = &state.column_format_entries[0];
+        assert_eq!(entry.format_text_index, 1);
+        assert_eq!(entry.format_offset, 0x10);
+        assert_eq!(entry.format_length, 5);
+        assert_eq!(entry.label_text_index, 2);
+        assert_eq!(entry.label_offset, 0x20);
+        assert_eq!(entry.label_length, 8);
+    }
+
+    #[test]
+    fn test_format_subheader_64bit_single_entry() {
+        let mut state = SubheaderState::default();
+        // Minimum size to hold all fields: 58 bytes
+        let mut data = vec![0u8; 70];
+        // Write known values at 64-bit offsets (46/48/50/52/54/56)
+        data[46] = 0x03; // format_text_index
+        data[48] = 0x15; // format_offset
+        data[50] = 0x07; // format_length
+        data[52] = 0x04; // label_text_index
+        data[54] = 0x30; // label_offset
+        data[56] = 0x0C; // label_length
+
+        process_format_subheader(&data, true, true, &mut state).unwrap();
+
+        assert_eq!(state.column_format_entries.len(), 1);
+        let entry = &state.column_format_entries[0];
+        assert_eq!(entry.format_text_index, 3);
+        assert_eq!(entry.format_offset, 0x15);
+        assert_eq!(entry.format_length, 7);
+        assert_eq!(entry.label_text_index, 4);
+        assert_eq!(entry.label_offset, 0x30);
+        assert_eq!(entry.label_length, 0x0C);
+    }
+
+    /// A second call must produce a second entry (one per subheader invocation).
+    #[test]
+    fn test_format_subheader_called_twice_produces_two_entries() {
+        let mut state = SubheaderState::default();
+        let data = vec![0u8; 60];
+
+        process_format_subheader(&data, false, true, &mut state).unwrap();
+        process_format_subheader(&data, false, true, &mut state).unwrap();
+
+        assert_eq!(state.column_format_entries.len(), 2);
+    }
+
+    /// Verify column name over-counting fix: pandas formula gives
+    /// (subheader_length - 2*int_len - 12) // 8 entries.
+    ///
+    /// For 32-bit (int_len=4): entries start at offset 12 (4+8), count formula
+    /// is (length - 20) // 8. A 28-byte subheader contains 1 valid 8-byte entry
+    /// at offset 12 followed by 8 bytes of trailing padding (offsets 20-27).
+    /// The old code would count both the entry AND the padding as entries (2 total);
+    /// the fixed formula gives (28 - 20) / 8 = 1.
+    #[test]
+    fn test_columnname_no_phantom_entries_32bit() {
+        let mut state = SubheaderState::default();
+        // 28 bytes total: 12-byte header prefix + 1 valid 8-byte entry + 8 bytes padding
+        // Count formula: (28 - 2*4 - 12) / 8 = (28 - 20) / 8 = 1 entry
+        let mut data = vec![0u8; 28];
+        // Entry at offset 12 (entries_start = int_len + 8 = 4 + 8 = 12)
+        data[12] = 0x01; // text_index lo
+        data[13] = 0x00;
+        data[14] = 0x05; // name offset lo
+        data[15] = 0x00;
+        data[16] = 0x04; // name length lo
+        data[17] = 0x00;
+        // bytes 18-19: remaining entry bytes (unused fields)
+        // bytes 20-27: trailing padding (should NOT be parsed as entry)
+
+        process_columnname_subheader(&data, false, true, &mut state).unwrap();
+
+        assert_eq!(state.column_name_entries.len(), 1, "Expected exactly 1 entry");
+        assert_eq!(state.column_name_entries[0].text_index, 1);
+        assert_eq!(state.column_name_entries[0].offset, 5);
+        assert_eq!(state.column_name_entries[0].length, 4);
+    }
+
+    /// Verify column attrs over-counting fix for 32-bit: pandas formula gives
+    /// (subheader_length - 2*int_len - 12) // (int_len + 8) entries.
+    ///
+    /// For 32-bit (int_len=4, entry_size=12): entries start at offset 12, count
+    /// formula is (length - 20) // 12. A 32-byte subheader contains 1 valid
+    /// 12-byte entry at offset 12 followed by 8 bytes of trailing padding.
+    /// The old code counted (32 - 12) / 12 = 1 entry (coincidentally correct here),
+    /// but for subheaders with different padding the count can differ.
+    #[test]
+    fn test_columnattrs_no_phantom_entries_32bit() {
+        let mut state = SubheaderState::default();
+        // 32 bytes total: 12-byte prefix + 1 valid 12-byte entry + 8 bytes padding
+        // Count formula: (32 - 2*4 - 12) / 12 = (32 - 20) / 12 = 1 entry
+        let mut data = vec![0u8; 32];
+        // Entry at offset 12: col_offset=0x0001, width=8, type=1 (Numeric)
+        data[12] = 0x01; // col offset lo byte
+        data[13] = 0x00;
+        data[14] = 0x00;
+        data[15] = 0x00;
+        data[16] = 0x08; // width lo byte (u32)
+        data[17] = 0x00;
+        data[18] = 0x00;
+        data[19] = 0x00;
+        // bytes 20-21: unknown
+        // byte 22: type = 1 (Numeric) — offset within entry: 22 - 12 = 10
+        data[22] = 0x01;
+        // byte 23: padding
+
+        process_columnattrs_subheader(&data, false, true, &mut state).unwrap();
+
+        assert_eq!(state.column_attr_entries.len(), 1, "Expected exactly 1 entry");
+        assert_eq!(state.column_attr_entries[0].offset, 1);
+        assert_eq!(state.column_attr_entries[0].length, 8);
+        assert!(matches!(
+            state.column_attr_entries[0].data_type,
+            SasDataType::Numeric
+        ));
+    }
+
+    /// Verify bounds check against column_count_from_size limits extra entries.
+    /// For 32-bit: entries start at offset 12, count formula (36-20)/8 = 2.
+    /// With column_count_from_size=1, only the first entry should be returned.
+    #[test]
+    fn test_columnname_capped_by_column_count() {
+        let mut state = SubheaderState {
+            column_count_from_size: 1, // Only 1 column expected
+            ..SubheaderState::default()
+        };
+        // 36 bytes: 12 prefix + 2 valid 8-byte entries (count formula: (36-20)/8=2)
+        let mut data = vec![0u8; 36];
+        data[12] = 0x01; // first entry text_index at offset 12
+        data[20] = 0x02; // second entry text_index at offset 20
+
+        process_columnname_subheader(&data, false, true, &mut state).unwrap();
+
+        assert_eq!(
+            state.column_name_entries.len(),
+            1,
+            "Should be capped at column_count_from_size=1"
+        );
     }
 }

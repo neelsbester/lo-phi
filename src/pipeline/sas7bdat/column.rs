@@ -117,36 +117,33 @@ fn extract_text_from_blocks(
 
 /// Decodes bytes to string using the specified encoding.
 ///
+/// Uses `encoding_rs` for all non-UTF-8 encodings, consistent with how
+/// `data.rs` decodes character column values.
+///
 /// # Arguments
 /// * `bytes` - Raw bytes to decode
 /// * `encoding` - Character encoding
 ///
 /// # Returns
-/// * `String` - Decoded text (lossy conversion for unsupported encodings)
+/// * `String` - Decoded text, trimmed of surrounding whitespace
 fn decode_text(bytes: &[u8], encoding: &SasEncoding) -> String {
-    match encoding {
-        SasEncoding::Utf8 => String::from_utf8_lossy(bytes).trim().to_string(),
-        SasEncoding::Ascii => String::from_utf8_lossy(bytes).trim().to_string(),
-        SasEncoding::Latin1 => decode_latin1(bytes).trim().to_string(),
-        SasEncoding::Windows1252 => decode_windows1252(bytes).trim().to_string(),
-        SasEncoding::Other { .. } => String::from_utf8_lossy(bytes).trim().to_string(),
-        SasEncoding::Unspecified => decode_latin1(bytes).trim().to_string(), // Default to Latin-1
-    }
-}
-
-/// Decodes Latin-1 (ISO-8859-1) bytes to String.
-fn decode_latin1(bytes: &[u8]) -> String {
-    bytes.iter().map(|&b| b as char).collect()
-}
-
-/// Decodes Windows-1252 bytes to String.
-///
-/// For simplicity, we use Latin-1 decoding as a fallback. A full Windows-1252
-/// implementation would map the 0x80-0x9F range to specific Unicode characters.
-fn decode_windows1252(bytes: &[u8]) -> String {
-    // Simplified: treat as Latin-1 for now
-    // TODO: Full Windows-1252 mapping for 0x80-0x9F range
-    decode_latin1(bytes)
+    let decoded = match encoding {
+        SasEncoding::Utf8 | SasEncoding::Ascii => {
+            String::from_utf8_lossy(bytes).into_owned()
+        }
+        SasEncoding::Latin1 | SasEncoding::Unspecified | SasEncoding::Windows1252 => {
+            // Windows-1252 is a superset of Latin-1; use it for all three variants
+            encoding_rs::WINDOWS_1252.decode(bytes).0.into_owned()
+        }
+        SasEncoding::Other { name, .. } => {
+            if let Some(enc) = encoding_rs::Encoding::for_label(name.as_bytes()) {
+                enc.decode(bytes).0.into_owned()
+            } else {
+                String::from_utf8_lossy(bytes).into_owned()
+            }
+        }
+    };
+    decoded.trim().to_string()
 }
 
 /// Infers the Polars output type based on SAS format string and data type.
@@ -161,9 +158,11 @@ fn decode_windows1252(bytes: &[u8]) -> String {
 /// # Format Parsing Rules
 /// - Strip trailing digits and '.' (e.g., DATE9. → DATE)
 /// - Case-insensitive matching
-/// - DATE, DDMMYY, MMDDYY, YYMMDD → Date
-/// - DATETIME → Datetime
-/// - TIME → Time
+/// - Date formats: DATE, DDMMYY, MMDDYY, YYMMDD, YYMMDDD, JULIAN, MONYY, YYMON,
+///   MONNAME, WEEKDATE, WEEKDAY, QTR, YEAR, E8601DA, B8601DA, EURDFDD
+/// - Datetime formats: DATETIME, DTDATE, DTMONYY, DTWKDATX, E8601DT, B8601DT,
+///   NLDATM, DATEAMPM; also any format starting with "DT"
+/// - Time formats: TIME, TOD, HHMM, MMSS, E8601TM, B8601TM, TIMEAMPM, HOUR
 /// - Character type → Utf8
 /// - Everything else for Numeric → Float64
 fn infer_polars_type(format: &str, data_type: &super::SasDataType) -> PolarsOutputType {
@@ -180,41 +179,73 @@ fn infer_polars_type(format: &str, data_type: &super::SasDataType) -> PolarsOutp
         .trim_end_matches(|c: char| c.is_ascii_digit() || c == '.')
         .to_uppercase();
 
-    // Match format to output type
     if clean_format.is_empty() {
         return PolarsOutputType::Float64;
     }
 
-    if clean_format == "DATE"
-        || clean_format == "DDMMYY"
-        || clean_format == "MMDDYY"
-        || clean_format == "YYMMDD"
-        || clean_format == "YYMMDDD"
-        || clean_format == "JULIAN"
+    // --- Datetime formats (check before Date to avoid "DATETIME" matching Date) ---
+    const DATETIME_FORMATS: &[&str] = &[
+        "DATETIME",
+        "DTDATE",
+        "DTMONYY",
+        "DTWKDATX",
+        "E8601DT",
+        "B8601DT",
+        "NLDATM",
+        "DATEAMPM",
+    ];
+    // Any format starting with "DT" is a datetime
+    if clean_format.starts_with("DT")
+        || DATETIME_FORMATS.contains(&clean_format.as_str())
     {
-        PolarsOutputType::Date
-    } else if clean_format == "DATETIME" {
-        PolarsOutputType::Datetime
-    } else if clean_format == "TIME" {
-        PolarsOutputType::Time
-    } else {
-        PolarsOutputType::Float64
+        return PolarsOutputType::Datetime;
     }
+
+    // --- Date formats ---
+    const DATE_FORMATS: &[&str] = &[
+        "DATE",
+        "DDMMYY",
+        "MMDDYY",
+        "YYMMDD",
+        "YYMMDDD",
+        "JULIAN",
+        "MONYY",
+        "YYMON",
+        "MONNAME",
+        "WEEKDATE",
+        "WEEKDAY",
+        "QTR",
+        "YEAR",
+        "E8601DA",
+        "B8601DA",
+        "EURDFDD",
+    ];
+    if DATE_FORMATS.contains(&clean_format.as_str()) {
+        return PolarsOutputType::Date;
+    }
+
+    // --- Time formats ---
+    const TIME_FORMATS: &[&str] = &[
+        "TIME",
+        "TOD",
+        "HHMM",
+        "MMSS",
+        "E8601TM",
+        "B8601TM",
+        "TIMEAMPM",
+        "HOUR",
+    ];
+    if TIME_FORMATS.contains(&clean_format.as_str()) {
+        return PolarsOutputType::Time;
+    }
+
+    PolarsOutputType::Float64
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::SasDataType;
     use super::*;
-
-    #[test]
-    fn test_decode_latin1() {
-        let bytes = vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
-        assert_eq!(decode_latin1(&bytes), "Hello");
-
-        let bytes = vec![0xE9]; // é in Latin-1
-        assert_eq!(decode_latin1(&bytes), "é");
-    }
 
     #[test]
     fn test_decode_text_utf8() {
@@ -224,54 +255,124 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_text_latin1() {
-        let bytes = vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
+    fn test_decode_text_ascii() {
+        let bytes = b"Hello ASCII";
+        let result = decode_text(bytes, &SasEncoding::Ascii);
+        assert_eq!(result, "Hello ASCII");
+    }
+
+    #[test]
+    fn test_decode_text_latin1_via_encoding_rs() {
+        // 0xE9 = é in Latin-1 / Windows-1252
+        let bytes = vec![0x48u8, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
         let result = decode_text(&bytes, &SasEncoding::Latin1);
+        assert_eq!(result, "Hello");
+
+        // é encoded as Latin-1 byte 0xE9
+        let bytes = vec![0xE9u8];
+        let result = decode_text(&bytes, &SasEncoding::Latin1);
+        assert_eq!(result, "é");
+    }
+
+    #[test]
+    fn test_decode_text_windows1252() {
+        // 0x80 = € in Windows-1252 (not valid in Latin-1)
+        let bytes = vec![0x80u8];
+        let result = decode_text(&bytes, &SasEncoding::Windows1252);
+        assert_eq!(result, "€");
+    }
+
+    #[test]
+    fn test_decode_text_unspecified_defaults_to_windows1252() {
+        // Same as Windows-1252 for unspecified
+        let bytes = vec![0x80u8];
+        let result = decode_text(&bytes, &SasEncoding::Unspecified);
+        assert_eq!(result, "€");
+    }
+
+    #[test]
+    fn test_decode_text_trims_whitespace() {
+        let bytes = b"  Hello  ";
+        let result = decode_text(bytes, &SasEncoding::Utf8);
         assert_eq!(result, "Hello");
     }
 
     #[test]
     fn test_infer_polars_type_date_formats() {
+        for fmt in &[
+            "DATE9.",
+            "DDMMYY10.",
+            "MMDDYY8.",
+            "YYMMDD.",
+            "JULIAN.",
+            "MONYY5.",
+            "YYMON.",
+            "MONNAME.",
+            "WEEKDATE.",
+            "WEEKDAY.",
+            "QTR.",
+            "YEAR.",
+            "E8601DA.",
+            "B8601DA.",
+            "EURDFDD.",
+        ] {
+            assert_eq!(
+                infer_polars_type(fmt, &SasDataType::Numeric),
+                PolarsOutputType::Date,
+                "Expected Date for format {fmt}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_infer_polars_type_datetime_formats() {
+        for fmt in &[
+            "DATETIME20.",
+            "DATETIME.",
+            "DTDATE.",
+            "DTMONYY.",
+            "DTWKDATX.",
+            "E8601DT.",
+            "B8601DT.",
+            "NLDATM.",
+            "DATEAMPM.",
+        ] {
+            assert_eq!(
+                infer_polars_type(fmt, &SasDataType::Numeric),
+                PolarsOutputType::Datetime,
+                "Expected Datetime for format {fmt}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_infer_polars_type_dt_prefix_is_datetime() {
+        // Any DT-prefixed format should be Datetime
         assert_eq!(
-            infer_polars_type("DATE9.", &SasDataType::Numeric),
-            PolarsOutputType::Date
-        );
-        assert_eq!(
-            infer_polars_type("DDMMYY10.", &SasDataType::Numeric),
-            PolarsOutputType::Date
-        );
-        assert_eq!(
-            infer_polars_type("MMDDYY8.", &SasDataType::Numeric),
-            PolarsOutputType::Date
-        );
-        assert_eq!(
-            infer_polars_type("YYMMDD.", &SasDataType::Numeric),
-            PolarsOutputType::Date
+            infer_polars_type("DTCUSTOM.", &SasDataType::Numeric),
+            PolarsOutputType::Datetime
         );
     }
 
     #[test]
-    fn test_infer_polars_type_datetime() {
-        assert_eq!(
-            infer_polars_type("DATETIME20.", &SasDataType::Numeric),
-            PolarsOutputType::Datetime
-        );
-        assert_eq!(
-            infer_polars_type("DATETIME.", &SasDataType::Numeric),
-            PolarsOutputType::Datetime
-        );
-    }
-
-    #[test]
-    fn test_infer_polars_type_time() {
-        assert_eq!(
-            infer_polars_type("TIME8.", &SasDataType::Numeric),
-            PolarsOutputType::Time
-        );
-        assert_eq!(
-            infer_polars_type("TIME.", &SasDataType::Numeric),
-            PolarsOutputType::Time
-        );
+    fn test_infer_polars_type_time_formats() {
+        for fmt in &[
+            "TIME8.",
+            "TIME.",
+            "TOD.",
+            "HHMM.",
+            "MMSS.",
+            "E8601TM.",
+            "B8601TM.",
+            "TIMEAMPM.",
+            "HOUR.",
+        ] {
+            assert_eq!(
+                infer_polars_type(fmt, &SasDataType::Numeric),
+                PolarsOutputType::Time,
+                "Expected Time for format {fmt}"
+            );
+        }
     }
 
     #[test]
@@ -310,6 +411,14 @@ mod tests {
         );
         assert_eq!(
             infer_polars_type("DaTeTiMe20.", &SasDataType::Numeric),
+            PolarsOutputType::Datetime
+        );
+        assert_eq!(
+            infer_polars_type("monyy5.", &SasDataType::Numeric),
+            PolarsOutputType::Date
+        );
+        assert_eq!(
+            infer_polars_type("e8601dt.", &SasDataType::Numeric),
             PolarsOutputType::Datetime
         );
     }

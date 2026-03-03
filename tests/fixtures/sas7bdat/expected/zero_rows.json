@@ -1,0 +1,15 @@
+{
+  "rows": 0,
+  "columns": [
+    "char_field",
+    "num_field"
+  ],
+  "dtypes": {
+    "char_field": "str",
+    "num_field": "float64"
+  },
+  "null_counts": {
+    "char_field": 0,
+    "num_field": 0
+  }
+}

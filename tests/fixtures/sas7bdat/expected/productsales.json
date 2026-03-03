@@ -1,0 +1,39 @@
+{
+  "rows": 1440,
+  "columns": [
+    "ACTUAL",
+    "PREDICT",
+    "COUNTRY",
+    "REGION",
+    "DIVISION",
+    "PRODTYPE",
+    "PRODUCT",
+    "QUARTER",
+    "YEAR",
+    "MONTH"
+  ],
+  "dtypes": {
+    "ACTUAL": "float64",
+    "PREDICT": "float64",
+    "COUNTRY": "str",
+    "REGION": "str",
+    "DIVISION": "str",
+    "PRODTYPE": "str",
+    "PRODUCT": "str",
+    "QUARTER": "float64",
+    "YEAR": "float64",
+    "MONTH": "datetime64[s]"
+  },
+  "null_counts": {
+    "ACTUAL": 0,
+    "PREDICT": 0,
+    "COUNTRY": 0,
+    "REGION": 0,
+    "DIVISION": 0,
+    "PRODTYPE": 0,
+    "PRODUCT": 0,
+    "QUARTER": 0,
+    "YEAR": 0,
+    "MONTH": 0
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "rows": 2097,
+  "columns": [
+    "libname",
+    "memname",
+    "datasetType",
+    "operation",
+    "operationDateTime",
+    "operationSource",
+    "user",
+    "comment"
+  ],
+  "dtypes": {
+    "libname": "str",
+    "memname": "str",
+    "datasetType": "str",
+    "operation": "str",
+    "operationDateTime": "datetime64[ms]",
+    "operationSource": "str",
+    "user": "str",
+    "comment": "str"
+  },
+  "null_counts": {
+    "libname": 1,
+    "memname": 1,
+    "datasetType": 1,
+    "operation": 1,
+    "operationDateTime": 1,
+    "operationSource": 1,
+    "user": 1,
+    "comment": 1
+  }
+}

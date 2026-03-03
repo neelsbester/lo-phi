@@ -1,0 +1,12 @@
+{
+  "rows": 8,
+  "columns": [
+    "x"
+  ],
+  "dtypes": {
+    "x": "float64"
+  },
+  "null_counts": {
+    "x": 3
+  }
+}

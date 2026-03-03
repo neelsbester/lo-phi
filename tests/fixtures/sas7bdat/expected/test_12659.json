@@ -1,0 +1,48 @@
+{
+  "rows": 36,
+  "columns": [
+    "yearmonth",
+    "useGpCo",
+    "useGpVi",
+    "useSpec",
+    "useUrge",
+    "caseGpCo",
+    "caseGpVi",
+    "caseSpec",
+    "caseUrge",
+    "expendGpCo",
+    "expendGpVi",
+    "expendSpec",
+    "expendUrge"
+  ],
+  "dtypes": {
+    "yearmonth": "float64",
+    "useGpCo": "float64",
+    "useGpVi": "float64",
+    "useSpec": "float64",
+    "useUrge": "float64",
+    "caseGpCo": "float64",
+    "caseGpVi": "float64",
+    "caseSpec": "float64",
+    "caseUrge": "float64",
+    "expendGpCo": "float64",
+    "expendGpVi": "float64",
+    "expendSpec": "float64",
+    "expendUrge": "float64"
+  },
+  "null_counts": {
+    "yearmonth": 0,
+    "useGpCo": 0,
+    "useGpVi": 0,
+    "useSpec": 0,
+    "useUrge": 0,
+    "caseGpCo": 0,
+    "caseGpVi": 0,
+    "caseSpec": 0,
+    "caseUrge": 0,
+    "expendGpCo": 0,
+    "expendGpVi": 0,
+    "expendSpec": 0,
+    "expendUrge": 0
+  }
+}

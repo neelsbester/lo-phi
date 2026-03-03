@@ -25,10 +25,12 @@ use super::{Compression, OsType, SasEncoding, SasError, SasHeader};
 /// * `SasError::Io` - I/O errors during reading
 pub fn parse_header<R: Read + Seek>(reader: &mut R) -> Result<SasHeader, SasError> {
     // Step 1: Validate magic number
+    // Only bytes 12-31 are constant across all SAS7BDAT variants; bytes 0-11
+    // are zero in most files but can vary between SAS versions and platforms.
     reader.seek(SeekFrom::Start(0))?;
     let mut magic = [0u8; 32];
     reader.read_exact(&mut magic)?;
-    if magic != SAS_MAGIC {
+    if magic[12..32] != SAS_MAGIC[12..32] {
         return Err(SasError::InvalidMagic);
     }
 

@@ -183,7 +183,7 @@ fn load_sas7bdat_impl(
     let columns = build_columns(&state, &sas_header.encoding);
     if columns.is_empty() {
         pb.finish_and_clear();
-        return Err(SasError::ZeroRows);
+        return Err(SasError::InvalidHeader("File contains zero columns".to_string()));
     }
 
     // Step 3: Second pass - extract data rows
@@ -252,16 +252,8 @@ fn load_sas7bdat_impl(
 
                     let decompressed =
                         match sas_header.compression {
-                            Compression::Rle => decompress_rle(compressed_data, row_length)
-                                .map_err(|e| SasError::DecompressionError {
-                                    page_index: page_idx,
-                                    message: format!("Compressed row RLE: {}", e),
-                                })?,
-                            Compression::Rdc => decompress_rdc(compressed_data, row_length)
-                                .map_err(|e| SasError::DecompressionError {
-                                    page_index: page_idx,
-                                    message: format!("Compressed row RDC: {}", e),
-                                })?,
+                            Compression::Rle => decompress_rle(compressed_data, row_length, page_idx)?,
+                            Compression::Rdc => decompress_rdc(compressed_data, row_length, page_idx)?,
                             Compression::None => {
                                 return Err(SasError::DecompressionError {
                                     page_index: page_idx,
@@ -278,39 +270,19 @@ fn load_sas7bdat_impl(
                         sas_header.is_little_endian,
                     )?;
 
-                    for (col_idx, value) in row_values.iter().enumerate() {
+                    for (col_idx, value) in row_values.into_iter().enumerate() {
                         if col_idx < column_values.len() {
-                            column_values[col_idx].push(value.clone());
+                            column_values[col_idx].push(value);
                         }
                     }
                     rows_collected += 1;
                 }
             }
-
-            // For MIX pages, also extract any uncompressed trailing rows
-            // (when compression is None, this is the main path for MIX pages)
-            if is_page_mix(page_header.page_type) {
-                let page_rows = extract_rows_from_page(
-                    &page_buf,
-                    &sas_header,
-                    &columns,
-                    page_idx,
-                    sas_header.compression,
-                    rows_collected,
-                    sas_header.row_count,
-                )?;
-
-                for row in &page_rows {
-                    for (col_idx, value) in row.iter().enumerate() {
-                        if col_idx < column_values.len() {
-                            column_values[col_idx].push(value.clone());
-                        }
-                    }
-                }
-                rows_collected += page_rows.len() as u64;
-            }
+            // NOTE: For compressed files, ALL rows are in compressed subheaders above.
+            // extract_rows_from_page() must NOT be called for MIX pages here, as the
+            // trailing data area contains no valid uncompressed rows in compressed files.
         } else if is_page_data(page_header.page_type) || is_page_mix(page_header.page_type) {
-            // Uncompressed DATA and MIX pages: extract rows directly.
+            // Uncompressed DATA and MIX pages: extract rows directly from trailing area.
             let page_rows = extract_rows_from_page(
                 &page_buf,
                 &sas_header,
@@ -321,14 +293,15 @@ fn load_sas7bdat_impl(
                 sas_header.row_count,
             )?;
 
-            for row in &page_rows {
-                for (col_idx, value) in row.iter().enumerate() {
+            let page_row_count = page_rows.len();
+            for row in page_rows {
+                for (col_idx, value) in row.into_iter().enumerate() {
                     if col_idx < column_values.len() {
-                        column_values[col_idx].push(value.clone());
+                        column_values[col_idx].push(value);
                     }
                 }
             }
-            rows_collected += page_rows.len() as u64;
+            rows_collected += page_row_count as u64;
         }
         // COMP pages (0x9000) are skipped -- they are padding/marker pages.
 
@@ -426,6 +399,15 @@ pub fn get_sas7bdat_columns(path: &Path) -> Result<Vec<String>, SasError> {
                     sas_header.is_little_endian,
                     &mut state,
                 )?;
+            }
+
+            // Break early once all column metadata has been collected — no need
+            // to scan MIX or further META pages once we have every column entry.
+            if state.column_count_from_size > 0
+                && state.column_name_entries.len() >= state.column_count_from_size as usize
+                && state.column_attr_entries.len() >= state.column_count_from_size as usize
+            {
+                break;
             }
         }
 

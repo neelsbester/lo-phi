@@ -1,0 +1,18 @@
+{
+  "rows": 1,
+  "columns": [
+    "long_string_field1",
+    "long_string_field2",
+    "long_string_field3"
+  ],
+  "dtypes": {
+    "long_string_field1": "str",
+    "long_string_field2": "str",
+    "long_string_field3": "str"
+  },
+  "null_counts": {
+    "long_string_field1": 0,
+    "long_string_field2": 0,
+    "long_string_field3": 0
+  }
+}

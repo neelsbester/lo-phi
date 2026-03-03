@@ -514,6 +514,10 @@ fn run_convert_sas7bdat(input: &Path, output: Option<&Path>) -> Result<()> {
     println!();
 
     // Step 1: Load SAS7BDAT file
+    // NOTE: This function assumes the terminal has already been restored to normal
+    // mode before being called (i.e., ratatui alternate screen has been exited).
+    // It uses indicatif spinners directly, which would corrupt the TUI if called
+    // while ratatui still owns the screen.
     let spinner = create_spinner("Loading SAS7BDAT file...");
     let (mut df, rows, cols, _) = load_sas7bdat(input).context("Failed to load SAS7BDAT file")?;
     let load_time = total_start.elapsed();

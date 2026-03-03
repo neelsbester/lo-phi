@@ -111,7 +111,10 @@ pub fn extract_rows_from_page(
     let row_length = header.row_length as usize;
 
     for row_idx in 0..rows_to_extract {
-        let row_offset = data_start + (row_idx as usize * row_length);
+        let row_stride = (row_idx as usize)
+            .checked_mul(row_length)
+            .ok_or_else(|| SasError::InvalidHeader("Row offset overflow".into()))?;
+        let row_offset = data_start + row_stride;
 
         // Ensure we don't read past the page boundary
         if row_offset + row_length > page_data.len() {
@@ -498,25 +501,55 @@ mod tests {
 
     #[test]
     fn test_missing_value_detection() {
-        // Standard missing: 0x2E at first byte (LE)
-        let bytes = [0x2Eu8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0];
+        // Standard missing: 0x2E sentinel at first byte (LE), remaining 7 bytes all zero.
+        let bytes = [0x2Eu8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let result = extract_numeric_value(&bytes, &PolarsOutputType::Float64, true).unwrap();
         assert!(matches!(result, ColumnValue::Null));
 
-        // Letter missing: .A = 0x41 at first byte (LE)
-        let bytes = [0x41u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0];
+        // Letter missing: .A = 0x41 sentinel at first byte (LE), remaining 7 bytes all zero.
+        let bytes = [0x41u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let result = extract_numeric_value(&bytes, &PolarsOutputType::Float64, true).unwrap();
         assert!(matches!(result, ColumnValue::Null));
 
-        // Underscore missing: ._ = 0x5F at first byte (LE)
-        let bytes = [0x5Fu8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0];
+        // Underscore missing: ._ = 0x5F sentinel at first byte (LE), remaining 7 bytes all zero.
+        let bytes = [0x5Fu8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let result = extract_numeric_value(&bytes, &PolarsOutputType::Float64, true).unwrap();
         assert!(matches!(result, ColumnValue::Null));
 
-        // Standard missing in big-endian: 0x2E at last byte
-        let bytes = [0xF0u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2E];
+        // Standard missing in big-endian: 0x2E sentinel at last byte, remaining 7 bytes all zero.
+        let bytes = [0x00u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2E];
         let result = extract_numeric_value(&bytes, &PolarsOutputType::Float64, false).unwrap();
         assert!(matches!(result, ColumnValue::Null));
+
+        // Legitimate float must NOT be flagged as missing even if its tag byte matches a sentinel.
+        // 0.046 in LE f64 has LSB 0x5A (which is '.Z', a special missing sentinel) but other
+        // bytes are non-zero, so the zero-check must reject it as a missing value.
+        let val: f64 = 0.046;
+        let le_bytes = val.to_le_bytes();
+        assert_eq!(le_bytes[0], 0x5A, "test assumes LSB of 0.046 is 0x5A");
+        let result = extract_numeric_value(&le_bytes, &PolarsOutputType::Float64, true).unwrap();
+        match result {
+            ColumnValue::Float64(f) => {
+                assert!((f - 0.046).abs() < 1e-10, "expected ~0.046, got {f}");
+            }
+            _ => panic!("Expected Float64 for 0.046, got {:?}", result),
+        }
+
+        // Sentinel byte in tag position but non-zero rest must NOT be missing (LE).
+        let bytes = [0x2Eu8, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let result = extract_numeric_value(&bytes, &PolarsOutputType::Float64, true).unwrap();
+        assert!(
+            !matches!(result, ColumnValue::Null),
+            "value with sentinel first byte but non-zero rest should not be null"
+        );
+
+        // Sentinel byte in tag position but non-zero rest must NOT be missing (BE).
+        let bytes = [0x00u8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x2E];
+        let result = extract_numeric_value(&bytes, &PolarsOutputType::Float64, false).unwrap();
+        assert!(
+            !matches!(result, ColumnValue::Null),
+            "value with sentinel last byte but non-zero rest should not be null (BE)"
+        );
     }
 
     #[test]

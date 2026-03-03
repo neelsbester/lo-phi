@@ -1,0 +1,24 @@
+{
+  "rows": 4,
+  "columns": [
+    "Date1",
+    "Date2",
+    "DateTime",
+    "DateTimeHi",
+    "Taiw"
+  ],
+  "dtypes": {
+    "Date1": "datetime64[s]",
+    "Date2": "datetime64[s]",
+    "DateTime": "datetime64[ms]",
+    "DateTimeHi": "datetime64[ms]",
+    "Taiw": "datetime64[s]"
+  },
+  "null_counts": {
+    "Date1": 0,
+    "Date2": 0,
+    "DateTime": 0,
+    "DateTimeHi": 0,
+    "Taiw": 0
+  }
+}

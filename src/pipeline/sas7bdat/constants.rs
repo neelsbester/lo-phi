@@ -400,11 +400,14 @@ pub const MISSING_SPECIAL_BYTES: [u8; 27] = [
 
 /// Complete 8-byte pattern for standard missing value (`.`) in little-endian.
 ///
-/// This is the full IEEE 754 NaN pattern used by SAS for standard missing.
-pub const MISSING_STANDARD_PATTERN_LE: [u8; 8] = [0x2E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0];
+/// SAS missing values are sentinel byte + 7 zero bytes.
+/// Standard missing (`.`) has sentinel byte 0x2E at the low end (LE position 0).
+pub const MISSING_STANDARD_PATTERN_LE: [u8; 8] = [0x2E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
 /// Complete 8-byte pattern for standard missing value (`.`) in big-endian.
-pub const MISSING_STANDARD_PATTERN_BE: [u8; 8] = [0xF0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2E];
+///
+/// SAS missing values are 7 zero bytes + sentinel byte at the high end (BE position 7).
+pub const MISSING_STANDARD_PATTERN_BE: [u8; 8] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2E];
 
 /// Checks if an 8-byte double value represents a SAS missing value.
 ///
@@ -416,15 +419,25 @@ pub const MISSING_STANDARD_PATTERN_BE: [u8; 8] = [0xF0, 0x00, 0x00, 0x00, 0x00, 
 /// * `true` if the value is a SAS missing value (standard or special)
 /// * `false` otherwise
 pub fn is_missing_value(bytes: &[u8; 8], is_little_endian: bool) -> bool {
-    let first_byte = if is_little_endian { bytes[0] } else { bytes[7] };
+    let (tag_byte, rest) = if is_little_endian {
+        (bytes[0], &bytes[1..])
+    } else {
+        (bytes[7], &bytes[..7])
+    };
 
-    // Check standard missing
-    if first_byte == MISSING_STANDARD_BYTE {
+    // Remaining bytes must all be zero for a valid SAS missing value.
+    // Without this check, ~11% of valid doubles would be silently NULLed because
+    // many non-missing IEEE 754 doubles share the same sentinel byte values.
+    if !rest.iter().all(|&b| b == 0) {
+        return false;
+    }
+
+    if tag_byte == MISSING_STANDARD_BYTE {
         return true;
     }
 
     // Check special missing (.A - .Z, ._)
-    MISSING_SPECIAL_BYTES.contains(&first_byte)
+    MISSING_SPECIAL_BYTES.contains(&tag_byte)
 }
 
 /// Total count of SAS missing value types (1 standard + 27 special = 28).

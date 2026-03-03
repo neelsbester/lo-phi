@@ -1,0 +1,24 @@
+{
+  "rows": 2,
+  "columns": [
+    "text",
+    "dt_as_float",
+    "dt_as_dt",
+    "date_as_float",
+    "date_as_date"
+  ],
+  "dtypes": {
+    "text": "str",
+    "dt_as_float": "float64",
+    "dt_as_dt": "datetime64[ms]",
+    "date_as_float": "float64",
+    "date_as_date": "datetime64[s]"
+  },
+  "null_counts": {
+    "text": 0,
+    "dt_as_float": 0,
+    "dt_as_dt": 0,
+    "date_as_float": 0,
+    "date_as_date": 0
+  }
+}

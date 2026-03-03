@@ -1,0 +1,4 @@
+{
+  "error": "MemoryError",
+  "message": "Unable to allocate 292. GiB for an array with shape (20, 1962934272) and data type object"
+}

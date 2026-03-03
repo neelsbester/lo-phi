@@ -1,0 +1,21 @@
+{
+  "rows": 392,
+  "columns": [
+    "MPG",
+    "CYL",
+    "ENG",
+    "WGT"
+  ],
+  "dtypes": {
+    "MPG": "float64",
+    "CYL": "float64",
+    "ENG": "float64",
+    "WGT": "float64"
+  },
+  "null_counts": {
+    "MPG": 0,
+    "CYL": 0,
+    "ENG": 0,
+    "WGT": 0
+  }
+}

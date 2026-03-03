@@ -243,6 +243,8 @@ fn load_dataset_impl(
             load_parquet(path)?
         }
         "sas7bdat" => {
+            // NOTE: schema_length is unused for SAS7BDAT files because column types are
+            // encoded explicitly in the binary header (no schema inference needed).
             let silent = if let Some(tx) = progress_tx {
                 tx.send(ProgressEvent::update(
                     PipelineStage::Loading,
@@ -256,12 +258,14 @@ fn load_dataset_impl(
             };
             if silent {
                 use super::sas7bdat::load_sas7bdat_silent;
-                let (df, _, _, _) =
+                let (mut df, _, _, _) =
                     load_sas7bdat_silent(path).context("Failed to load SAS7BDAT file")?;
+                df.rechunk_mut();
                 df
             } else {
                 use super::sas7bdat::load_sas7bdat;
-                let (df, _, _, _) = load_sas7bdat(path).context("Failed to load SAS7BDAT file")?;
+                let (mut df, _, _, _) = load_sas7bdat(path).context("Failed to load SAS7BDAT file")?;
+                df.rechunk_mut();
                 df
             }
         }

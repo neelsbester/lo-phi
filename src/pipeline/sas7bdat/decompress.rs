@@ -18,6 +18,7 @@ use crate::pipeline::sas7bdat::error::SasError;
 ///
 /// * `input` - Compressed byte stream
 /// * `output_length` - Expected decompressed size in bytes
+/// * `page_index` - Page index for error reporting
 ///
 /// # Returns
 ///
@@ -33,7 +34,7 @@ use crate::pipeline::sas7bdat::error::SasError;
 /// # Reference
 ///
 /// Based on ReadStat RLE decompression algorithm.
-pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, SasError> {
+pub fn decompress_rle(input: &[u8], output_length: usize, page_index: u64) -> Result<Vec<u8>, SasError> {
     let mut output = Vec::with_capacity(output_length);
     let mut input_pos = 0;
 
@@ -41,7 +42,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
         // Read control byte
         if input_pos >= input.len() {
             return Err(SasError::DecompressionError {
-                page_index: 0,
+                page_index,
                 message: format!(
                     "Premature end of input at position {} (output {} of {})",
                     input_pos,
@@ -62,7 +63,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
             0x0 => {
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!("COPY64: missing next_byte at position {}", input_pos),
                     });
                 }
@@ -76,7 +77,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
             0x1 => {
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!(
                             "COPY64_PLUS_4096: missing next_byte at position {}",
                             input_pos
@@ -98,7 +99,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
             // 0x3 is undefined/unused
             0x3 => {
                 return Err(SasError::DecompressionError {
-                    page_index: 0,
+                    page_index,
                     message: format!("Unknown RLE command 0x3 at position {}", input_pos - 1),
                 });
             }
@@ -107,7 +108,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
             0x4 => {
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!(
                             "INSERT_BYTE18: missing next_byte at position {}",
                             input_pos
@@ -118,7 +119,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                 input_pos += 1;
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!(
                             "INSERT_BYTE18: missing fill_byte at position {}",
                             input_pos
@@ -135,7 +136,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
             0x5 => {
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!(
                             "INSERT_AT17: missing next_byte at position {}",
                             input_pos
@@ -152,7 +153,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
             0x6 => {
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!(
                             "INSERT_BLANK17: missing next_byte at position {}",
                             input_pos
@@ -169,7 +170,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
             0x7 => {
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!(
                             "INSERT_ZERO17: missing next_byte at position {}",
                             input_pos
@@ -210,7 +211,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
             0xC => {
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!(
                             "INSERT_BYTE3: missing fill_byte at position {}",
                             input_pos
@@ -243,7 +244,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
 
             _ => {
                 return Err(SasError::DecompressionError {
-                    page_index: 0,
+                    page_index,
                     message: format!(
                         "Unknown RLE command 0x{:X} at position {}",
                         command,
@@ -256,7 +257,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
 
     if output.len() != output_length {
         return Err(SasError::DecompressionError {
-            page_index: 0,
+            page_index,
             message: format!(
                 "Output length mismatch: expected {}, got {}",
                 output_length,
@@ -278,6 +279,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
 ///
 /// * `input` - Compressed byte stream
 /// * `output_length` - Expected decompressed size in bytes
+/// * `page_index` - Page index for error reporting
 ///
 /// # Returns
 ///
@@ -293,7 +295,7 @@ pub fn decompress_rle(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
 /// # Reference
 ///
 /// Based on Parso BinDecompressor.java RDC implementation.
-pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, SasError> {
+pub fn decompress_rdc(input: &[u8], output_length: usize, page_index: u64) -> Result<Vec<u8>, SasError> {
     let mut output = Vec::with_capacity(output_length);
     let mut input_pos = 0;
 
@@ -301,7 +303,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
         // Read 16-bit control word (big-endian)
         if input_pos + 1 >= input.len() {
             return Err(SasError::DecompressionError {
-                page_index: 0,
+                page_index,
                 message: format!(
                     "RDC: premature end of input reading control word at position {}",
                     input_pos
@@ -324,7 +326,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                 // Literal byte: copy one byte from input to output
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!(
                             "RDC: premature end of input reading literal byte at position {}",
                             input_pos
@@ -337,7 +339,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                 // Command byte
                 if input_pos >= input.len() {
                     return Err(SasError::DecompressionError {
-                        page_index: 0,
+                        page_index,
                         message: format!(
                             "RDC: premature end of input reading command byte at position {}",
                             input_pos
@@ -356,7 +358,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                     0 => {
                         if input_pos >= input.len() {
                             return Err(SasError::DecompressionError {
-                                page_index: 0,
+                                page_index,
                                 message: format!(
                                     "RDC: short RLE missing fill_byte at position {}",
                                     input_pos
@@ -375,7 +377,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                     1 => {
                         if input_pos + 1 >= input.len() {
                             return Err(SasError::DecompressionError {
-                                page_index: 0,
+                                page_index,
                                 message: format!(
                                     "RDC: long RLE missing length_byte/fill_byte at position {}",
                                     input_pos
@@ -396,7 +398,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                     2 => {
                         if input_pos + 1 >= input.len() {
                             return Err(SasError::DecompressionError {
-                                page_index: 0,
+                                page_index,
                                 message: format!(
                                     "RDC: long pattern missing offset/length bytes at position {}",
                                     input_pos
@@ -420,7 +422,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                     cmd @ 3..=15 => {
                         if input_pos >= input.len() {
                             return Err(SasError::DecompressionError {
-                                page_index: 0,
+                                page_index,
                                 message: format!(
                                     "RDC: short pattern missing offset byte at position {}",
                                     input_pos
@@ -439,7 +441,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
                     // but returning an error avoids a panic if the invariant is ever broken.
                     cmd => {
                         return Err(SasError::DecompressionError {
-                            page_index: 0,
+                            page_index,
                             message: format!("Invalid RDC command byte: {}", cmd),
                         });
                     }
@@ -450,7 +452,7 @@ pub fn decompress_rdc(input: &[u8], output_length: usize) -> Result<Vec<u8>, Sas
 
     if output.len() != output_length {
         return Err(SasError::DecompressionError {
-            page_index: 0,
+            page_index,
             message: format!(
                 "RDC: output length mismatch: expected {}, got {}",
                 output_length,
@@ -620,7 +622,7 @@ mod tests {
     fn test_rle_copy1() {
         // Command 0x8, length 2 → Copy 3 bytes
         let input = vec![0x82, b'A', b'B', b'C'];
-        let result = decompress_rle(&input, 3).unwrap();
+        let result = decompress_rle(&input, 3, 0).unwrap();
         assert_eq!(result, b"ABC");
     }
 
@@ -628,7 +630,7 @@ mod tests {
     fn test_rle_insert_byte3() {
         // Command 0xC, length 2 → Repeat next byte 5 times
         let input = vec![0xC2, b'X'];
-        let result = decompress_rle(&input, 5).unwrap();
+        let result = decompress_rle(&input, 5, 0).unwrap();
         assert_eq!(result, b"XXXXX");
     }
 
@@ -636,7 +638,7 @@ mod tests {
     fn test_rle_insert_blank2() {
         // Command 0xE, length 3 → Insert 5 spaces
         let input = vec![0xE3];
-        let result = decompress_rle(&input, 5).unwrap();
+        let result = decompress_rle(&input, 5, 0).unwrap();
         assert_eq!(result, b"     ");
     }
 
@@ -644,7 +646,7 @@ mod tests {
     fn test_rle_insert_zero2() {
         // Command 0xF, length 1 → Insert 3 null bytes
         let input = vec![0xF1];
-        let result = decompress_rle(&input, 3).unwrap();
+        let result = decompress_rle(&input, 3, 0).unwrap();
         assert_eq!(result, vec![0, 0, 0]);
     }
 
@@ -652,7 +654,7 @@ mod tests {
     fn test_rle_insert_at2() {
         // Command 0xD, length 0 → Insert 2 '@' chars
         let input = vec![0xD0];
-        let result = decompress_rle(&input, 2).unwrap();
+        let result = decompress_rle(&input, 2, 0).unwrap();
         assert_eq!(result, b"@@");
     }
 
@@ -660,7 +662,7 @@ mod tests {
     fn test_rle_multiple_commands() {
         // COPY1 with length=1 (2 bytes) + INSERT_BYTE3 with length=0 (3 times 'X')
         let input = vec![0x81, b'A', b'B', 0xC0, b'X'];
-        let result = decompress_rle(&input, 5).unwrap();
+        let result = decompress_rle(&input, 5, 0).unwrap();
         assert_eq!(result, b"ABXXX");
     }
 
@@ -668,7 +670,7 @@ mod tests {
     fn test_rle_unknown_command() {
         // Command 0x3 is undefined
         let input = vec![0x30];
-        let result = decompress_rle(&input, 10);
+        let result = decompress_rle(&input, 10, 0);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -680,7 +682,7 @@ mod tests {
     fn test_rle_premature_end() {
         // COPY1 requires 1 byte after control byte
         let input = vec![0x80]; // Length 0 → 1 byte needed
-        let result = decompress_rle(&input, 1);
+        let result = decompress_rle(&input, 1, 0);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -692,7 +694,7 @@ mod tests {
     fn test_rle_buffer_overflow() {
         // Try to write 3 bytes but expect only 2
         let input = vec![0x82, b'A', b'B', b'C'];
-        let result = decompress_rle(&input, 2);
+        let result = decompress_rle(&input, 2, 0);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("overflow"));
     }
@@ -703,7 +705,7 @@ mod tests {
         // Next 16 bytes are literals
         let mut input = vec![0x00, 0x00];
         input.extend_from_slice(b"Hello, World!!!!");
-        let result = decompress_rdc(&input, 16).unwrap();
+        let result = decompress_rdc(&input, 16, 0).unwrap();
         assert_eq!(result, b"Hello, World!!!!");
     }
 
@@ -713,7 +715,7 @@ mod tests {
         // Command: 0x05 (cmd=0, cnt=5) → repeat next byte 8 times
         // Fill byte: 'X'
         let input = vec![0x80, 0x00, 0x05, b'X'];
-        let result = decompress_rdc(&input, 8).unwrap();
+        let result = decompress_rdc(&input, 8, 0).unwrap();
         assert_eq!(result, b"XXXXXXXX");
     }
 
@@ -725,7 +727,7 @@ mod tests {
         // length_byte: 0x01, fill_byte: 'A'
         // Count = 2 + (1 << 4) + 19 = 37
         let input = vec![0x80, 0x00, 0x12, 0x01, b'A'];
-        let result = decompress_rdc(&input, 37).unwrap();
+        let result = decompress_rdc(&input, 37, 0).unwrap();
         assert_eq!(result.len(), 37);
         assert!(result.iter().all(|&b| b == b'A'));
     }
@@ -742,7 +744,7 @@ mod tests {
         // Offset byte: 0x00 → copies last 3 bytes
         // Output reaches 6 bytes (ABCABC), loop exits
         let input = vec![0x10, 0x00, b'A', b'B', b'C', 0x30, 0x00];
-        let result = decompress_rdc(&input, 6).unwrap();
+        let result = decompress_rdc(&input, 6, 0).unwrap();
         assert_eq!(result, b"ABCABC");
     }
 
@@ -759,7 +761,7 @@ mod tests {
         // Offset byte: 0x00 → copies from 3 back overlapping
         // Output: "AAA" + 5 more 'A's = "AAAAAAAA" (8 bytes)
         let input = vec![0x10, 0x00, b'A', b'A', b'A', 0x50, 0x00];
-        let result = decompress_rdc(&input, 8).unwrap();
+        let result = decompress_rdc(&input, 8, 0).unwrap();
         assert_eq!(result, b"AAAAAAAA");
     }
 
@@ -771,7 +773,7 @@ mod tests {
         // Offset = cnt + 3 + (next_byte << 4) = 0 + 3 + (0x0A << 4) = 163
         // Output is empty so any offset > 0 is invalid
         let input = vec![0x80, 0x00, 0x30, 0x0A];
-        let result = decompress_rdc(&input, 3);
+        let result = decompress_rdc(&input, 3, 0);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -783,7 +785,7 @@ mod tests {
     fn test_rdc_premature_end() {
         // Control word with no following data
         let input = vec![0x80, 0x00];
-        let result = decompress_rdc(&input, 10);
+        let result = decompress_rdc(&input, 10, 0);
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
@@ -831,7 +833,7 @@ mod tests {
         input.push(0x34); // cmd=3, cnt=4
         input.push(0x00); // offset_byte=0 -> offset = 4+3+0 = 7
                           // At position 20, offset 7 -> copies from position 13 = "NOP" (3 bytes)
-        let result = decompress_rdc(&input, 23).unwrap();
+        let result = decompress_rdc(&input, 23, 0).unwrap();
         assert_eq!(&result[..20], b"ABCDEFGHIJKLMNOPQRST");
         assert_eq!(&result[20..23], b"NOP");
     }
@@ -853,7 +855,7 @@ mod tests {
         input.push(0x20); // cmd=2, cnt=0
         input.push(0x01); // offset_byte -> offset = 0 + 3 + 16 = 19
         input.push(0x00); // length_byte -> count = 0 + 16 = 16
-        let result = decompress_rdc(&input, 36).unwrap();
+        let result = decompress_rdc(&input, 36, 0).unwrap();
         assert_eq!(&result[..20], b"ABCDEFGHIJKLMNOPQRST");
         // From position 1 (offset 19 from pos 20), copies BCDEFGHIJKLMNOPQ (16 bytes)
         assert_eq!(&result[20..36], b"BCDEFGHIJKLMNOPQ");
@@ -878,7 +880,7 @@ mod tests {
                                              // At position 100, offset 83 -> copies from position 17, 3 bytes
         input.push(0x30); // cmd=3, cnt=0
         input.push(0x05); // offset_byte=5 -> offset = 83
-        let result = decompress_rdc(&input, 103).unwrap();
+        let result = decompress_rdc(&input, 103, 0).unwrap();
         assert_eq!(result.len(), 103);
         // Position 17 is in the second group of X's -> "XXX"
         assert_eq!(&result[100..103], b"XXX");
