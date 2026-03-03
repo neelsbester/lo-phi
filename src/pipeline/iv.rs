@@ -11,6 +11,7 @@ use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use super::progress::{PipelineStage, ProgressEvent, ProgressSender};
 use super::solver::{reconstruct_bins_from_solution, solve_optimal_binning, SolverConfig};
 use super::target::{create_target_mask, TargetMapping};
 
@@ -673,6 +674,70 @@ pub fn analyze_features_iv(
     weight_column: Option<&str>,
     solver_config: Option<&SolverConfig>,
 ) -> Result<Vec<IvAnalysis>> {
+    analyze_features_iv_impl(
+        df,
+        target,
+        num_bins,
+        prebins,
+        target_mapping,
+        binning_strategy,
+        min_category_samples,
+        cart_min_bin_pct,
+        weights,
+        weight_column,
+        solver_config,
+        None,
+    )
+}
+
+/// Same as `analyze_features_iv` but sends progress events over a channel instead of
+/// rendering indicatif bars to the terminal.
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_features_iv_with_progress(
+    df: &DataFrame,
+    target: &str,
+    num_bins: usize,
+    prebins: usize,
+    target_mapping: Option<&TargetMapping>,
+    binning_strategy: BinningStrategy,
+    min_category_samples: Option<usize>,
+    cart_min_bin_pct: Option<f64>,
+    weights: &[f64],
+    weight_column: Option<&str>,
+    solver_config: Option<&SolverConfig>,
+    progress_tx: &ProgressSender,
+) -> Result<Vec<IvAnalysis>> {
+    analyze_features_iv_impl(
+        df,
+        target,
+        num_bins,
+        prebins,
+        target_mapping,
+        binning_strategy,
+        min_category_samples,
+        cart_min_bin_pct,
+        weights,
+        weight_column,
+        solver_config,
+        Some(progress_tx),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze_features_iv_impl(
+    df: &DataFrame,
+    target: &str,
+    num_bins: usize,
+    prebins: usize,
+    target_mapping: Option<&TargetMapping>,
+    binning_strategy: BinningStrategy,
+    min_category_samples: Option<usize>,
+    cart_min_bin_pct: Option<f64>,
+    weights: &[f64],
+    weight_column: Option<&str>,
+    solver_config: Option<&SolverConfig>,
+    progress_tx: Option<&ProgressSender>,
+) -> Result<Vec<IvAnalysis>> {
     if df.height() == 0 {
         return Ok(Vec::new());
     }
@@ -738,16 +803,21 @@ pub fn analyze_features_iv(
         return Ok(Vec::new());
     }
 
-    // Create progress bar
-    let pb = ProgressBar::new(total_features as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "   Calculating IV [{bar:40.cyan/blue}] {pos}/{len} features ({percent}%) [{eta}]",
-            )
-            .unwrap()
-            .progress_chars("=>-"),
-    );
+    // Create indicatif progress bar only when there is no TUI channel
+    let pb = if progress_tx.is_none() {
+        let bar = ProgressBar::new(total_features as u64);
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "   Calculating IV [{bar:40.cyan/blue}] {pos}/{len} features ({percent}%) [{eta}]",
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        Some(bar)
+    } else {
+        None
+    };
 
     // Atomic counter for progress
     let progress_counter = Arc::new(AtomicU64::new(0));
@@ -757,6 +827,10 @@ pub fn analyze_features_iv(
 
     // Clone solver config for sharing across threads
     let solver_config_arc = solver_config.map(|c| Arc::new(c.clone()));
+
+    // Wrap optional sender in Arc so parallel closures can share it
+    let pb_arc = pb.map(Arc::new);
+    let tx_arc: Option<Arc<ProgressSender>> = progress_tx.map(|tx| Arc::new(tx.clone()));
 
     // Process numeric features in parallel
     let numeric_results: Vec<(String, Result<IvAnalysis>)> = numeric_cols
@@ -779,7 +853,16 @@ pub fn analyze_features_iv(
             if count.is_multiple_of(PROGRESS_UPDATE_INTERVAL)
                 || count == (total_features as u64 - 1)
             {
-                pb.set_position(count + 1);
+                if let Some(bar) = &pb_arc {
+                    bar.set_position(count + 1);
+                } else if let Some(tx) = &tx_arc {
+                    tx.send(ProgressEvent::update(
+                        PipelineStage::GiniAnalysis,
+                        "Gini/IV analysis",
+                        format!("{}/{} features", count + 1, total_features),
+                    ))
+                    .ok();
+                }
             }
 
             (col_name.clone(), result)
@@ -819,7 +902,16 @@ pub fn analyze_features_iv(
             if count.is_multiple_of(PROGRESS_UPDATE_INTERVAL)
                 || count == (total_features as u64 - 1)
             {
-                pb.set_position(count + 1);
+                if let Some(bar) = &pb_arc {
+                    bar.set_position(count + 1);
+                } else if let Some(tx) = &tx_arc {
+                    tx.send(ProgressEvent::update(
+                        PipelineStage::GiniAnalysis,
+                        "Gini/IV analysis",
+                        format!("{}/{} features", count + 1, total_features),
+                    ))
+                    .ok();
+                }
             }
 
             (col_name.clone(), result)
@@ -834,12 +926,14 @@ pub fn analyze_features_iv(
         }
     }
 
-    pb.finish_with_message(format!(
-        "   [OK] Analyzed {} features ({} numeric, {} categorical)",
-        numeric_analyses.len() + categorical_analyses.len(),
-        numeric_analyses.len(),
-        categorical_analyses.len()
-    ));
+    if let Some(bar) = &pb_arc {
+        bar.finish_with_message(format!(
+            "   [OK] Analyzed {} features ({} numeric, {} categorical)",
+            numeric_analyses.len() + categorical_analyses.len(),
+            numeric_analyses.len(),
+            categorical_analyses.len()
+        ));
+    }
 
     // Combine and sort by IV descending
     let mut all_analyses: Vec<IvAnalysis> = numeric_analyses

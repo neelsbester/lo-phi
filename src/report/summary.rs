@@ -251,8 +251,8 @@ mod tests {
     #[test]
     fn test_multiple_stages_compound_correctly() {
         let mut summary = ReductionSummary::new(10);
-        summary.add_missing_drops(vec!["a".to_string()]);     // 10 -> 9
-        summary.add_gini_drops(vec!["b".to_string()]);         // 9 -> 8
+        summary.add_missing_drops(vec!["a".to_string()]); // 10 -> 9
+        summary.add_gini_drops(vec!["b".to_string()]); // 9 -> 8
         summary.add_correlation_drops(vec!["c".to_string()]); // 8 -> 7
         assert_eq!(summary.final_features, 7);
     }
@@ -261,7 +261,12 @@ mod tests {
     fn test_underflow_protection_does_not_panic() {
         // Drop more features than exist -- saturating_sub must prevent wrapping.
         let mut summary = ReductionSummary::new(3);
-        summary.add_missing_drops(vec!["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()]);
+        summary.add_missing_drops(vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+        ]);
         // saturating_sub(4) on 3 must yield 0, not wrap to usize::MAX
         assert_eq!(summary.final_features, 0);
     }

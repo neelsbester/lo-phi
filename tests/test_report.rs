@@ -114,7 +114,10 @@ fn test_export_reduction_report_json_reflects_drop_counts() {
     let parsed: serde_json::Value = serde_json::from_str(&contents).unwrap();
 
     let summary = &parsed["summary"];
-    assert_eq!(summary["dropped_count"], 1, "Should report 1 dropped feature");
+    assert_eq!(
+        summary["dropped_count"], 1,
+        "Should report 1 dropped feature"
+    );
     assert_eq!(
         summary["initial_features"], 2,
         "Should report 2 initial features"
@@ -247,9 +250,18 @@ fn test_package_reduction_reports_removes_source_files() {
 
     package_reduction_reports(&gini_path, &report_path, &csv_path, &zip_path).unwrap();
 
-    assert!(!gini_path.exists(), "Gini JSON should be removed after packaging");
-    assert!(!report_path.exists(), "Report JSON should be removed after packaging");
-    assert!(!csv_path.exists(), "CSV report should be removed after packaging");
+    assert!(
+        !gini_path.exists(),
+        "Gini JSON should be removed after packaging"
+    );
+    assert!(
+        !report_path.exists(),
+        "Report JSON should be removed after packaging"
+    );
+    assert!(
+        !csv_path.exists(),
+        "CSV report should be removed after packaging"
+    );
 }
 
 // ── T-C3: export_gini_analysis_enhanced ─────────────────────────────────────
@@ -350,7 +362,10 @@ fn test_parquet_to_csv_preserves_column_names() {
         .iter()
         .map(|s| s.as_str())
         .collect();
-    assert!(col_names.contains(&"alpha"), "Should preserve 'alpha' column");
+    assert!(
+        col_names.contains(&"alpha"),
+        "Should preserve 'alpha' column"
+    );
     assert!(col_names.contains(&"beta"), "Should preserve 'beta' column");
 }
 
@@ -376,7 +391,10 @@ fn test_parquet_to_csv_preserves_null_values() {
         .unwrap();
 
     let null_count = result_df.column("feature").unwrap().null_count();
-    assert_eq!(null_count, 2, "Null values should be preserved through conversion");
+    assert_eq!(
+        null_count, 2,
+        "Null values should be preserved through conversion"
+    );
 }
 
 #[test]

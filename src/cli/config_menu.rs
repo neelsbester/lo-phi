@@ -21,6 +21,10 @@ use ratatui::{
     },
 };
 
+use super::shared::{
+    check_terminal_size, draw_too_small_overlay, render_logo, themed, MIN_COLS, MIN_ROWS,
+};
+use super::theme;
 use crate::pipeline::TargetMapping;
 
 /// Configuration values that can be customized
@@ -94,12 +98,15 @@ enum MenuState {
     },
     EditMissing {
         input: String,
+        error: Option<String>,
     },
     EditGini {
         input: String,
+        error: Option<String>,
     },
     EditCorrelation {
         input: String,
+        error: Option<String>,
     },
     // Solver options
     EditUseSolver {
@@ -117,12 +124,14 @@ enum MenuState {
     },
     EditInferSchemaLength {
         input: String,
+        error: Option<String>,
     },
 }
 
 /// Result of the config menu interaction
 pub enum ConfigResult {
-    /// User confirmed, proceed with these settings
+    /// User confirmed, proceed with these settings.
+    /// The `Terminal` is kept alive so `main.rs` can show the progress overlay.
     Proceed(Box<Config>),
     /// User requested file format conversion
     Convert(Box<Config>),
@@ -136,14 +145,41 @@ fn teardown_terminal_menu() {
     let _ = stdout().execute(LeaveAlternateScreen);
 }
 
-/// Run the interactive configuration menu
+/// Run the interactive configuration menu, tearing down the TUI before returning.
+#[allow(dead_code)]
 pub fn run_config_menu(config: Config, columns: Vec<String>) -> Result<ConfigResult> {
+    let (result, _terminal) = run_config_menu_impl(config, columns)?;
+    Ok(result)
+}
+
+/// Same as `run_config_menu` but, on `ConfigResult::Proceed`, returns the still-active
+/// `Terminal` so that the caller can display the progress overlay without
+/// tearing down and re-entering alternate screen.
+///
+/// On `Quit` or `Convert` the terminal is torn down and `None` is returned.
+pub fn run_config_menu_keep_tui(
+    config: Config,
+    columns: Vec<String>,
+) -> Result<(ConfigResult, Option<Terminal<CrosstermBackend<io::Stdout>>>)> {
+    run_config_menu_impl(config, columns)
+}
+
+fn run_config_menu_impl(
+    config: Config,
+    columns: Vec<String>,
+) -> Result<(ConfigResult, Option<Terminal<CrosstermBackend<io::Stdout>>>)> {
     // Install panic hook for clean terminal restoration
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         teardown_terminal_menu();
         original_hook(info);
     }));
+
+    // Check terminal size before entering TUI
+    if let Err(msg) = check_terminal_size() {
+        eprintln!("{}", msg);
+        return Ok((ConfigResult::Quit, None));
+    }
 
     // Setup terminal
     enable_raw_mode()?;
@@ -159,12 +195,20 @@ pub fn run_config_menu(config: Config, columns: Vec<String>) -> Result<ConfigRes
         }
     };
 
-    let result = run_menu_loop(&mut terminal, config, columns);
-
-    // Restore terminal (always, success or error)
-    teardown_terminal_menu();
-
-    result
+    match run_menu_loop(&mut terminal, config, columns) {
+        Ok(ConfigResult::Proceed(cfg)) => {
+            // Keep TUI alive — caller will display the progress overlay
+            Ok((ConfigResult::Proceed(cfg), Some(terminal)))
+        }
+        Ok(other) => {
+            teardown_terminal_menu();
+            Ok((other, None))
+        }
+        Err(e) => {
+            teardown_terminal_menu();
+            Err(e)
+        }
+    }
 }
 
 /// Result of target mapping selection
@@ -330,19 +374,19 @@ fn draw_mapping_ui(frame: &mut Frame, state: &MappingState) {
 
     let info_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(theme::PRIMARY))
         .title(" Target Mapping Required ")
-        .title_style(Style::default().fg(Color::Cyan).bold());
+        .title_style(Style::default().fg(theme::PRIMARY).bold());
 
     let info_content = Paragraph::new(vec![
         Line::from(""),
         Line::from(vec![Span::styled(
             "  Target column is not binary (0/1).",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme::TEXT),
         )]),
         Line::from(vec![Span::styled(
             "  Please select event and non-event values.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::MUTED),
         )]),
     ])
     .block(info_block);
@@ -401,9 +445,9 @@ fn draw_standalone_event_selector(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Green))
+        .border_style(Style::default().fg(theme::SUCCESS))
         .title(" Select EVENT Value (1) ")
-        .title_style(Style::default().fg(Color::Green).bold());
+        .title_style(Style::default().fg(theme::SUCCESS).bold());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -420,9 +464,9 @@ fn draw_standalone_event_selector(
     let desc = Paragraph::new(vec![Line::from(vec![
         Span::styled(
             "  Select the value that represents ",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::MUTED),
         ),
-        Span::styled("EVENT (1)", Style::default().fg(Color::Green).bold()),
+        Span::styled("EVENT (1)", Style::default().fg(theme::SUCCESS).bold()),
     ])]);
     frame.render_widget(desc, chunks[0]);
 
@@ -440,9 +484,9 @@ fn draw_standalone_event_selector(
         .take(max_visible)
         .map(|(i, value)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(Color::Green).bold()
+                Style::default().fg(theme::BASE).bg(theme::SUCCESS).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", value)).style(style)
         })
@@ -454,10 +498,10 @@ fn draw_standalone_event_selector(
     frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
     let help_text = Line::from(vec![
-        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
-        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc/Q", Style::default().fg(Color::Cyan)),
-        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Enter", Style::default().fg(theme::KEYS)),
+        Span::styled(" select  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Esc/Q", Style::default().fg(theme::KEYS)),
+        Span::styled(" cancel", Style::default().fg(theme::MUTED)),
     ]);
     frame.render_widget(Paragraph::new(help_text), chunks[2]);
 }
@@ -486,9 +530,9 @@ fn draw_standalone_non_event_selector(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(theme::WARNING))
         .title(" Select NON-EVENT Value (0) ")
-        .title_style(Style::default().fg(Color::Yellow).bold());
+        .title_style(Style::default().fg(theme::WARNING).bold());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -504,15 +548,12 @@ fn draw_standalone_non_event_selector(
 
     let desc = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled("  Event (1): ", Style::default().fg(Color::DarkGray)),
-            Span::styled(event_value, Style::default().fg(Color::Green).bold()),
+            Span::styled("  Event (1): ", Style::default().fg(theme::MUTED)),
+            Span::styled(event_value, Style::default().fg(theme::SUCCESS).bold()),
         ]),
         Line::from(vec![
-            Span::styled(
-                "  Select the value for ",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled("NON-EVENT (0)", Style::default().fg(Color::Yellow).bold()),
+            Span::styled("  Select the value for ", Style::default().fg(theme::MUTED)),
+            Span::styled("NON-EVENT (0)", Style::default().fg(theme::WARNING).bold()),
         ]),
     ]);
     frame.render_widget(desc, chunks[0]);
@@ -531,9 +572,9 @@ fn draw_standalone_non_event_selector(
         .take(max_visible)
         .map(|(i, value)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(Color::Yellow).bold()
+                Style::default().fg(theme::BASE).bg(theme::WARNING).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", value)).style(style)
         })
@@ -545,10 +586,10 @@ fn draw_standalone_non_event_selector(
     frame.render_stateful_widget(list, chunks[1], &mut list_state);
 
     let help_text = Line::from(vec![
-        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
-        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::styled(" back", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Enter", Style::default().fg(theme::KEYS)),
+        Span::styled(" select  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Esc", Style::default().fg(theme::KEYS)),
+        Span::styled(" back", Style::default().fg(theme::MUTED)),
     ]);
     frame.render_widget(Paragraph::new(help_text), chunks[2]);
 }
@@ -562,441 +603,494 @@ fn run_menu_loop(
     let mut scroll_offset: u16 = 0;
 
     loop {
+        // Check current terminal size
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((0, 0));
+        let terminal_too_small = cols < MIN_COLS || rows < MIN_ROWS;
+
         terminal.draw(|frame| {
-            draw_ui(frame, &config, &state, &columns, &mut scroll_offset);
+            if terminal_too_small {
+                draw_too_small_overlay(frame);
+            } else {
+                draw_ui(frame, &config, &state, &columns, &mut scroll_offset);
+            }
         })?;
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
+        match event::read()? {
+            Event::Resize(_, _) => {
+                // Size flag is updated at the top of each loop iteration
                 continue;
             }
-
-            match &mut state {
-                MenuState::Main => match key.code {
-                    KeyCode::Enter => {
-                        // Only proceed if target is selected
-                        if config.target.is_some() {
-                            return Ok(ConfigResult::Proceed(Box::new(config)));
-                        }
-                    }
-                    KeyCode::Char('t') | KeyCode::Char('T') => {
-                        let filtered: Vec<usize> = (0..columns.len()).collect();
-                        state = MenuState::SelectTarget {
-                            search: String::new(),
-                            columns: columns.clone(),
-                            filtered,
-                            selected: 0,
-                        };
-                    }
-                    KeyCode::Char('d') | KeyCode::Char('D') => {
-                        let filtered: Vec<usize> = (0..columns.len()).collect();
-                        // Pre-check columns that are already marked for dropping
-                        let checked: HashSet<usize> = columns
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, col)| config.columns_to_drop.contains(col))
-                            .map(|(i, _)| i)
-                            .collect();
-                        state = MenuState::SelectColumnsToDrop {
-                            search: String::new(),
-                            columns: columns.clone(),
-                            filtered,
-                            selected: 0,
-                            checked,
-                        };
-                    }
-                    KeyCode::Char('c') | KeyCode::Char('C') => {
-                        state = MenuState::EditMissing {
-                            input: format!("{:.2}", config.missing_threshold),
-                        };
-                    }
-                    KeyCode::Char('s') | KeyCode::Char('S') => {
-                        state = MenuState::EditUseSolver {
-                            selected: config.use_solver,
-                        };
-                    }
-                    KeyCode::Char('w') | KeyCode::Char('W') => {
-                        let filtered: Vec<usize> = (0..columns.len()).collect();
-                        state = MenuState::SelectWeightColumn {
-                            search: String::new(),
-                            columns: columns.clone(),
-                            filtered,
-                            selected: 0,
-                        };
-                    }
-                    KeyCode::Char('a') | KeyCode::Char('A') => {
-                        state = MenuState::EditInferSchemaLength {
-                            input: config.infer_schema_length.to_string(),
-                        };
-                    }
-                    KeyCode::Char('f') | KeyCode::Char('F') => {
-                        return Ok(ConfigResult::Convert(Box::new(config)));
-                    }
-                    KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                // Ignore keypresses while terminal is too small (except quit)
+                if terminal_too_small {
+                    if matches!(
+                        key.code,
+                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
+                    ) {
                         return Ok(ConfigResult::Quit);
                     }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        scroll_offset = scroll_offset.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        scroll_offset = scroll_offset.saturating_add(1);
-                    }
-                    KeyCode::PageUp => {
-                        scroll_offset = scroll_offset.saturating_sub(5);
-                    }
-                    KeyCode::PageDown => {
-                        scroll_offset = scroll_offset.saturating_add(5);
-                    }
-                    KeyCode::Home => {
-                        scroll_offset = 0;
-                    }
-                    _ => {}
-                },
-                MenuState::SelectTarget {
-                    search,
-                    columns,
-                    filtered,
-                    selected,
-                } => match key.code {
-                    KeyCode::Enter => {
-                        if !filtered.is_empty() {
-                            let idx = filtered[*selected];
-                            config.target = Some(columns[idx].clone());
-                        }
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Esc => {
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Up => {
-                        if *selected > 0 {
-                            *selected -= 1;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if *selected + 1 < filtered.len() {
-                            *selected += 1;
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        search.pop();
-                        update_filtered(search, columns, filtered);
-                        *selected = 0;
-                    }
-                    KeyCode::Char(c) => {
-                        search.push(c);
-                        update_filtered(search, columns, filtered);
-                        *selected = 0;
-                    }
-                    _ => {}
-                },
-                MenuState::SelectColumnsToDrop {
-                    search,
-                    columns,
-                    filtered,
-                    selected,
-                    checked,
-                } => match key.code {
-                    KeyCode::Enter => {
-                        // Confirm selection - convert checked indices to column names
-                        config.columns_to_drop =
-                            checked.iter().map(|&idx| columns[idx].clone()).collect();
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Esc => {
-                        // Cancel - discard changes
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Char(' ') => {
-                        // Toggle selection of current item
-                        if !filtered.is_empty() {
-                            let idx = filtered[*selected];
-                            if checked.contains(&idx) {
-                                checked.remove(&idx);
-                            } else {
-                                checked.insert(idx);
+                    continue;
+                }
+
+                match &mut state {
+                    MenuState::Main => match key.code {
+                        KeyCode::Enter => {
+                            // Only proceed if target is selected
+                            if config.target.is_some() {
+                                return Ok(ConfigResult::Proceed(Box::new(config)));
                             }
                         }
-                    }
-                    KeyCode::Up => {
-                        if *selected > 0 {
-                            *selected -= 1;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if *selected + 1 < filtered.len() {
-                            *selected += 1;
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        search.pop();
-                        update_filtered(search, columns, filtered);
-                        *selected = 0;
-                    }
-                    KeyCode::Char(c) => {
-                        search.push(c);
-                        update_filtered(search, columns, filtered);
-                        *selected = 0;
-                    }
-                    _ => {}
-                },
-                MenuState::SelectEventValue {
-                    unique_values,
-                    selected,
-                } => match key.code {
-                    KeyCode::Enter => {
-                        if !unique_values.is_empty() {
-                            let event_value = unique_values[*selected].clone();
-                            // Move to non-event selection, excluding the chosen event value
-                            let remaining: Vec<String> = unique_values
-                                .iter()
-                                .filter(|v| *v != &event_value)
-                                .cloned()
-                                .collect();
-                            state = MenuState::SelectNonEventValue {
-                                unique_values: remaining,
+                        KeyCode::Char('t') | KeyCode::Char('T') => {
+                            let filtered: Vec<usize> = (0..columns.len()).collect();
+                            state = MenuState::SelectTarget {
+                                search: String::new(),
+                                columns: columns.clone(),
+                                filtered,
                                 selected: 0,
-                                event_value,
                             };
                         }
-                    }
-                    KeyCode::Esc => {
-                        // Cancel - clear target mapping and go back to main
-                        config.target_mapping = None;
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Up => {
-                        if *selected > 0 {
-                            *selected -= 1;
+                        KeyCode::Char('d') | KeyCode::Char('D') => {
+                            let filtered: Vec<usize> = (0..columns.len()).collect();
+                            // Pre-check columns that are already marked for dropping
+                            let checked: HashSet<usize> = columns
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, col)| config.columns_to_drop.contains(col))
+                                .map(|(i, _)| i)
+                                .collect();
+                            state = MenuState::SelectColumnsToDrop {
+                                search: String::new(),
+                                columns: columns.clone(),
+                                filtered,
+                                selected: 0,
+                                checked,
+                            };
                         }
-                    }
-                    KeyCode::Down => {
-                        if *selected + 1 < unique_values.len() {
-                            *selected += 1;
+                        KeyCode::Char('c') | KeyCode::Char('C') => {
+                            state = MenuState::EditMissing {
+                                input: format!("{:.2}", config.missing_threshold),
+                                error: None,
+                            };
                         }
-                    }
-                    _ => {}
-                },
-                MenuState::SelectNonEventValue {
-                    unique_values,
-                    selected,
-                    event_value,
-                } => match key.code {
-                    KeyCode::Enter => {
-                        if !unique_values.is_empty() {
-                            let non_event_value = unique_values[*selected].clone();
-                            // Create the target mapping
-                            config.target_mapping =
-                                Some(TargetMapping::new(event_value.clone(), non_event_value));
+                        KeyCode::Char('s') | KeyCode::Char('S') => {
+                            state = MenuState::EditUseSolver {
+                                selected: config.use_solver,
+                            };
+                        }
+                        KeyCode::Char('w') | KeyCode::Char('W') => {
+                            let filtered: Vec<usize> = (0..columns.len()).collect();
+                            state = MenuState::SelectWeightColumn {
+                                search: String::new(),
+                                columns: columns.clone(),
+                                filtered,
+                                selected: 0,
+                            };
+                        }
+                        KeyCode::Char('a') | KeyCode::Char('A') => {
+                            state = MenuState::EditInferSchemaLength {
+                                input: config.infer_schema_length.to_string(),
+                                error: None,
+                            };
+                        }
+                        KeyCode::Char('f') | KeyCode::Char('F') => {
+                            return Ok(ConfigResult::Convert(Box::new(config)));
+                        }
+                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
+                            return Ok(ConfigResult::Quit);
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            scroll_offset = scroll_offset.saturating_sub(1);
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            scroll_offset = scroll_offset.saturating_add(1);
+                        }
+                        KeyCode::PageUp => {
+                            scroll_offset = scroll_offset.saturating_sub(5);
+                        }
+                        KeyCode::PageDown => {
+                            scroll_offset = scroll_offset.saturating_add(5);
+                        }
+                        KeyCode::Home => {
+                            scroll_offset = 0;
+                        }
+                        _ => {}
+                    },
+                    MenuState::SelectTarget {
+                        search,
+                        columns,
+                        filtered,
+                        selected,
+                    } => match key.code {
+                        KeyCode::Enter => {
+                            if !filtered.is_empty() {
+                                let idx = filtered[*selected];
+                                config.target = Some(columns[idx].clone());
+                            }
                             state = MenuState::Main;
                         }
-                    }
-                    KeyCode::Esc => {
-                        // Go back to event selection
-                        let mut all_values = unique_values.clone();
-                        all_values.push(event_value.clone());
-                        all_values.sort();
-                        state = MenuState::SelectEventValue {
-                            unique_values: all_values,
-                            selected: 0,
-                        };
-                    }
-                    KeyCode::Up => {
-                        if *selected > 0 {
-                            *selected -= 1;
+                        KeyCode::Esc => {
+                            state = MenuState::Main;
                         }
-                    }
-                    KeyCode::Down => {
-                        if *selected + 1 < unique_values.len() {
-                            *selected += 1;
+                        KeyCode::Up => {
+                            if *selected > 0 {
+                                *selected -= 1;
+                            }
                         }
-                    }
-                    _ => {}
-                },
-                MenuState::EditMissing { input } => match key.code {
-                    KeyCode::Enter => {
-                        if let Ok(val) = input.parse::<f64>() {
-                            if (0.0..=1.0).contains(&val) {
+                        KeyCode::Down => {
+                            if *selected + 1 < filtered.len() {
+                                *selected += 1;
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            search.pop();
+                            update_filtered(search, columns, filtered);
+                            *selected = 0;
+                        }
+                        KeyCode::Char(c) => {
+                            search.push(c);
+                            update_filtered(search, columns, filtered);
+                            *selected = 0;
+                        }
+                        _ => {}
+                    },
+                    MenuState::SelectColumnsToDrop {
+                        search,
+                        columns,
+                        filtered,
+                        selected,
+                        checked,
+                    } => match key.code {
+                        KeyCode::Enter => {
+                            // Confirm selection - convert checked indices to column names
+                            config.columns_to_drop =
+                                checked.iter().map(|&idx| columns[idx].clone()).collect();
+                            state = MenuState::Main;
+                        }
+                        KeyCode::Esc => {
+                            // Cancel - discard changes
+                            state = MenuState::Main;
+                        }
+                        KeyCode::Char(' ') => {
+                            // Toggle selection of current item
+                            if !filtered.is_empty() {
+                                let idx = filtered[*selected];
+                                if checked.contains(&idx) {
+                                    checked.remove(&idx);
+                                } else {
+                                    checked.insert(idx);
+                                }
+                            }
+                        }
+                        KeyCode::Up => {
+                            if *selected > 0 {
+                                *selected -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if *selected + 1 < filtered.len() {
+                                *selected += 1;
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            search.pop();
+                            update_filtered(search, columns, filtered);
+                            *selected = 0;
+                        }
+                        KeyCode::Char(c) => {
+                            search.push(c);
+                            update_filtered(search, columns, filtered);
+                            *selected = 0;
+                        }
+                        _ => {}
+                    },
+                    MenuState::SelectEventValue {
+                        unique_values,
+                        selected,
+                    } => match key.code {
+                        KeyCode::Enter => {
+                            if !unique_values.is_empty() {
+                                let event_value = unique_values[*selected].clone();
+                                // Move to non-event selection, excluding the chosen event value
+                                let remaining: Vec<String> = unique_values
+                                    .iter()
+                                    .filter(|v| *v != &event_value)
+                                    .cloned()
+                                    .collect();
+                                state = MenuState::SelectNonEventValue {
+                                    unique_values: remaining,
+                                    selected: 0,
+                                    event_value,
+                                };
+                            }
+                        }
+                        KeyCode::Esc => {
+                            // Cancel - clear target mapping and go back to main
+                            config.target_mapping = None;
+                            state = MenuState::Main;
+                        }
+                        KeyCode::Up => {
+                            if *selected > 0 {
+                                *selected -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if *selected + 1 < unique_values.len() {
+                                *selected += 1;
+                            }
+                        }
+                        _ => {}
+                    },
+                    MenuState::SelectNonEventValue {
+                        unique_values,
+                        selected,
+                        event_value,
+                    } => match key.code {
+                        KeyCode::Enter => {
+                            if !unique_values.is_empty() {
+                                let non_event_value = unique_values[*selected].clone();
+                                // Create the target mapping
+                                config.target_mapping =
+                                    Some(TargetMapping::new(event_value.clone(), non_event_value));
+                                state = MenuState::Main;
+                            }
+                        }
+                        KeyCode::Esc => {
+                            // Go back to event selection
+                            let mut all_values = unique_values.clone();
+                            all_values.push(event_value.clone());
+                            all_values.sort();
+                            state = MenuState::SelectEventValue {
+                                unique_values: all_values,
+                                selected: 0,
+                            };
+                        }
+                        KeyCode::Up => {
+                            if *selected > 0 {
+                                *selected -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if *selected + 1 < unique_values.len() {
+                                *selected += 1;
+                            }
+                        }
+                        _ => {}
+                    },
+                    MenuState::EditMissing { input, error } => match key.code {
+                        KeyCode::Enter => match input.parse::<f64>() {
+                            Ok(val) if (0.0..=1.0).contains(&val) => {
                                 config.missing_threshold = val;
+                                state = MenuState::EditGini {
+                                    input: format!("{:.2}", config.gini_threshold),
+                                    error: None,
+                                };
                             }
-                        }
-                        state = MenuState::EditGini {
-                            input: format!("{:.2}", config.gini_threshold),
-                        };
-                    }
-                    KeyCode::Esc => {
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Backspace => {
-                        input.pop();
-                    }
-                    KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
-                        input.push(c);
-                    }
-                    _ => {}
-                },
-                MenuState::EditGini { input } => match key.code {
-                    KeyCode::Enter => {
-                        if let Ok(val) = input.parse::<f64>() {
-                            if (0.0..=1.0).contains(&val) {
-                                config.gini_threshold = val;
+                            Ok(_) => {
+                                *error = Some("Value must be between 0.0 and 1.0".to_string());
                             }
-                        }
-                        state = MenuState::EditCorrelation {
-                            input: format!("{:.2}", config.correlation_threshold),
-                        };
-                    }
-                    KeyCode::Esc => {
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Backspace => {
-                        input.pop();
-                    }
-                    KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
-                        input.push(c);
-                    }
-                    _ => {}
-                },
-                MenuState::EditCorrelation { input } => match key.code {
-                    KeyCode::Enter => {
-                        if let Ok(val) = input.parse::<f64>() {
-                            if (0.0..=1.0).contains(&val) {
-                                config.correlation_threshold = val;
+                            Err(_) => {
+                                *error = Some("Invalid number".to_string());
                             }
-                        }
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Esc => {
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Backspace => {
-                        input.pop();
-                    }
-                    KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
-                        input.push(c);
-                    }
-                    _ => {}
-                },
-                // Solver flow handlers
-                MenuState::EditUseSolver { selected } => match key.code {
-                    KeyCode::Enter | KeyCode::Char(' ') => {
-                        *selected = !*selected;
-                    }
-                    KeyCode::Tab => {
-                        config.use_solver = *selected;
-                        if config.use_solver {
-                            state = MenuState::SelectMonotonicity {
-                                selected: match config.monotonicity.as_str() {
-                                    "none" => 0,
-                                    "ascending" => 1,
-                                    "descending" => 2,
-                                    "peak" => 3,
-                                    "valley" => 4,
-                                    "auto" => 5,
-                                    _ => 0,
-                                },
-                            };
-                        } else {
+                        },
+                        KeyCode::Esc => {
                             state = MenuState::Main;
                         }
-                    }
-                    KeyCode::Esc => {
-                        state = MenuState::Main;
-                    }
-                    _ => {}
-                },
-                MenuState::SelectMonotonicity { selected } => match key.code {
-                    KeyCode::Enter => {
-                        config.monotonicity = match *selected {
-                            0 => "none".to_string(),
-                            1 => "ascending".to_string(),
-                            2 => "descending".to_string(),
-                            3 => "peak".to_string(),
-                            4 => "valley".to_string(),
-                            5 => "auto".to_string(),
-                            _ => "none".to_string(),
-                        };
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Up => {
-                        if *selected > 0 {
-                            *selected -= 1;
+                        KeyCode::Backspace => {
+                            input.pop();
+                            *error = None;
                         }
-                    }
-                    KeyCode::Down => {
-                        if *selected < 5 {
-                            *selected += 1;
+                        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                            input.push(c);
+                            *error = None;
                         }
-                    }
-                    KeyCode::Esc => {
-                        state = MenuState::Main;
-                    }
-                    _ => {}
-                },
-                // Data options handlers
-                MenuState::SelectWeightColumn {
-                    search,
-                    columns,
-                    filtered,
-                    selected,
-                } => match key.code {
-                    KeyCode::Enter => {
-                        if filtered.is_empty() || *selected == 0 {
-                            // First option is "None" when filtered is not empty
-                            // or no selection available
-                            config.weight_column = None;
-                        } else {
-                            let idx = filtered[*selected - 1]; // -1 because of "None" option
-                            config.weight_column = Some(columns[idx].clone());
+                        _ => {}
+                    },
+                    MenuState::EditGini { input, error } => match key.code {
+                        KeyCode::Enter => match input.parse::<f64>() {
+                            Ok(val) if (0.0..=1.0).contains(&val) => {
+                                config.gini_threshold = val;
+                                state = MenuState::EditCorrelation {
+                                    input: format!("{:.2}", config.correlation_threshold),
+                                    error: None,
+                                };
+                            }
+                            Ok(_) => {
+                                *error = Some("Value must be between 0.0 and 1.0".to_string());
+                            }
+                            Err(_) => {
+                                *error = Some("Invalid number".to_string());
+                            }
+                        },
+                        KeyCode::Esc => {
+                            state = MenuState::Main;
                         }
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Esc => {
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Up => {
-                        if *selected > 0 {
-                            *selected -= 1;
+                        KeyCode::Backspace => {
+                            input.pop();
+                            *error = None;
                         }
-                    }
-                    KeyCode::Down => {
-                        if *selected < filtered.len() {
-                            *selected += 1;
+                        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                            input.push(c);
+                            *error = None;
                         }
-                    }
-                    KeyCode::Backspace => {
-                        search.pop();
-                        update_filtered(search, columns, filtered);
-                        *selected = 0;
-                    }
-                    KeyCode::Char(c) => {
-                        search.push(c);
-                        update_filtered(search, columns, filtered);
-                        *selected = 0;
-                    }
-                    _ => {}
-                },
-                MenuState::EditInferSchemaLength { input } => match key.code {
-                    KeyCode::Enter => {
-                        if let Ok(val) = input.parse::<usize>() {
-                            if val >= 100 {
-                                config.infer_schema_length = val;
+                        _ => {}
+                    },
+                    MenuState::EditCorrelation { input, error } => match key.code {
+                        KeyCode::Enter => match input.parse::<f64>() {
+                            Ok(val) if (0.0..=1.0).contains(&val) => {
+                                config.correlation_threshold = val;
+                                state = MenuState::Main;
+                            }
+                            Ok(_) => {
+                                *error = Some("Value must be between 0.0 and 1.0".to_string());
+                            }
+                            Err(_) => {
+                                *error = Some("Invalid number".to_string());
+                            }
+                        },
+                        KeyCode::Esc => {
+                            state = MenuState::Main;
+                        }
+                        KeyCode::Backspace => {
+                            input.pop();
+                            *error = None;
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                            input.push(c);
+                            *error = None;
+                        }
+                        _ => {}
+                    },
+                    // Solver flow handlers
+                    MenuState::EditUseSolver { selected } => match key.code {
+                        KeyCode::Char(' ') => {
+                            *selected = !*selected;
+                        }
+                        KeyCode::Enter => {
+                            config.use_solver = *selected;
+                            if config.use_solver {
+                                state = MenuState::SelectMonotonicity {
+                                    selected: match config.monotonicity.as_str() {
+                                        "none" => 0,
+                                        "ascending" => 1,
+                                        "descending" => 2,
+                                        "peak" => 3,
+                                        "valley" => 4,
+                                        "auto" => 5,
+                                        _ => 0,
+                                    },
+                                };
+                            } else {
+                                state = MenuState::Main;
                             }
                         }
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Esc => {
-                        state = MenuState::Main;
-                    }
-                    KeyCode::Backspace => {
-                        input.pop();
-                    }
-                    KeyCode::Char(c) if c.is_ascii_digit() => {
-                        input.push(c);
-                    }
-                    _ => {}
-                },
+                        KeyCode::Esc => {
+                            state = MenuState::Main;
+                        }
+                        _ => {}
+                    },
+                    MenuState::SelectMonotonicity { selected } => match key.code {
+                        KeyCode::Enter => {
+                            config.monotonicity = match *selected {
+                                0 => "none".to_string(),
+                                1 => "ascending".to_string(),
+                                2 => "descending".to_string(),
+                                3 => "peak".to_string(),
+                                4 => "valley".to_string(),
+                                5 => "auto".to_string(),
+                                _ => "none".to_string(),
+                            };
+                            state = MenuState::Main;
+                        }
+                        KeyCode::Up => {
+                            if *selected > 0 {
+                                *selected -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if *selected < 5 {
+                                *selected += 1;
+                            }
+                        }
+                        KeyCode::Esc => {
+                            state = MenuState::Main;
+                        }
+                        _ => {}
+                    },
+                    // Data options handlers
+                    MenuState::SelectWeightColumn {
+                        search,
+                        columns,
+                        filtered,
+                        selected,
+                    } => match key.code {
+                        KeyCode::Enter => {
+                            if filtered.is_empty() || *selected == 0 {
+                                // First option is "None" when filtered is not empty
+                                // or no selection available
+                                config.weight_column = None;
+                            } else {
+                                let idx = filtered[*selected - 1]; // -1 because of "None" option
+                                config.weight_column = Some(columns[idx].clone());
+                            }
+                            state = MenuState::Main;
+                        }
+                        KeyCode::Esc => {
+                            state = MenuState::Main;
+                        }
+                        KeyCode::Up => {
+                            if *selected > 0 {
+                                *selected -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if *selected < filtered.len() {
+                                *selected += 1;
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            search.pop();
+                            update_filtered(search, columns, filtered);
+                            *selected = 0;
+                        }
+                        KeyCode::Char(c) => {
+                            search.push(c);
+                            update_filtered(search, columns, filtered);
+                            *selected = 0;
+                        }
+                        _ => {}
+                    },
+                    MenuState::EditInferSchemaLength { input, error } => match key.code {
+                        KeyCode::Enter => match input.parse::<usize>() {
+                            Ok(val) if val == 0 || val >= 100 => {
+                                config.infer_schema_length = val;
+                                state = MenuState::Main;
+                            }
+                            Ok(_) => {
+                                *error = Some("Value must be 0 or >= 100".to_string());
+                            }
+                            Err(_) => {
+                                *error = Some("Invalid number".to_string());
+                            }
+                        },
+                        KeyCode::Esc => {
+                            state = MenuState::Main;
+                        }
+                        KeyCode::Backspace => {
+                            input.pop();
+                            *error = None;
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            input.push(c);
+                            *error = None;
+                        }
+                        _ => {}
+                    },
+                }
             }
+            _ => {}
         }
     }
 }
@@ -1035,41 +1129,6 @@ fn draw_ui(
 ) {
     let area = frame.area();
 
-    // ASCII logo for Lo-phi
-    let logo_lines = vec![
-        Line::from(Span::styled(
-            "██╗      ██████╗       ██████╗ ██╗  ██╗██╗",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "██║     ██╔═══██╗      ██╔══██╗██║  ██║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "██║     ██║   ██║█████╗██████╔╝███████║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "██║     ██║   ██║╚════╝██╔═══╝ ██╔══██║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "███████╗╚██████╔╝      ██║     ██║  ██║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "╚══════╝ ╚═════╝       ╚═╝     ╚═╝  ╚═╝╚═╝",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("φ ", Style::default().fg(Color::Magenta).bold()),
-            Span::styled(
-                "Feature Reduction as simple as phi",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-    ];
     let logo_height = 9u16; // 6 logo lines + 1 empty + 1 subtitle + 1 spacing
     let scroll_hint_height = 1u16; // Height for the scroll hint below the box
 
@@ -1091,8 +1150,7 @@ fn draw_ui(
     let logo_width = 43u16; // Width of the ASCII art
     let logo_x = area.width.saturating_sub(logo_width) / 2;
     let logo_area = Rect::new(logo_x, y, logo_width.min(area.width), logo_height);
-    let logo_paragraph = Paragraph::new(logo_lines).alignment(Alignment::Center);
-    frame.render_widget(logo_paragraph, logo_area);
+    render_logo(frame, logo_area);
 
     // Menu area positioned below the logo
     let menu_y = y + logo_height;
@@ -1104,9 +1162,9 @@ fn draw_ui(
     // Main container block with gradient-like styling
     let outer_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(themed(Style::default().fg(theme::PRIMARY)))
         .title(" Lo-phi Configuration ")
-        .title_style(Style::default().fg(Color::Cyan).bold());
+        .title_style(themed(Style::default().fg(theme::PRIMARY).bold()));
 
     let inner_area = outer_block.inner(menu_area);
     frame.render_widget(outer_block, menu_area);
@@ -1163,10 +1221,10 @@ fn draw_ui(
 
         let hint_content = if has_overflow {
             Line::from(vec![
-                Span::styled("  ↑/↓", Style::default().fg(Color::DarkGray)),
-                Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("PgUp/PgDn", Style::default().fg(Color::DarkGray)),
-                Span::styled(" page", Style::default().fg(Color::DarkGray)),
+                Span::styled("  ↑/↓", Style::default().fg(theme::MUTED)),
+                Span::styled(" scroll  ", Style::default().fg(theme::MUTED)),
+                Span::styled("PgUp/PgDn", Style::default().fg(theme::MUTED)),
+                Span::styled(" page", Style::default().fg(theme::MUTED)),
             ])
         } else {
             Line::from("") // Empty line to maintain consistent layout
@@ -1208,11 +1266,11 @@ fn draw_ui(
         } => {
             draw_non_event_value_selector(frame, unique_values, *selected, event_value);
         }
-        MenuState::EditMissing { input }
-        | MenuState::EditGini { input }
-        | MenuState::EditCorrelation { input }
-        | MenuState::EditInferSchemaLength { input } => {
-            draw_edit_popup(frame, state, input);
+        MenuState::EditMissing { input, error }
+        | MenuState::EditGini { input, error }
+        | MenuState::EditCorrelation { input, error }
+        | MenuState::EditInferSchemaLength { input, error } => {
+            draw_edit_popup(frame, state, input, error.as_deref());
         }
         // Solver popups
         MenuState::EditUseSolver { selected } => {
@@ -1229,7 +1287,7 @@ fn draw_ui(
                 " Select Monotonicity ",
                 &["none", "ascending", "descending", "peak", "valley", "auto"],
                 *selected,
-                Color::Magenta,
+                theme::ACCENT,
             );
         }
         // Data popups
@@ -1265,8 +1323,8 @@ fn build_content(
     // File info section with truncated paths
     let input_path = truncate_path_start(&config.input.display().to_string(), max_path_len);
     lines.push(Line::from(vec![
-        Span::styled("  Input:  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(input_path, Style::default().fg(Color::White)),
+        Span::styled("  Input:  ", Style::default().fg(theme::MUTED)),
+        Span::styled(input_path, Style::default().fg(theme::TEXT)),
     ]));
 
     // Target with highlighting if not selected
@@ -1275,40 +1333,40 @@ fn build_content(
         .clone()
         .unwrap_or_else(|| "⚠ Not selected".to_string());
     let target_style = if config.target.is_some() {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme::TEXT)
     } else {
-        Style::default().fg(Color::Yellow).bold()
+        Style::default().fg(theme::WARNING).bold()
     };
     lines.push(Line::from(vec![
-        Span::styled("  Target: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Target: ", Style::default().fg(theme::MUTED)),
         Span::styled(target_display, target_style),
     ]));
 
     // Show target mapping if configured
     if let Some(mapping) = &config.target_mapping {
         lines.push(Line::from(vec![
-            Span::styled("          ", Style::default().fg(Color::DarkGray)),
+            Span::styled("          ", Style::default().fg(theme::MUTED)),
             Span::styled(
                 format!(
                     "→ {} = 1, {} = 0",
                     mapping.event_value, mapping.non_event_value
                 ),
-                Style::default().fg(Color::DarkGray).italic(),
+                Style::default().fg(theme::MUTED).italic(),
             ),
         ]));
     }
 
     let output_path = truncate_path_start(&config.output.display().to_string(), max_path_len);
     lines.push(Line::from(vec![
-        Span::styled("  Output: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(output_path, Style::default().fg(Color::White)),
+        Span::styled("  Output: ", Style::default().fg(theme::MUTED)),
+        Span::styled(output_path, Style::default().fg(theme::TEXT)),
     ]));
 
     // Separator
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  ───────────────────────────────────────────────────────────",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::DIVIDER),
     )));
 
     // Three-column header: THRESHOLDS | SOLVER | DATA
@@ -1316,62 +1374,65 @@ fn build_content(
     lines.push(Line::from(vec![
         Span::styled(
             "  THRESHOLDS        ",
-            Style::default().fg(Color::Cyan).bold(),
+            Style::default().fg(theme::SUBTEXT).bold(),
         ),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("SOLVER          ", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("DATA", Style::default().fg(Color::Cyan).bold()),
+        Span::styled("│ ", Style::default().fg(theme::DIVIDER)),
+        Span::styled(
+            "SOLVER          ",
+            Style::default().fg(theme::SUBTEXT).bold(),
+        ),
+        Span::styled("│ ", Style::default().fg(theme::DIVIDER)),
+        Span::styled("DATA", Style::default().fg(theme::SUBTEXT).bold()),
     ]));
 
     // Compute styles for all fields
     let missing_style = match state {
-        MenuState::EditMissing { .. } => Style::default().fg(Color::Yellow).bold(),
-        _ => Style::default().fg(Color::Green),
+        MenuState::EditMissing { .. } => Style::default().fg(theme::WARNING).bold(),
+        _ => Style::default().fg(theme::SUCCESS),
     };
     let gini_style = match state {
-        MenuState::EditGini { .. } => Style::default().fg(Color::Yellow).bold(),
-        _ => Style::default().fg(Color::Green),
+        MenuState::EditGini { .. } => Style::default().fg(theme::WARNING).bold(),
+        _ => Style::default().fg(theme::SUCCESS),
     };
     let corr_style = match state {
-        MenuState::EditCorrelation { .. } => Style::default().fg(Color::Yellow).bold(),
-        _ => Style::default().fg(Color::Green),
+        MenuState::EditCorrelation { .. } => Style::default().fg(theme::WARNING).bold(),
+        _ => Style::default().fg(theme::SUCCESS),
     };
 
     let solver_enabled = config.use_solver;
     let use_solver_style = match state {
-        MenuState::EditUseSolver { .. } => Style::default().fg(Color::Yellow).bold(),
+        MenuState::EditUseSolver { .. } => Style::default().fg(theme::WARNING).bold(),
         _ => {
             if solver_enabled {
-                Style::default().fg(Color::Green)
+                Style::default().fg(theme::SUCCESS)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme::MUTED)
             }
         }
     };
     let trend_style = match state {
-        MenuState::SelectMonotonicity { .. } => Style::default().fg(Color::Yellow).bold(),
+        MenuState::SelectMonotonicity { .. } => Style::default().fg(theme::WARNING).bold(),
         _ => {
             if solver_enabled {
-                Style::default().fg(Color::Green)
+                Style::default().fg(theme::SUCCESS)
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(theme::MUTED)
             }
         }
     };
 
     let drop_style = if config.columns_to_drop.is_empty() {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme::MUTED)
     } else {
-        Style::default().fg(Color::Red)
+        Style::default().fg(theme::ERROR)
     };
     let weight_style = match state {
-        MenuState::SelectWeightColumn { .. } => Style::default().fg(Color::Yellow).bold(),
-        _ => Style::default().fg(Color::Green),
+        MenuState::SelectWeightColumn { .. } => Style::default().fg(theme::WARNING).bold(),
+        _ => Style::default().fg(theme::SUCCESS),
     };
     let schema_style = match state {
-        MenuState::EditInferSchemaLength { .. } => Style::default().fg(Color::Yellow).bold(),
-        _ => Style::default().fg(Color::Green),
+        MenuState::EditInferSchemaLength { .. } => Style::default().fg(theme::WARNING).bold(),
+        _ => Style::default().fg(theme::SUCCESS),
     };
 
     // Compute display values
@@ -1395,14 +1456,14 @@ fn build_content(
     let missing_val = format!("{:.2}", config.missing_threshold);
     let solver_val = if config.use_solver { "Yes" } else { "No" };
     lines.push(Line::from(vec![
-        Span::styled("  Missing:    ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Missing:    ", Style::default().fg(theme::MUTED)),
         Span::styled(missing_val, missing_style),
         Span::styled("  ", Style::default()),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Solver: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("│ ", Style::default().fg(theme::DIVIDER)),
+        Span::styled("Solver: ", Style::default().fg(theme::MUTED)),
         Span::styled(format!("{:<8}", solver_val), use_solver_style),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Drop:   ", Style::default().fg(Color::DarkGray)),
+        Span::styled("│ ", Style::default().fg(theme::DIVIDER)),
+        Span::styled("Drop:   ", Style::default().fg(theme::MUTED)),
         Span::styled(drop_display, drop_style),
     ]));
 
@@ -1410,86 +1471,132 @@ fn build_content(
     let gini_val = format!("{:.2}", config.gini_threshold);
     let trend_val = format!("{:<8}", config.monotonicity);
     lines.push(Line::from(vec![
-        Span::styled("  Gini:       ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Gini:       ", Style::default().fg(theme::MUTED)),
         Span::styled(gini_val, gini_style),
         Span::styled("  ", Style::default()),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Trend:  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("│ ", Style::default().fg(theme::DIVIDER)),
+        Span::styled("Trend:  ", Style::default().fg(theme::MUTED)),
         Span::styled(trend_val, trend_style),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Weight: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("│ ", Style::default().fg(theme::DIVIDER)),
+        Span::styled("Weight: ", Style::default().fg(theme::MUTED)),
         Span::styled(weight_display, weight_style),
     ]));
 
     // Row 3: Correlation | (empty) | Schema
     let corr_val = format!("{:.2}", config.correlation_threshold);
     lines.push(Line::from(vec![
-        Span::styled("  Correlation:", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Correlation:", Style::default().fg(theme::MUTED)),
         Span::styled(corr_val, corr_style),
         Span::styled("  ", Style::default()),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+        Span::styled("│ ", Style::default().fg(theme::DIVIDER)),
         Span::styled("                ", Style::default()),
-        Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Schema: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("│ ", Style::default().fg(theme::DIVIDER)),
+        Span::styled("Schema: ", Style::default().fg(theme::MUTED)),
         Span::styled(schema_display, schema_style),
     ]));
 
     // Bottom separator
     lines.push(Line::from(Span::styled(
         "  ───────────────────────────────────────────────────────────",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::DIVIDER),
     )));
 
-    // Controls section
-    let enter_style = if config.target.is_some() {
-        Style::default().fg(Color::Cyan).bold()
+    // Controls section — context-aware based on current menu state
+    let in_main = matches!(state, MenuState::Main);
+
+    if in_main {
+        // Full shortcut list shown only on Main screen
+        let enter_style = if config.target.is_some() {
+            themed(Style::default().fg(theme::KEYS).bold())
+        } else {
+            // No target yet: dim Enter to signal it won't work
+            Style::default().fg(theme::MUTED)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  [", Style::default().fg(theme::MUTED)),
+            Span::styled("Enter", enter_style),
+            Span::styled(
+                "] Run with these settings",
+                if config.target.is_some() {
+                    Style::default().fg(theme::TEXT)
+                } else {
+                    Style::default().fg(theme::MUTED)
+                },
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  [", Style::default().fg(theme::MUTED)),
+            Span::styled("T", themed(Style::default().fg(theme::KEYS).bold())),
+            Span::styled("] Select target ", Style::default().fg(theme::TEXT)),
+            Span::styled("[", Style::default().fg(theme::MUTED)),
+            Span::styled("F", themed(Style::default().fg(theme::KEYS).bold())),
+            Span::styled("] Convert format", Style::default().fg(theme::TEXT)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  [", Style::default().fg(theme::MUTED)),
+            Span::styled("D", themed(Style::default().fg(theme::KEYS).bold())),
+            Span::styled("] Drop columns  ", Style::default().fg(theme::TEXT)),
+            Span::styled("[", Style::default().fg(theme::MUTED)),
+            Span::styled("C", themed(Style::default().fg(theme::KEYS).bold())),
+            Span::styled("] Thresholds", Style::default().fg(theme::TEXT)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  [", Style::default().fg(theme::MUTED)),
+            Span::styled("S", themed(Style::default().fg(theme::KEYS).bold())),
+            Span::styled("] Solver        ", Style::default().fg(theme::TEXT)),
+            Span::styled("[", Style::default().fg(theme::MUTED)),
+            Span::styled("W", themed(Style::default().fg(theme::KEYS).bold())),
+            Span::styled("] Weight col", Style::default().fg(theme::TEXT)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  [", Style::default().fg(theme::MUTED)),
+            Span::styled("A", themed(Style::default().fg(theme::KEYS).bold())),
+            Span::styled("] Advanced      ", Style::default().fg(theme::TEXT)),
+            Span::styled("[", Style::default().fg(theme::MUTED)),
+            Span::styled("Q", themed(Style::default().fg(theme::KEYS).bold())),
+            Span::styled("] Quit", Style::default().fg(theme::TEXT)),
+        ]));
     } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    lines.push(Line::from(vec![
-        Span::styled("  [", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter", enter_style),
-        Span::styled(
-            "] Run with these settings",
-            if config.target.is_some() {
-                Style::default().fg(Color::White)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            },
-        ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  [", Style::default().fg(Color::DarkGray)),
-        Span::styled("T", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Select target ", Style::default().fg(Color::White)),
-        Span::styled("[", Style::default().fg(Color::DarkGray)),
-        Span::styled("F", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Convert format", Style::default().fg(Color::White)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  [", Style::default().fg(Color::DarkGray)),
-        Span::styled("D", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Drop columns  ", Style::default().fg(Color::White)),
-        Span::styled("[", Style::default().fg(Color::DarkGray)),
-        Span::styled("C", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Thresholds", Style::default().fg(Color::White)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  [", Style::default().fg(Color::DarkGray)),
-        Span::styled("S", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Solver        ", Style::default().fg(Color::White)),
-        Span::styled("[", Style::default().fg(Color::DarkGray)),
-        Span::styled("W", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Weight col", Style::default().fg(Color::White)),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  [", Style::default().fg(Color::DarkGray)),
-        Span::styled("A", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Advanced      ", Style::default().fg(Color::White)),
-        Span::styled("[", Style::default().fg(Color::DarkGray)),
-        Span::styled("Q", Style::default().fg(Color::Cyan).bold()),
-        Span::styled("] Quit", Style::default().fg(Color::White)),
-    ]));
+        // In a popup/edit mode — show only the relevant navigation keys
+        let (confirm_label, confirm_desc) = match state {
+            MenuState::EditMissing { .. }
+            | MenuState::EditGini { .. }
+            | MenuState::EditCorrelation { .. }
+            | MenuState::EditInferSchemaLength { .. } => ("Enter", " confirm  "),
+            MenuState::EditUseSolver { .. } => ("Space", " toggle  "),
+            MenuState::SelectMonotonicity { .. }
+            | MenuState::SelectTarget { .. }
+            | MenuState::SelectColumnsToDrop { .. }
+            | MenuState::SelectWeightColumn { .. }
+            | MenuState::SelectEventValue { .. }
+            | MenuState::SelectNonEventValue { .. } => ("Enter", " select  "),
+            MenuState::Main => ("Enter", " run  "),
+        };
+        let has_space_toggle = matches!(state, MenuState::SelectColumnsToDrop { .. });
+        let mut row = vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(confirm_label, themed(Style::default().fg(theme::KEYS))),
+            Span::styled(confirm_desc, Style::default().fg(theme::MUTED)),
+        ];
+        if has_space_toggle {
+            row.push(Span::styled(
+                "Space",
+                themed(Style::default().fg(theme::KEYS)),
+            ));
+            row.push(Span::styled(" toggle  ", Style::default().fg(theme::MUTED)));
+        }
+        row.push(Span::styled(
+            "Esc",
+            themed(Style::default().fg(theme::KEYS)),
+        ));
+        row.push(Span::styled(" cancel", Style::default().fg(theme::MUTED)));
+        lines.push(Line::from(row));
+        // Pad remaining rows to keep layout stable
+        lines.push(Line::from(""));
+        lines.push(Line::from(""));
+        lines.push(Line::from(""));
+        lines.push(Line::from(""));
+    }
 
     lines
 }
@@ -1519,9 +1626,9 @@ fn draw_target_selector(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta))
+        .border_style(Style::default().fg(theme::ACCENT))
         .title(" Select Target Column ")
-        .title_style(Style::default().fg(Color::Magenta).bold());
+        .title_style(Style::default().fg(theme::ACCENT).bold());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -1535,14 +1642,14 @@ fn draw_target_selector(
     // Search box
     let search_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(theme::SURFACE))
         .title(" Search ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(theme::SURFACE));
 
     let search_text = search.to_string();
     let search_para = Paragraph::new(Line::from(vec![
-        Span::styled(search_text, Style::default().fg(Color::White)),
-        Span::styled("▌", Style::default().fg(Color::Magenta)),
+        Span::styled(search_text, Style::default().fg(theme::TEXT)),
+        Span::styled("▌", Style::default().fg(theme::ACCENT)),
     ]))
     .block(search_block);
 
@@ -1564,9 +1671,9 @@ fn draw_target_selector(
         .map(|(i, &col_idx)| {
             let col_name = &columns[col_idx];
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(Color::Magenta).bold()
+                Style::default().fg(theme::BASE).bg(theme::ACCENT).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", col_name)).style(style)
         })
@@ -1584,7 +1691,7 @@ fn draw_target_selector(
     if !filtered.is_empty() {
         let count_text = format!(" {}/{} columns ", selected + 1, filtered.len());
         let text_len = count_text.len();
-        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_span = Span::styled(count_text, Style::default().fg(theme::MUTED));
         let count_area = Rect::new(
             popup_area.x + popup_area.width - text_len as u16 - 1,
             popup_area.y + popup_area.height - 1,
@@ -1622,9 +1729,9 @@ fn draw_columns_to_drop_selector(
     let title = format!(" Select Columns to Drop ({} selected) ", checked.len());
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Red))
+        .border_style(Style::default().fg(theme::ERROR))
         .title(title)
-        .title_style(Style::default().fg(Color::Red).bold());
+        .title_style(Style::default().fg(theme::ERROR).bold());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -1642,14 +1749,14 @@ fn draw_columns_to_drop_selector(
     // Search box
     let search_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(theme::SURFACE))
         .title(" Search ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(theme::SURFACE));
 
     let search_text = search.to_string();
     let search_para = Paragraph::new(Line::from(vec![
-        Span::styled(search_text, Style::default().fg(Color::White)),
-        Span::styled("▌", Style::default().fg(Color::Red)),
+        Span::styled(search_text, Style::default().fg(theme::TEXT)),
+        Span::styled("▌", Style::default().fg(theme::ERROR)),
     ]))
     .block(search_block);
 
@@ -1674,11 +1781,11 @@ fn draw_columns_to_drop_selector(
             let checkbox = if is_checked { "[x]" } else { "[ ]" };
 
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(Color::Red).bold()
+                Style::default().fg(theme::BASE).bg(theme::ERROR).bold()
             } else if is_checked {
-                Style::default().fg(Color::Red)
+                Style::default().fg(theme::ERROR)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {} {}", checkbox, col_name)).style(style)
         })
@@ -1694,12 +1801,12 @@ fn draw_columns_to_drop_selector(
 
     // Help text at bottom
     let help_text = Line::from(vec![
-        Span::styled("  Space", Style::default().fg(Color::Cyan)),
-        Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter", Style::default().fg(Color::Cyan)),
-        Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Space", Style::default().fg(theme::KEYS)),
+        Span::styled(" toggle  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Enter", Style::default().fg(theme::KEYS)),
+        Span::styled(" confirm  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Esc", Style::default().fg(theme::KEYS)),
+        Span::styled(" cancel", Style::default().fg(theme::MUTED)),
     ]);
     frame.render_widget(Paragraph::new(help_text), chunks[2]);
 
@@ -1707,7 +1814,7 @@ fn draw_columns_to_drop_selector(
     if !filtered.is_empty() {
         let count_text = format!(" {}/{} columns ", selected + 1, filtered.len());
         let text_len = count_text.len();
-        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_span = Span::styled(count_text, Style::default().fg(theme::MUTED));
         let count_area = Rect::new(
             popup_area.x + popup_area.width - text_len as u16 - 1,
             popup_area.y + popup_area.height - 1,
@@ -1718,11 +1825,11 @@ fn draw_columns_to_drop_selector(
     }
 }
 
-fn draw_edit_popup(frame: &mut Frame, state: &MenuState, input: &str) {
+fn draw_edit_popup(frame: &mut Frame, state: &MenuState, input: &str, error: Option<&str>) {
     let area = frame.area();
 
     let popup_width = 45u16;
-    let popup_height = 7u16;
+    let popup_height = if error.is_some() { 9u16 } else { 7u16 };
     let x = area.width.saturating_sub(popup_width) / 2;
     let y = area.height.saturating_sub(popup_height) / 2;
 
@@ -1735,38 +1842,75 @@ fn draw_edit_popup(frame: &mut Frame, state: &MenuState, input: &str) {
 
     frame.render_widget(Clear, popup_area);
 
-    let title = match state {
-        MenuState::EditMissing { .. } => " Missing Threshold ",
-        MenuState::EditGini { .. } => " Gini Threshold ",
-        MenuState::EditCorrelation { .. } => " Correlation Threshold ",
-        MenuState::EditInferSchemaLength { .. } => " Schema Inference Length ",
-        _ => "",
+    let (border_color, title) = match state {
+        MenuState::EditMissing { .. } => (
+            if error.is_some() {
+                theme::ERROR
+            } else {
+                theme::WARNING
+            },
+            " Missing Threshold ",
+        ),
+        MenuState::EditGini { .. } => (
+            if error.is_some() {
+                theme::ERROR
+            } else {
+                theme::WARNING
+            },
+            " Gini Threshold ",
+        ),
+        MenuState::EditCorrelation { .. } => (
+            if error.is_some() {
+                theme::ERROR
+            } else {
+                theme::WARNING
+            },
+            " Correlation Threshold ",
+        ),
+        MenuState::EditInferSchemaLength { .. } => (
+            if error.is_some() {
+                theme::ERROR
+            } else {
+                theme::WARNING
+            },
+            " Schema Inference Length ",
+        ),
+        _ => (theme::WARNING, ""),
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(border_color))
         .title(title)
-        .title_style(Style::default().fg(Color::Yellow).bold());
+        .title_style(Style::default().fg(border_color).bold());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let content = vec![
+    let mut content = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Value: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(input.to_string(), Style::default().fg(Color::White).bold()),
-            Span::styled("▌", Style::default().fg(Color::Yellow)),
+            Span::styled("  Value: ", Style::default().fg(theme::MUTED)),
+            Span::styled(input.to_string(), Style::default().fg(theme::TEXT).bold()),
+            Span::styled("▌", Style::default().fg(theme::WARNING)),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Enter", Style::default().fg(Color::Cyan)),
-            Span::styled(" to confirm, ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::styled(" to cancel", Style::default().fg(Color::DarkGray)),
-        ]),
     ];
+
+    if let Some(msg) = error {
+        content.push(Line::from(vec![Span::styled(
+            format!("  {}", msg),
+            Style::default().fg(theme::ERROR).bold(),
+        )]));
+        content.push(Line::from(""));
+    }
+
+    content.push(Line::from(vec![
+        Span::styled("  Enter", Style::default().fg(theme::KEYS)),
+        Span::styled(" to confirm, ", Style::default().fg(theme::MUTED)),
+        Span::styled("Esc", Style::default().fg(theme::KEYS)),
+        Span::styled(" to cancel", Style::default().fg(theme::MUTED)),
+    ]));
 
     let paragraph = Paragraph::new(content);
     frame.render_widget(paragraph, inner);
@@ -1815,9 +1959,9 @@ fn draw_selection_popup(
         .enumerate()
         .map(|(i, opt)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", opt)).style(style)
         })
@@ -1829,12 +1973,12 @@ fn draw_selection_popup(
     frame.render_stateful_widget(list, chunks[0], &mut list_state);
 
     let help_text = Line::from(vec![
-        Span::styled("  ↑/↓", Style::default().fg(Color::Cyan)),
-        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter", Style::default().fg(Color::Cyan)),
-        Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        Span::styled("  ↑/↓", Style::default().fg(theme::KEYS)),
+        Span::styled(" select  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Enter", Style::default().fg(theme::KEYS)),
+        Span::styled(" confirm  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Esc", Style::default().fg(theme::KEYS)),
+        Span::styled(" cancel", Style::default().fg(theme::MUTED)),
     ]);
     frame.render_widget(Paragraph::new(help_text), chunks[1]);
 }
@@ -1859,29 +2003,29 @@ fn draw_toggle_popup(frame: &mut Frame, title: &str, description: &str, current:
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta))
+        .border_style(Style::default().fg(theme::ACCENT))
         .title(title)
-        .title_style(Style::default().fg(Color::Magenta).bold());
+        .title_style(Style::default().fg(theme::ACCENT).bold());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
     let yes_style = if current {
-        Style::default().fg(Color::Black).bg(Color::Green).bold()
+        Style::default().fg(theme::BASE).bg(theme::SUCCESS).bold()
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme::TEXT)
     };
     let no_style = if !current {
-        Style::default().fg(Color::Black).bg(Color::Red).bold()
+        Style::default().fg(theme::BASE).bg(theme::ERROR).bold()
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme::TEXT)
     };
 
     let content = vec![
         Line::from(""),
         Line::from(Span::styled(
             format!("  {}", description),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::MUTED),
         )),
         Line::from(""),
         Line::from(vec![
@@ -1892,12 +2036,12 @@ fn draw_toggle_popup(frame: &mut Frame, title: &str, description: &str, current:
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Space/Enter", Style::default().fg(Color::Cyan)),
-            Span::styled(" toggle  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab", Style::default().fg(Color::Cyan)),
-            Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Cyan)),
-            Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Space", Style::default().fg(theme::KEYS)),
+            Span::styled(" toggle  ", Style::default().fg(theme::MUTED)),
+            Span::styled("Enter", Style::default().fg(theme::KEYS)),
+            Span::styled(" confirm  ", Style::default().fg(theme::MUTED)),
+            Span::styled("Esc", Style::default().fg(theme::KEYS)),
+            Span::styled(" cancel", Style::default().fg(theme::MUTED)),
         ]),
     ];
 
@@ -1931,9 +2075,9 @@ fn draw_weight_column_selector(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Green))
+        .border_style(Style::default().fg(theme::SUCCESS))
         .title(" Select Weight Column ")
-        .title_style(Style::default().fg(Color::Green).bold());
+        .title_style(Style::default().fg(theme::SUCCESS).bold());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -1947,13 +2091,13 @@ fn draw_weight_column_selector(
     // Search box
     let search_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(theme::SURFACE))
         .title(" Search ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(theme::SURFACE));
 
     let search_para = Paragraph::new(Line::from(vec![
-        Span::styled(search, Style::default().fg(Color::White)),
-        Span::styled("▌", Style::default().fg(Color::Green)),
+        Span::styled(search, Style::default().fg(theme::TEXT)),
+        Span::styled("▌", Style::default().fg(theme::SUCCESS)),
     ]))
     .block(search_block);
 
@@ -1974,9 +2118,9 @@ fn draw_weight_column_selector(
     // Add "None" option if it's in the visible range
     if start_idx == 0 {
         let style = if selected == 0 {
-            Style::default().fg(Color::Black).bg(Color::Green).bold()
+            Style::default().fg(theme::BASE).bg(theme::SUCCESS).bold()
         } else {
-            Style::default().fg(Color::DarkGray).italic()
+            Style::default().fg(theme::MUTED).italic()
         };
         items.push(ListItem::new("  (None)").style(style));
     }
@@ -1994,9 +2138,9 @@ fn draw_weight_column_selector(
         let actual_idx = display_idx + 1; // +1 because "None" is at 0
         let col_name = &columns[col_idx];
         let style = if actual_idx == selected {
-            Style::default().fg(Color::Black).bg(Color::Green).bold()
+            Style::default().fg(theme::BASE).bg(theme::SUCCESS).bold()
         } else {
-            Style::default().fg(Color::White)
+            Style::default().fg(theme::TEXT)
         };
         items.push(ListItem::new(format!("  {}", col_name)).style(style));
     }
@@ -2010,7 +2154,7 @@ fn draw_weight_column_selector(
     // Show count indicator at bottom
     let count_text = format!(" {}/{} ", selected + 1, total_items);
     let text_len = count_text.len();
-    let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+    let count_span = Span::styled(count_text, Style::default().fg(theme::MUTED));
     let count_area = Rect::new(
         popup_area.x + popup_area.width - text_len as u16 - 1,
         popup_area.y + popup_area.height - 1,
@@ -2040,9 +2184,9 @@ fn draw_event_value_selector(frame: &mut Frame, unique_values: &[String], select
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Green))
+        .border_style(Style::default().fg(theme::SUCCESS))
         .title(" Select EVENT Value (1) ")
-        .title_style(Style::default().fg(Color::Green).bold());
+        .title_style(Style::default().fg(theme::SUCCESS).bold());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -2063,9 +2207,9 @@ fn draw_event_value_selector(frame: &mut Frame, unique_values: &[String], select
         Line::from(vec![
             Span::styled(
                 "  Select the value that represents ",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::MUTED),
             ),
-            Span::styled("EVENT (1)", Style::default().fg(Color::Green).bold()),
+            Span::styled("EVENT (1)", Style::default().fg(theme::SUCCESS).bold()),
         ]),
     ]);
     frame.render_widget(desc, chunks[0]);
@@ -2085,9 +2229,9 @@ fn draw_event_value_selector(frame: &mut Frame, unique_values: &[String], select
         .take(max_visible)
         .map(|(i, value)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(Color::Green).bold()
+                Style::default().fg(theme::BASE).bg(theme::SUCCESS).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", value)).style(style)
         })
@@ -2100,10 +2244,10 @@ fn draw_event_value_selector(frame: &mut Frame, unique_values: &[String], select
 
     // Help text
     let help_text = Line::from(vec![
-        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
-        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Enter", Style::default().fg(theme::KEYS)),
+        Span::styled(" select  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Esc", Style::default().fg(theme::KEYS)),
+        Span::styled(" cancel", Style::default().fg(theme::MUTED)),
     ]);
     frame.render_widget(Paragraph::new(help_text), chunks[2]);
 
@@ -2111,7 +2255,7 @@ fn draw_event_value_selector(frame: &mut Frame, unique_values: &[String], select
     if !unique_values.is_empty() {
         let count_text = format!(" {}/{} ", selected + 1, unique_values.len());
         let text_len = count_text.len();
-        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_span = Span::styled(count_text, Style::default().fg(theme::MUTED));
         let count_area = Rect::new(
             popup_area.x + popup_area.width - text_len as u16 - 1,
             popup_area.y + popup_area.height - 1,
@@ -2147,9 +2291,9 @@ fn draw_non_event_value_selector(
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(theme::WARNING))
         .title(" Select NON-EVENT Value (0) ")
-        .title_style(Style::default().fg(Color::Yellow).bold());
+        .title_style(Style::default().fg(theme::WARNING).bold());
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -2168,15 +2312,12 @@ fn draw_non_event_value_selector(
     let desc = Paragraph::new(vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Event (1): ", Style::default().fg(Color::DarkGray)),
-            Span::styled(event_value, Style::default().fg(Color::Green).bold()),
+            Span::styled("  Event (1): ", Style::default().fg(theme::MUTED)),
+            Span::styled(event_value, Style::default().fg(theme::SUCCESS).bold()),
         ]),
         Line::from(vec![
-            Span::styled(
-                "  Select the value for ",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled("NON-EVENT (0)", Style::default().fg(Color::Yellow).bold()),
+            Span::styled("  Select the value for ", Style::default().fg(theme::MUTED)),
+            Span::styled("NON-EVENT (0)", Style::default().fg(theme::WARNING).bold()),
         ]),
     ]);
     frame.render_widget(desc, chunks[0]);
@@ -2196,9 +2337,9 @@ fn draw_non_event_value_selector(
         .take(max_visible)
         .map(|(i, value)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(Color::Yellow).bold()
+                Style::default().fg(theme::BASE).bg(theme::WARNING).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", value)).style(style)
         })
@@ -2211,10 +2352,10 @@ fn draw_non_event_value_selector(
 
     // Help text
     let help_text = Line::from(vec![
-        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
-        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::styled(" back", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Enter", Style::default().fg(theme::KEYS)),
+        Span::styled(" select  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Esc", Style::default().fg(theme::KEYS)),
+        Span::styled(" back", Style::default().fg(theme::MUTED)),
     ]);
     frame.render_widget(Paragraph::new(help_text), chunks[2]);
 
@@ -2222,7 +2363,7 @@ fn draw_non_event_value_selector(
     if !unique_values.is_empty() {
         let count_text = format!(" {}/{} ", selected + 1, unique_values.len());
         let text_len = count_text.len();
-        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_span = Span::styled(count_text, Style::default().fg(theme::MUTED));
         let count_area = Rect::new(
             popup_area.x + popup_area.width - text_len as u16 - 1,
             popup_area.y + popup_area.height - 1,
@@ -2494,41 +2635,6 @@ fn is_valid_data_file(path: &std::path::Path) -> bool {
 fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
     let area = frame.area();
 
-    // ASCII logo for Lo-phi (same as config menu)
-    let logo_lines = vec![
-        Line::from(Span::styled(
-            "██╗      ██████╗       ██████╗ ██╗  ██╗██╗",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "██║     ██╔═══██╗      ██╔══██╗██║  ██║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "██║     ██║   ██║█████╗██████╔╝███████║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "██║     ██║   ██║╚════╝██╔═══╝ ██╔══██║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "███████╗╚██████╔╝      ██║     ██║  ██║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "╚══════╝ ╚═════╝       ╚═╝     ╚═╝  ╚═╝╚═╝",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("φ ", Style::default().fg(Color::Magenta).bold()),
-            Span::styled(
-                "Feature Reduction as simple as phi",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-    ];
     let logo_height = 9u16;
 
     // Calculate dimensions (matching wizard layout exactly)
@@ -2542,8 +2648,7 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
 
     // Draw logo (same width as box for alignment)
     let logo_area = Rect::new(x, y, popup_width.min(area.width), logo_height);
-    let logo_paragraph = Paragraph::new(logo_lines).alignment(Alignment::Center);
-    frame.render_widget(logo_paragraph, logo_area);
+    render_logo(frame, logo_area);
 
     // Main popup area
     let popup_y = y + logo_height;
@@ -2558,9 +2663,9 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(Style::default().fg(theme::PRIMARY))
         .title(" Select Input File ")
-        .title_style(Style::default().fg(Color::Cyan).bold())
+        .title_style(Style::default().fg(theme::PRIMARY).bold())
         .title_alignment(Alignment::Center);
 
     let inner = block.inner(popup_area);
@@ -2583,27 +2688,27 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
     let display_path = truncate_path_start(&path_str, max_path_len);
     let path_line = Line::from(vec![
         Span::styled("  ", Style::default()),
-        Span::styled("Current: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(display_path, Style::default().fg(Color::White)),
+        Span::styled("Current: ", Style::default().fg(theme::MUTED)),
+        Span::styled(display_path, Style::default().fg(theme::TEXT)),
     ]);
     frame.render_widget(Paragraph::new(path_line), chunks[0]);
 
     // Search box
     let search_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(theme::SURFACE))
         .title(" Filter ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(theme::SURFACE));
 
     let search_content = if state.search.is_empty() {
         Line::from(vec![
-            Span::styled("Type to filter...", Style::default().fg(Color::DarkGray)),
-            Span::styled("▌", Style::default().fg(Color::Cyan)),
+            Span::styled("Type to filter...", Style::default().fg(theme::MUTED)),
+            Span::styled("▌", Style::default().fg(theme::PRIMARY)),
         ])
     } else {
         Line::from(vec![
-            Span::styled(&state.search, Style::default().fg(Color::White)),
-            Span::styled("▌", Style::default().fg(Color::Cyan)),
+            Span::styled(&state.search, Style::default().fg(theme::TEXT)),
+            Span::styled("▌", Style::default().fg(theme::PRIMARY)),
         ])
     };
     let search_para = Paragraph::new(search_content).block(search_block);
@@ -2634,14 +2739,14 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
 
             let style = if display_idx == state.selected {
                 if entry.is_dir {
-                    Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+                    Style::default().fg(theme::BASE).bg(theme::PRIMARY).bold()
                 } else {
-                    Style::default().fg(Color::Black).bg(Color::Green).bold()
+                    Style::default().fg(theme::BASE).bg(theme::SUCCESS).bold()
                 }
             } else if entry.is_dir {
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(theme::PRIMARY)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
 
             ListItem::new(format!("  {}{}{}", icon, entry.name, suffix)).style(style)
@@ -2655,12 +2760,12 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
 
     // Help text
     let help_text = Line::from(vec![
-        Span::styled("  Enter", Style::default().fg(Color::Cyan)),
-        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Backspace", Style::default().fg(Color::Cyan)),
-        Span::styled(" back  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Enter", Style::default().fg(theme::KEYS)),
+        Span::styled(" select  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Backspace", Style::default().fg(theme::KEYS)),
+        Span::styled(" back  ", Style::default().fg(theme::MUTED)),
+        Span::styled("Esc", Style::default().fg(theme::KEYS)),
+        Span::styled(" cancel", Style::default().fg(theme::MUTED)),
     ]);
     frame.render_widget(Paragraph::new(help_text), chunks[3]);
 
@@ -2668,7 +2773,7 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
     if !state.filtered.is_empty() {
         let count_text = format!(" {}/{} ", state.selected + 1, state.filtered.len());
         let text_len = count_text.len();
-        let count_span = Span::styled(count_text, Style::default().fg(Color::DarkGray));
+        let count_span = Span::styled(count_text, Style::default().fg(theme::MUTED));
         let count_area = Rect::new(
             popup_area.x + popup_area.width - text_len as u16 - 1,
             popup_area.y + popup_area.height - 1,
@@ -2681,13 +2786,13 @@ fn draw_file_selector(frame: &mut Frame, state: &FileSelectorState) {
     // Show "No files found" message if filtered is empty
     if state.filtered.is_empty() {
         let msg = if state.search.is_empty() {
-            "No CSV or Parquet files in this directory"
+            "No CSV, Parquet, or SAS7BDAT files in this directory"
         } else {
             "No matching files"
         };
         let msg_line = Line::from(Span::styled(
             msg,
-            Style::default().fg(Color::DarkGray).italic(),
+            Style::default().fg(theme::MUTED).italic(),
         ));
         let msg_area = Rect::new(
             chunks[2].x + 2,

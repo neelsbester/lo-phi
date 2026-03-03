@@ -7,6 +7,8 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 
+use super::progress::{PipelineStage, ProgressEvent, ProgressSender};
+
 /// Get column names from a dataset file without loading all data.
 /// Useful for interactive column selection.
 pub fn get_column_names(path: &Path) -> Result<Vec<String>> {
@@ -42,8 +44,14 @@ pub fn get_column_names(path: &Path) -> Result<Vec<String>> {
     }
 }
 
-/// Load a CSV file with a progress bar showing bytes read
-fn load_csv_with_progress(path: &Path, schema_length: Option<usize>) -> Result<DataFrame> {
+/// Load a CSV file with a progress bar showing bytes read.
+/// When `progress_tx` is `Some`, sends `ProgressEvent::update` messages instead of
+/// writing to an indicatif bar.
+fn load_csv_with_progress_inner(
+    path: &Path,
+    schema_length: Option<usize>,
+    progress_tx: Option<&ProgressSender>,
+) -> Result<DataFrame> {
     let file =
         File::open(path).with_context(|| format!("Failed to open CSV file: {}", path.display()))?;
     let file_size = file
@@ -51,21 +59,29 @@ fn load_csv_with_progress(path: &Path, schema_length: Option<usize>) -> Result<D
         .with_context(|| "Failed to get file metadata")?
         .len();
 
-    // Create progress bar with byte-tracking style
-    let pb = ProgressBar::new(file_size);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "   Loading CSV [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%) [{eta}]",
-            )
-            .unwrap()
-            .progress_chars("=>-"),
-    );
-
-    // Read file with progress tracking
+    // Read file with optional indicatif bar or channel updates
     let mut reader = BufReader::with_capacity(1024 * 1024, file); // 1MB buffer
     let mut buffer = Vec::with_capacity(file_size as usize);
     let mut chunk = [0u8; 65536]; // 64KB read chunks
+
+    // Only create indicatif bar in terminal-output mode
+    let pb = if progress_tx.is_none() {
+        let bar = ProgressBar::new(file_size);
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "   Loading CSV [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%) [{eta}]",
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        Some(bar)
+    } else {
+        None
+    };
+
+    let mut bytes_read_total: u64 = 0;
+    let update_interval = (file_size / 20).max(65536); // ~5% intervals
 
     loop {
         let bytes_read = reader.read(&mut chunk)?;
@@ -73,32 +89,71 @@ fn load_csv_with_progress(path: &Path, schema_length: Option<usize>) -> Result<D
             break;
         }
         buffer.extend_from_slice(&chunk[..bytes_read]);
-        pb.inc(bytes_read as u64);
+        bytes_read_total += bytes_read as u64;
+
+        if let Some(bar) = &pb {
+            bar.inc(bytes_read as u64);
+        } else if let Some(tx) = progress_tx {
+            // Throttle channel updates to avoid flooding
+            if bytes_read_total % update_interval < bytes_read as u64 {
+                let pct = bytes_read_total * 100 / file_size.max(1);
+                tx.send(ProgressEvent::update(
+                    PipelineStage::Loading,
+                    "Loading dataset",
+                    format!("{}% read", pct),
+                ))
+                .ok();
+            }
+        }
     }
 
-    pb.finish_and_clear();
+    if let Some(bar) = &pb {
+        bar.finish_and_clear();
+    }
 
-    // Show spinner during parsing phase
-    let parse_spinner = ProgressBar::new_spinner();
-    parse_spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("   {spinner:.cyan} Converting and calculating summary statistics...")
-            .unwrap(),
-    );
-    parse_spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+    // Parse phase
+    if let Some(tx) = progress_tx {
+        tx.send(ProgressEvent::update(
+            PipelineStage::Loading,
+            "Loading dataset",
+            "Parsing CSV…",
+        ))
+        .ok();
+    } else {
+        let parse_spinner = ProgressBar::new_spinner();
+        parse_spinner.set_style(
+            ProgressStyle::default_spinner()
+                .template("   {spinner:.cyan} Converting and calculating summary statistics...")
+                .unwrap(),
+        );
+        parse_spinner.enable_steady_tick(std::time::Duration::from_millis(100));
 
-    // Parse the buffered data using CsvReadOptions for proper schema inference
+        let cursor = Cursor::new(buffer);
+        let df = CsvReadOptions::default()
+            .with_infer_schema_length(schema_length)
+            .with_rechunk(true)
+            .into_reader_with_file_handle(cursor)
+            .finish()
+            .with_context(|| format!("Failed to parse CSV file: {}", path.display()))?;
+
+        parse_spinner.finish_and_clear();
+        return Ok(df);
+    }
+
     let cursor = Cursor::new(buffer);
     let df = CsvReadOptions::default()
-        .with_infer_schema_length(schema_length) // Use user's schema inference setting (None = full scan)
-        .with_rechunk(true) // Consolidate chunks for better downstream performance
+        .with_infer_schema_length(schema_length)
+        .with_rechunk(true)
         .into_reader_with_file_handle(cursor)
         .finish()
         .with_context(|| format!("Failed to parse CSV file: {}", path.display()))?;
 
-    parse_spinner.finish_and_clear();
-
     Ok(df)
+}
+
+/// Load a CSV file with a progress bar showing bytes read (terminal / indicatif path).
+fn load_csv_with_progress(path: &Path, schema_length: Option<usize>) -> Result<DataFrame> {
+    load_csv_with_progress_inner(path, schema_length, None)
 }
 
 /// Load a Parquet file (uses lazy scanning which is already fast)
@@ -138,6 +193,24 @@ pub fn load_dataset_with_progress(
     path: &Path,
     infer_schema_length: usize,
 ) -> Result<(DataFrame, usize, usize, f64)> {
+    load_dataset_impl(path, infer_schema_length, None)
+}
+
+/// Load dataset and optionally send progress events over a channel instead of
+/// rendering indicatif bars to the terminal.
+pub fn load_dataset_with_progress_channel(
+    path: &Path,
+    infer_schema_length: usize,
+    progress_tx: &ProgressSender,
+) -> Result<(DataFrame, usize, usize, f64)> {
+    load_dataset_impl(path, infer_schema_length, Some(progress_tx))
+}
+
+fn load_dataset_impl(
+    path: &Path,
+    infer_schema_length: usize,
+    progress_tx: Option<&ProgressSender>,
+) -> Result<(DataFrame, usize, usize, f64)> {
     let extension = path
         .extension()
         .and_then(|e| e.to_str())
@@ -151,13 +224,46 @@ pub fn load_dataset_with_progress(
     };
 
     let df = match extension.as_str() {
-        "csv" => load_csv_with_progress(path, schema_length)?,
-        "parquet" => load_parquet(path)?,
+        "csv" => {
+            if let Some(tx) = progress_tx {
+                load_csv_with_progress_inner(path, schema_length, Some(tx))?
+            } else {
+                load_csv_with_progress(path, schema_length)?
+            }
+        }
+        "parquet" => {
+            if let Some(tx) = progress_tx {
+                tx.send(ProgressEvent::update(
+                    PipelineStage::Loading,
+                    "Loading dataset",
+                    "Reading Parquet file…",
+                ))
+                .ok();
+            }
+            load_parquet(path)?
+        }
         "sas7bdat" => {
-            use super::sas7bdat::load_sas7bdat;
-            let (df, _, _, _) =
-                load_sas7bdat(path).context("Failed to load SAS7BDAT file")?;
-            df
+            let silent = if let Some(tx) = progress_tx {
+                tx.send(ProgressEvent::update(
+                    PipelineStage::Loading,
+                    "Loading dataset",
+                    "Reading SAS7BDAT file…",
+                ))
+                .ok();
+                true
+            } else {
+                false
+            };
+            if silent {
+                use super::sas7bdat::load_sas7bdat_silent;
+                let (df, _, _, _) =
+                    load_sas7bdat_silent(path).context("Failed to load SAS7BDAT file")?;
+                df
+            } else {
+                use super::sas7bdat::load_sas7bdat;
+                let (df, _, _, _) = load_sas7bdat(path).context("Failed to load SAS7BDAT file")?;
+                df
+            }
         }
         _ => anyhow::bail!(
             "Unsupported file format: {}. Supported formats: csv, parquet, sas7bdat",

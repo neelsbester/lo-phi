@@ -9,6 +9,8 @@
 //! DO NOT test TUI rendering or terminal operations here - those require
 //! integration tests with mocked terminal interfaces.
 
+use std::collections::HashSet;
+
 use lophi::cli::wizard::{validate_schema_inference, validate_threshold};
 use lophi::cli::wizard::{WizardData, WizardState, WizardStep, WizardTask};
 
@@ -420,6 +422,10 @@ fn test_wizard_data_default_values() {
         data.target_unique_values.is_empty(),
         "Default target_unique_values should be empty"
     );
+    assert!(
+        !data.target_is_binary,
+        "Default target_is_binary should be false"
+    );
 }
 
 #[test]
@@ -579,7 +585,7 @@ fn test_step_titles_are_correct() {
                 search: String::new(),
                 filtered: vec![],
                 selected: 0,
-                checked: vec![],
+                checked: HashSet::new(),
             },
             "Drop Columns",
         ),

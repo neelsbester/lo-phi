@@ -9,8 +9,8 @@ pub mod summary;
 pub use gini_export::{export_gini_analysis, export_gini_analysis_enhanced, ExportParams};
 #[allow(unused_imports)]
 pub use reduction_report::{
-    export_reduction_report, export_reduction_report_csv, package_reduction_reports,
-    ByStage, DropStage, FeatureReportEntry, ReductionReport, ReductionReportBuilder,
-    ReportBuilderParams, ReportSummary, StageSummary, TimingInfo,
+    export_reduction_report, export_reduction_report_csv, package_reduction_reports, ByStage,
+    DropStage, FeatureReportEntry, ReductionReport, ReductionReportBuilder, ReportBuilderParams,
+    ReportSummary, StageSummary, TimingInfo,
 };
 pub use summary::ReductionSummary;

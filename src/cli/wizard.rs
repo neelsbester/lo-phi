@@ -34,6 +34,7 @@
 //! - Context-sensitive help text in footer
 //! - Panic-safe terminal cleanup
 
+use std::collections::HashSet;
 use std::io::{stdout, Stdout};
 use std::path::PathBuf;
 
@@ -47,13 +48,22 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     prelude::*,
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
+    },
     Terminal,
 };
 
+use polars::prelude::*;
+
 use super::args::Cli;
 use super::config_menu::Config;
-use crate::pipeline::TargetMapping;
+use super::shared::{
+    check_terminal_size, draw_too_small_overlay, render_logo, themed, MIN_COLS, MIN_ROWS,
+};
+use super::theme;
+use crate::pipeline::{TargetAnalysis, TargetMapping};
 // ============================================================================
 // Core Result Types
 // ============================================================================
@@ -163,7 +173,9 @@ pub enum WizardStep {
         search: String,
         filtered: Vec<usize>,
         selected: usize,
-        checked: Vec<bool>,
+        /// Set of original column indices (into `available_columns`) that are checked.
+        /// Keyed on original index so selections survive search filtering.
+        checked: HashSet<usize>,
     },
 
     /// Schema inference length configuration
@@ -270,6 +282,8 @@ pub struct WizardData {
     // Temporary state for multi-step processes
     pub available_columns: Vec<String>,
     pub target_unique_values: Vec<String>,
+    /// True when target column is already binary 0/1 (mapping step is skipped)
+    pub target_is_binary: bool,
 }
 
 impl Default for WizardData {
@@ -291,6 +305,7 @@ impl Default for WizardData {
             conversion_fast: true,
             available_columns: Vec::new(),
             target_unique_values: Vec::new(),
+            target_is_binary: false,
         }
     }
 }
@@ -316,6 +331,8 @@ pub struct WizardState {
     pub optional_yes: bool,
     /// Flag to force full terminal redraw (set after file selector returns)
     pub needs_redraw: bool,
+    /// Scroll offset for the Summary step
+    pub summary_scroll: usize,
 }
 
 impl Default for WizardState {
@@ -328,6 +345,7 @@ impl Default for WizardState {
             task_selected_index: 0,
             optional_yes: false,
             needs_redraw: false,
+            summary_scroll: 0,
         }
     }
 }
@@ -399,7 +417,7 @@ impl WizardState {
                         search: String::new(),
                         filtered: all_indices.clone(),
                         selected: 0,
-                        checked: vec![false; all_indices.len()],
+                        checked: HashSet::new(),
                     });
                     steps.push(WizardStep::SchemaInference {
                         input: self.data.infer_schema_length.to_string(),
@@ -521,9 +539,33 @@ pub fn teardown_terminal() {
 // Entry Point
 // ============================================================================
 
-/// Run the wizard interface
+/// Run the wizard interface, tearing down the TUI before returning.
+///
+/// When the user chooses RunReduction, the TUI is left active and the live
+/// terminal is returned via `run_wizard_keep_tui` instead.  This variant
+/// always tears down the terminal and is used when the caller does not need
+/// the progress overlay (e.g. conversion workflow, or `--no-confirm` mode).
 #[allow(dead_code)]
 pub fn run_wizard(cli: &Cli) -> Result<WizardResult> {
+    let (result, _terminal) = run_wizard_impl(cli)?;
+    Ok(result)
+}
+
+/// Run the wizard interface and, on `RunReduction`, return the still-active
+/// `Terminal` so that the caller can display the progress overlay without
+/// tearing down and re-entering alternate screen.
+///
+/// On `Quit` or `RunConversion` the terminal is torn down before this function
+/// returns and the `Option<Terminal>` is `None`.
+pub fn run_wizard_keep_tui(
+    cli: &Cli,
+) -> Result<(WizardResult, Option<Terminal<CrosstermBackend<Stdout>>>)> {
+    run_wizard_impl(cli)
+}
+
+fn run_wizard_impl(
+    cli: &Cli,
+) -> Result<(WizardResult, Option<Terminal<CrosstermBackend<Stdout>>>)> {
     // Create wizard state and pre-populate from CLI args
     let mut wizard = WizardState::new();
 
@@ -548,16 +590,32 @@ pub fn run_wizard(cli: &Cli) -> Result<WizardResult> {
     wizard.data.infer_schema_length = cli.infer_schema_length;
     wizard.data.columns_to_drop = cli.drop_columns.clone();
 
+    // Check terminal size before entering TUI
+    if let Err(msg) = check_terminal_size() {
+        eprintln!("{}", msg);
+        return Ok((WizardResult::Quit, None));
+    }
+
     // Setup terminal
     let mut terminal = setup_terminal()?;
 
     // Run wizard loop -- capture result so teardown always runs before propagating error
     let result = run_wizard_loop(&mut terminal, &mut wizard);
 
-    // Teardown terminal
-    teardown_terminal();
-
-    result
+    match result {
+        Ok(WizardResult::RunReduction(cfg)) => {
+            // Keep TUI alive — caller will display the progress overlay
+            Ok((WizardResult::RunReduction(cfg), Some(terminal)))
+        }
+        Ok(other) => {
+            teardown_terminal();
+            Ok((other, None))
+        }
+        Err(e) => {
+            teardown_terminal();
+            Err(e)
+        }
+    }
 }
 
 // ============================================================================
@@ -570,6 +628,10 @@ fn run_wizard_loop(
     wizard: &mut WizardState,
 ) -> Result<WizardResult> {
     loop {
+        // Check current terminal size
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((0, 0));
+        let terminal_too_small = cols < MIN_COLS || rows < MIN_ROWS;
+
         // Force full redraw if terminal was torn down (e.g. after file selector)
         if wizard.needs_redraw {
             terminal.clear()?;
@@ -577,58 +639,82 @@ fn run_wizard_loop(
         }
 
         // Draw current state
-        terminal.draw(|f| render_wizard(f, wizard))?;
+        terminal.draw(|f| {
+            if terminal_too_small {
+                draw_too_small_overlay(f);
+            } else {
+                render_wizard(f, wizard);
+            }
+        })?;
 
         // Poll for events
         if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                // Only handle key press events, not release
-                if key.kind != KeyEventKind::Press {
+            match event::read()? {
+                Event::Resize(_, _) => {
+                    // Size flag is updated at the top of each loop iteration
                     continue;
                 }
+                Event::Key(key) => {
+                    // Only handle key press events, not release
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
 
-                // Handle quit confirmation overlay first
-                if wizard.show_quit_confirm {
-                    match key.code {
-                        KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    // Ignore keypresses while terminal is too small (except quit)
+                    if terminal_too_small {
+                        if matches!(
+                            key.code,
+                            KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
+                        ) {
                             return Ok(WizardResult::Quit);
                         }
-                        KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                            wizard.show_quit_confirm = false;
+                        continue;
+                    }
+
+                    // Handle quit confirmation overlay first
+                    if wizard.show_quit_confirm {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                return Ok(WizardResult::Quit);
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                                wizard.show_quit_confirm = false;
+                            }
+                            _ => {}
                         }
-                        _ => {}
+                        continue;
                     }
-                    continue;
-                }
 
-                // Show quit confirmation on Q or Esc
-                if matches!(
-                    key.code,
-                    KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
-                ) {
-                    wizard.show_quit_confirm = true;
-                    continue;
-                }
-
-                // Handle step-specific events
-                let action = handle_step_event(wizard, key)?;
-
-                // Process action
-                match action {
-                    StepAction::NextStep => {
-                        wizard.next_step()?;
-                    }
-                    StepAction::PrevStep => {
-                        wizard.prev_step()?;
-                    }
-                    StepAction::Quit => {
+                    // Show quit confirmation on Q or Esc
+                    if matches!(
+                        key.code,
+                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc
+                    ) {
                         wizard.show_quit_confirm = true;
+                        continue;
                     }
-                    StepAction::Complete(result) => {
-                        return Ok(result);
+
+                    // Handle step-specific events
+                    let action = handle_step_event(wizard, key)?;
+
+                    // Process action
+                    match action {
+                        StepAction::NextStep => {
+                            wizard.next_step()?;
+                        }
+                        StepAction::PrevStep => {
+                            wizard.prev_step()?;
+                        }
+                        StepAction::Quit => {
+                            wizard.show_quit_confirm = true;
+                        }
+                        StepAction::Complete(result) => {
+                            return Ok(result);
+                        }
+                        StepAction::Stay => {}
                     }
-                    StepAction::Stay => {}
                 }
+                _ => {}
             }
         }
     }
@@ -763,20 +849,20 @@ fn centered_fixed_rect(width: u16, height: u16, area: Rect) -> Rect {
 /// Get semantic color for a step
 fn step_color(step: &WizardStep) -> Color {
     match step {
-        WizardStep::TargetSelection { .. } | WizardStep::TargetMapping { .. } => Color::Magenta,
+        WizardStep::TargetSelection { .. } | WizardStep::TargetMapping { .. } => theme::ACCENT,
         WizardStep::MissingThreshold { .. }
         | WizardStep::GiniThreshold { .. }
         | WizardStep::CorrelationThreshold { .. }
-        | WizardStep::SchemaInference { .. } => Color::Yellow,
-        WizardStep::DropColumns { .. } => Color::Red,
+        | WizardStep::SchemaInference { .. } => theme::WARNING,
+        WizardStep::DropColumns { .. } => theme::ERROR,
         WizardStep::SolverToggle { .. }
         | WizardStep::MonotonicitySelection { .. }
         | WizardStep::WeightColumn { .. }
-        | WizardStep::Summary => Color::Green,
+        | WizardStep::Summary => theme::SUCCESS,
         WizardStep::TaskSelection
         | WizardStep::OptionalSettingsPrompt
         | WizardStep::OutputFormat { .. }
-        | WizardStep::ConversionMode { .. } => Color::Cyan,
+        | WizardStep::ConversionMode { .. } => theme::PRIMARY,
     }
 }
 
@@ -812,7 +898,10 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
     let box_area = Rect::new(x, box_y, box_width.min(area.width), box_height.max(10));
     f.render_widget(Clear, box_area);
 
-    let color = wizard.current_step().map(step_color).unwrap_or(Color::Cyan);
+    let color = wizard
+        .current_step()
+        .map(step_color)
+        .unwrap_or(theme::PRIMARY);
 
     // Build step title for the box header
     let current = wizard.current_index + 1;
@@ -825,9 +914,9 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(color))
+        .border_style(themed(Style::default().fg(color)))
         .title(title_text)
-        .title_style(Style::default().fg(color).bold())
+        .title_style(themed(Style::default().fg(color).bold()))
         .title_alignment(Alignment::Center);
 
     let inner = block.inner(box_area);
@@ -859,7 +948,7 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
             checked,
             ..
         }) => {
-            let sel_count = checked.iter().filter(|&&c| c).count();
+            let sel_count = checked.len();
             if !filtered.is_empty() {
                 Some(format!(
                     " {} sel · {}/{} ",
@@ -875,6 +964,25 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
             let total = output_format_options(wizard.data.input.as_deref()).len();
             Some(format!(" {}/{} formats ", selected + 1, total))
         }
+        Some(WizardStep::TargetMapping {
+            unique_values,
+            event_selected,
+            focus: TargetMappingFocus::Event,
+            ..
+        }) if !unique_values.is_empty() => {
+            let sel = event_selected.unwrap_or(0);
+            Some(format!(" {}/{} values ", sel + 1, unique_values.len()))
+        }
+        Some(WizardStep::TargetMapping {
+            unique_values,
+            non_event_selected,
+            focus: TargetMappingFocus::NonEvent,
+            ..
+        }) if !unique_values.is_empty() => {
+            let remaining_len = unique_values.len().saturating_sub(1);
+            let sel = non_event_selected.unwrap_or(0);
+            Some(format!(" {}/{} values ", sel + 1, remaining_len))
+        }
         _ => None,
     };
     if let Some(ct) = count_text {
@@ -886,7 +994,7 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
             1,
         );
         f.render_widget(
-            Paragraph::new(Span::styled(ct, Style::default().fg(Color::DarkGray))),
+            Paragraph::new(Span::styled(ct, Style::default().fg(theme::MUTED))),
             ct_area,
         );
     }
@@ -900,47 +1008,6 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
     if wizard.show_quit_confirm {
         render_quit_confirm_overlay(f, wizard);
     }
-}
-
-/// Render logo
-fn render_logo(f: &mut Frame, area: Rect) {
-    let logo_lines = vec![
-        Line::from(Span::styled(
-            "██╗      ██████╗       ██████╗ ██╗  ██╗██╗",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "██║     ██╔═══██╗      ██╔══██╗██║  ██║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "██║     ██║   ██║█████╗██████╔╝███████║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "██║     ██║   ██║╚════╝██╔═══╝ ██╔══██║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "███████╗╚██████╔╝      ██║     ██║  ██║██║",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(Span::styled(
-            "╚══════╝ ╚═════╝       ╚═╝     ╚═╝  ╚═╝╚═╝",
-            Style::default().fg(Color::Cyan).bold(),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("φ ", Style::default().fg(Color::Magenta).bold()),
-            Span::styled(
-                "Feature Reduction as simple as phi",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-    ];
-
-    let logo_paragraph = Paragraph::new(logo_lines).alignment(Alignment::Center);
-    f.render_widget(logo_paragraph, area);
 }
 
 /// Render the current step inside the shell box
@@ -979,6 +1046,7 @@ fn render_step(f: &mut Frame, area: Rect, wizard: &WizardState) {
 fn render_help_bar(f: &mut Frame, area: Rect, wizard: &WizardState) {
     let step = wizard.current_step();
     let is_drop = matches!(step, Some(WizardStep::DropColumns { .. }));
+    let is_summary = matches!(step, Some(WizardStep::Summary));
     let is_input = matches!(
         step,
         Some(WizardStep::MissingThreshold { .. })
@@ -992,57 +1060,80 @@ fn render_help_bar(f: &mut Frame, area: Rect, wizard: &WizardState) {
             | Some(WizardStep::WeightColumn { .. })
             | Some(WizardStep::DropColumns { .. })
     );
+    let is_target_mapping_non_binary = matches!(step, Some(WizardStep::TargetMapping { .. }))
+        && !wizard.data.target_is_binary
+        && !wizard.data.target_unique_values.is_empty();
+    let target_mapping_in_non_event = is_target_mapping_non_binary
+        && matches!(
+            step,
+            Some(WizardStep::TargetMapping {
+                focus: TargetMappingFocus::NonEvent,
+                ..
+            })
+        );
+
+    // Key style: Blue when colors are on, plain when NO_COLOR is active
+    let key_style = themed(Style::default().fg(theme::KEYS));
+    let desc_style = Style::default().fg(theme::MUTED);
 
     let mut spans = vec![];
 
-    if wizard.is_last_step() {
-        spans.push(Span::styled("  Enter", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(
-            " execute  ",
-            Style::default().fg(Color::DarkGray),
-        ));
-    } else {
-        spans.push(Span::styled("  Enter", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(
-            " next  ",
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    if is_drop {
-        spans.push(Span::styled("Space", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(
-            " toggle  ",
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    if has_search {
-        spans.push(Span::styled("Type", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(
-            " search  ",
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    if wizard.current_index > 0 {
-        if is_input || has_search {
-            spans.push(Span::styled("Bksp", Style::default().fg(Color::Cyan)));
-            spans.push(Span::styled(
-                " delete/back  ",
-                Style::default().fg(Color::DarkGray),
-            ));
+    if is_target_mapping_non_binary {
+        // Custom help bar for the two-phase target mapping UI
+        if target_mapping_in_non_event {
+            spans.push(Span::styled("  Enter", key_style));
+            spans.push(Span::styled(" confirm non-event  ", desc_style));
+            spans.push(Span::styled("Bksp", key_style));
+            spans.push(Span::styled(" back to event  ", desc_style));
         } else {
-            spans.push(Span::styled("Bksp", Style::default().fg(Color::Cyan)));
-            spans.push(Span::styled(
-                " back  ",
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled("  Enter", key_style));
+            spans.push(Span::styled(" select event  ", desc_style));
+            spans.push(Span::styled("↑/↓", key_style));
+            spans.push(Span::styled(" navigate  ", desc_style));
+            if wizard.current_index > 0 {
+                spans.push(Span::styled("Bksp", key_style));
+                spans.push(Span::styled(" back  ", desc_style));
+            }
         }
-    }
+        spans.push(Span::styled("Q/Esc", key_style));
+        spans.push(Span::styled(" quit", desc_style));
+    } else {
+        if wizard.is_last_step() {
+            spans.push(Span::styled("  Enter", key_style));
+            spans.push(Span::styled(" execute  ", desc_style));
+        } else {
+            spans.push(Span::styled("  Enter", key_style));
+            spans.push(Span::styled(" next  ", desc_style));
+        }
 
-    spans.push(Span::styled("Q/Esc", Style::default().fg(Color::Cyan)));
-    spans.push(Span::styled(" quit", Style::default().fg(Color::DarkGray)));
+        if is_drop {
+            spans.push(Span::styled("Space", key_style));
+            spans.push(Span::styled(" toggle  ", desc_style));
+        }
+
+        if has_search {
+            spans.push(Span::styled("Type", key_style));
+            spans.push(Span::styled(" search  ", desc_style));
+        }
+
+        if is_summary {
+            spans.push(Span::styled("↑/↓", key_style));
+            spans.push(Span::styled(" scroll  ", desc_style));
+        }
+
+        if wizard.current_index > 0 {
+            if is_input || has_search {
+                spans.push(Span::styled("Bksp", key_style));
+                spans.push(Span::styled(" delete/back  ", desc_style));
+            } else {
+                spans.push(Span::styled("Bksp", key_style));
+                spans.push(Span::styled(" back  ", desc_style));
+            }
+        }
+
+        spans.push(Span::styled("Q/Esc", key_style));
+        spans.push(Span::styled(" quit", desc_style));
+    }
 
     let help_line = Line::from(spans);
     let paragraph = Paragraph::new(help_line).alignment(Alignment::Center);
@@ -1056,10 +1147,10 @@ fn render_quit_confirm_overlay(f: &mut Frame, _wizard: &WizardState) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Red))
+        .border_style(Style::default().fg(theme::DANGER))
         .title(" Quit Wizard? ")
-        .title_style(Style::default().fg(Color::Red).bold())
-        .style(Style::default().bg(Color::Black));
+        .title_style(Style::default().fg(theme::DANGER).bold())
+        .style(Style::default().bg(theme::BASE));
 
     let inner = block.inner(popup);
     f.render_widget(block, popup);
@@ -1068,15 +1159,15 @@ fn render_quit_confirm_overlay(f: &mut Frame, _wizard: &WizardState) {
         Line::from(""),
         Line::from(Span::styled(
             "  Are you sure you want to quit?",
-            Style::default().fg(Color::White),
+            Style::default().fg(theme::TEXT),
         )),
         Line::from(""),
         Line::from(vec![
             Span::styled("      ", Style::default()),
-            Span::styled("Y", Style::default().fg(Color::Cyan)),
-            Span::styled(" yes  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("N", Style::default().fg(Color::Cyan)),
-            Span::styled(" no", Style::default().fg(Color::DarkGray)),
+            Span::styled("Y", Style::default().fg(theme::KEYS)),
+            Span::styled(" yes  ", Style::default().fg(theme::MUTED)),
+            Span::styled("N", Style::default().fg(theme::KEYS)),
+            Span::styled(" no", Style::default().fg(theme::MUTED)),
         ]),
     ];
 
@@ -1097,23 +1188,22 @@ fn render_threshold_content(
     input: &str,
     error: &Option<String>,
 ) {
-    let color = Color::Yellow;
     let mut content = vec![
         Line::from(""),
         Line::from(Span::styled(
             format!("  {}", title),
-            Style::default().fg(Color::DarkGray).bold(),
+            Style::default().fg(theme::SUBTEXT).bold(),
         )),
         Line::from(""),
         Line::from(Span::styled(
             format!("  {}", description),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::MUTED),
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Value: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(input.to_string(), Style::default().fg(Color::White).bold()),
-            Span::styled("\u{258c}", Style::default().fg(color)),
+            Span::styled("  Value: ", Style::default().fg(theme::MUTED)),
+            Span::styled(input.to_string(), Style::default().fg(theme::TEXT).bold()),
+            Span::styled("\u{258c}", Style::default().fg(theme::WARNING)),
         ]),
     ];
 
@@ -1121,7 +1211,7 @@ fn render_threshold_content(
         content.push(Line::from(""));
         content.push(Line::from(Span::styled(
             format!("  {}", err),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme::ERROR),
         )));
     }
 
@@ -1130,7 +1220,7 @@ fn render_threshold_content(
 
 fn render_task_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
     let options = ["Reduce features", "Convert format (csv, parquet, sas7bdat)"];
-    let color = Color::Cyan;
+    let color = theme::PRIMARY;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1142,7 +1232,7 @@ fn render_task_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
 
     let title = Paragraph::new(Line::from(Span::styled(
         "  What would you like to do?",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme::MUTED),
     )));
     f.render_widget(title, chunks[0]);
 
@@ -1151,9 +1241,9 @@ fn render_task_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
         .enumerate()
         .map(|(i, opt)| {
             let style = if i == wizard.task_selected_index {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", opt)).style(style)
         })
@@ -1175,7 +1265,7 @@ fn render_target_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
         _ => return,
     };
 
-    let color = Color::Magenta;
+    let color = theme::ACCENT;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1185,12 +1275,12 @@ fn render_target_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
     // Search box
     let search_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(theme::SURFACE))
         .title(" Search ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(theme::SURFACE));
 
     let search_para = Paragraph::new(Line::from(vec![
-        Span::styled(search.to_string(), Style::default().fg(Color::White)),
+        Span::styled(search.to_string(), Style::default().fg(theme::TEXT)),
         Span::styled("\u{258c}", Style::default().fg(color)),
     ]))
     .block(search_block);
@@ -1216,9 +1306,9 @@ fn render_target_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
         .take(max_visible)
         .map(|(i, col)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", col)).style(style)
         })
@@ -1230,23 +1320,185 @@ fn render_target_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
     f.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 
-fn render_target_mapping(f: &mut Frame, area: Rect, _wizard: &WizardState) {
-    let content = vec![
-        Line::from(""),
-        Line::from(""),
+fn render_target_mapping(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let color = theme::ACCENT;
+
+    // Binary target: no mapping needed
+    if wizard.data.target_is_binary || wizard.data.target_unique_values.is_empty() {
+        let content = vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Binary target detected - no mapping required",
+                themed(Style::default().fg(color).bold()),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Press ", Style::default().fg(theme::MUTED)),
+                Span::styled("Enter", themed(Style::default().fg(theme::KEYS))),
+                Span::styled(" to continue", Style::default().fg(theme::MUTED)),
+            ]),
+        ];
+        f.render_widget(Paragraph::new(content), area);
+        return;
+    }
+
+    // Non-binary: two-phase selection
+    let (unique_values, event_selected, non_event_selected, focus) = match wizard.current_step() {
+        Some(WizardStep::TargetMapping {
+            unique_values,
+            event_selected,
+            non_event_selected,
+            focus,
+        }) => (unique_values, event_selected, non_event_selected, focus),
+        _ => return,
+    };
+
+    match focus {
+        TargetMappingFocus::Event => {
+            render_target_event_selection(f, area, unique_values, *event_selected, color);
+        }
+        TargetMappingFocus::NonEvent => {
+            let event_idx = event_selected.unwrap_or(0);
+            let event_value = unique_values
+                .get(event_idx)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let remaining: Vec<String> = unique_values
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != event_idx)
+                .map(|(_, v)| v.clone())
+                .collect();
+            render_target_non_event_selection(
+                f,
+                area,
+                &remaining,
+                *non_event_selected,
+                event_value,
+                color,
+            );
+        }
+    }
+}
+
+fn render_target_event_selection(
+    f: &mut Frame,
+    area: Rect,
+    unique_values: &[String],
+    selected: Option<usize>,
+    color: Color,
+) {
+    let selected = selected.unwrap_or(0);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(4), Constraint::Min(1)])
+        .split(area);
+
+    let header = Paragraph::new(vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  Binary Outcome - No mapping required",
-            Style::default().fg(Color::Magenta).bold(),
+            "  Step 1 of 2 - Select EVENT value (1)",
+            themed(Style::default().fg(color).bold()),
         )),
+        Line::from(Span::styled(
+            "  Which value represents the positive outcome?",
+            Style::default().fg(theme::MUTED),
+        )),
+    ]);
+    f.render_widget(header, chunks[0]);
+
+    let max_visible = chunks[1].height as usize;
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = unique_values
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, value)| {
+            let style = if i == selected {
+                themed(Style::default().fg(theme::BASE).bg(color).bold())
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            ListItem::new(format!("  {}", value)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+}
+
+fn render_target_non_event_selection(
+    f: &mut Frame,
+    area: Rect,
+    remaining: &[String],
+    selected: Option<usize>,
+    event_value: &str,
+    color: Color,
+) {
+    let selected = selected.unwrap_or(0);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(5), Constraint::Min(1)])
+        .split(area);
+
+    let header = Paragraph::new(vec![
         Line::from(""),
+        Line::from(Span::styled(
+            "  Step 2 of 2 - Select NON-EVENT value (0)",
+            themed(Style::default().fg(theme::WARNING).bold()),
+        )),
         Line::from(vec![
-            Span::styled("  Press ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::styled(" to continue", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Event (1): ", Style::default().fg(theme::MUTED)),
+            Span::styled(
+                event_value.to_string(),
+                themed(Style::default().fg(color).bold()),
+            ),
         ]),
-    ];
-    f.render_widget(Paragraph::new(content), area);
+        Line::from(Span::styled(
+            "  Which value represents the negative outcome?",
+            Style::default().fg(theme::MUTED),
+        )),
+    ]);
+    f.render_widget(header, chunks[0]);
+
+    let max_visible = chunks[1].height as usize;
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = remaining
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, value)| {
+            let style = if i == selected {
+                themed(Style::default().fg(theme::BASE).bg(theme::WARNING).bold())
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            ListItem::new(format!("  {}", value)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
 }
 
 fn render_missing_threshold(f: &mut Frame, area: Rect, wizard: &WizardState) {
@@ -1295,7 +1547,7 @@ fn render_correlation_threshold(f: &mut Frame, area: Rect, wizard: &WizardState)
 }
 
 fn render_optional_settings_prompt(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let color = Color::Cyan;
+    let color = theme::PRIMARY;
     let selected = if wizard.optional_yes { 0 } else { 1 };
     let options = ["Yes - configure advanced settings", "No - use defaults"];
 
@@ -1308,12 +1560,12 @@ fn render_optional_settings_prompt(f: &mut Frame, area: Rect, wizard: &WizardSta
         Line::from(""),
         Line::from(Span::styled(
             "  Configure optional settings?",
-            Style::default().fg(Color::DarkGray).bold(),
+            Style::default().fg(theme::SUBTEXT).bold(),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "  Defaults: Solver enabled, Trend none, Weight none",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::MUTED),
         )),
     ]);
     f.render_widget(desc, chunks[0]);
@@ -1323,9 +1575,9 @@ fn render_optional_settings_prompt(f: &mut Frame, area: Rect, wizard: &WizardSta
         .enumerate()
         .map(|(i, opt)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", opt)).style(style)
         })
@@ -1342,7 +1594,7 @@ fn render_solver_toggle(f: &mut Frame, area: Rect, wizard: &WizardState) {
         Some(WizardStep::SolverToggle { selected }) => *selected,
         _ => return,
     };
-    let color = Color::Green;
+    let color = theme::SUCCESS;
     let current_idx = if selected { 0 } else { 1 };
     let options = ["Enabled", "Disabled"];
 
@@ -1355,12 +1607,12 @@ fn render_solver_toggle(f: &mut Frame, area: Rect, wizard: &WizardState) {
         Line::from(""),
         Line::from(Span::styled(
             "  Solver Configuration",
-            Style::default().fg(Color::DarkGray).bold(),
+            Style::default().fg(theme::SUBTEXT).bold(),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "  Use optimization solver for WoE binning?",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::MUTED),
         )),
     ]);
     f.render_widget(desc, chunks[0]);
@@ -1370,9 +1622,9 @@ fn render_solver_toggle(f: &mut Frame, area: Rect, wizard: &WizardState) {
         .enumerate()
         .map(|(i, opt)| {
             let style = if i == current_idx {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", opt)).style(style)
         })
@@ -1388,7 +1640,7 @@ fn render_monotonicity_selection(f: &mut Frame, area: Rect, wizard: &WizardState
         Some(WizardStep::MonotonicitySelection { selected }) => *selected,
         _ => return,
     };
-    let color = Color::Green;
+    let color = theme::SUCCESS;
     let options = ["none", "ascending", "descending", "peak", "valley", "auto"];
 
     let chunks = Layout::default()
@@ -1400,7 +1652,7 @@ fn render_monotonicity_selection(f: &mut Frame, area: Rect, wizard: &WizardState
         Line::from(""),
         Line::from(Span::styled(
             "  Monotonicity Constraint",
-            Style::default().fg(Color::DarkGray).bold(),
+            Style::default().fg(theme::SUBTEXT).bold(),
         )),
     ]);
     f.render_widget(desc, chunks[0]);
@@ -1410,9 +1662,9 @@ fn render_monotonicity_selection(f: &mut Frame, area: Rect, wizard: &WizardState
         .enumerate()
         .map(|(i, opt)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", opt)).style(style)
         })
@@ -1432,7 +1684,7 @@ fn render_weight_column(f: &mut Frame, area: Rect, wizard: &WizardState) {
         }) => (search, filtered, *selected),
         _ => return,
     };
-    let color = Color::Green;
+    let color = theme::SUCCESS;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1441,11 +1693,11 @@ fn render_weight_column(f: &mut Frame, area: Rect, wizard: &WizardState) {
 
     let search_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(theme::SURFACE))
         .title(" Search ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(theme::SURFACE));
     let search_para = Paragraph::new(Line::from(vec![
-        Span::styled(search.to_string(), Style::default().fg(Color::White)),
+        Span::styled(search.to_string(), Style::default().fg(theme::TEXT)),
         Span::styled("\u{258c}", Style::default().fg(color)),
     ]))
     .block(search_block);
@@ -1472,11 +1724,11 @@ fn render_weight_column(f: &mut Frame, area: Rect, wizard: &WizardState) {
         .take(max_visible)
         .map(|(i, col)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else if i == 0 {
-                Style::default().fg(Color::DarkGray).italic()
+                Style::default().fg(theme::MUTED).italic()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", col)).style(style)
         })
@@ -1497,7 +1749,7 @@ fn render_drop_columns(f: &mut Frame, area: Rect, wizard: &WizardState) {
         }) => (search, filtered, *selected, checked),
         _ => return,
     };
-    let color = Color::Red;
+    let color = theme::ERROR;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -1506,20 +1758,15 @@ fn render_drop_columns(f: &mut Frame, area: Rect, wizard: &WizardState) {
 
     let search_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray))
+        .border_style(Style::default().fg(theme::SURFACE))
         .title(" Search ")
-        .title_style(Style::default().fg(Color::DarkGray));
+        .title_style(Style::default().fg(theme::SURFACE));
     let search_para = Paragraph::new(Line::from(vec![
-        Span::styled(search.to_string(), Style::default().fg(Color::White)),
+        Span::styled(search.to_string(), Style::default().fg(theme::TEXT)),
         Span::styled("\u{258c}", Style::default().fg(color)),
     ]))
     .block(search_block);
     f.render_widget(search_para, chunks[0]);
-
-    let filtered_cols: Vec<&String> = filtered
-        .iter()
-        .map(|&i| &wizard.data.available_columns[i])
-        .collect();
 
     let max_visible = chunks[1].height as usize;
     let start_idx = if selected >= max_visible {
@@ -1528,20 +1775,22 @@ fn render_drop_columns(f: &mut Frame, area: Rect, wizard: &WizardState) {
         0
     };
 
-    let items: Vec<ListItem> = filtered_cols
+    let items: Vec<ListItem> = filtered
         .iter()
         .enumerate()
         .skip(start_idx)
         .take(max_visible)
-        .map(|(i, col)| {
-            let is_checked = checked.get(i).copied().unwrap_or(false);
+        .map(|(i, &orig_idx)| {
+            let col = &wizard.data.available_columns[orig_idx];
+            // Checked state is based on the original column index, not the filtered position
+            let is_checked = checked.contains(&orig_idx);
             let checkbox = if is_checked { "[x]" } else { "[ ]" };
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else if is_checked {
                 Style::default().fg(color)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {} {}", checkbox, col)).style(style)
         })
@@ -1568,7 +1817,7 @@ fn render_schema_inference(f: &mut Frame, area: Rect, wizard: &WizardState) {
 }
 
 fn render_summary(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let color = Color::Green;
+    let color = theme::SUCCESS;
     let content = match wizard.data.task {
         Some(WizardTask::Reduction) => {
             let input = wizard
@@ -1594,34 +1843,50 @@ fn render_summary(f: &mut Frame, area: Rect, wizard: &WizardState) {
                 Line::from(""),
                 Line::from(Span::styled(
                     "  Configuration Summary",
-                    Style::default().fg(Color::DarkGray).bold(),
+                    Style::default().fg(theme::SUBTEXT).bold(),
                 )),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("  Input:        ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Input:        ", Style::default().fg(theme::MUTED)),
                     Span::styled(input, Style::default().fg(color)),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Target:       ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Target:       ", Style::default().fg(theme::MUTED)),
                     Span::styled(target.to_string(), Style::default().fg(color)),
                 ]),
+                {
+                    if let Some(ref mapping) = wizard.data.target_mapping {
+                        Line::from(vec![
+                            Span::styled("  Mapping:      ", Style::default().fg(theme::MUTED)),
+                            Span::styled(
+                                format!(
+                                    "event=\"{}\" non-event=\"{}\"",
+                                    mapping.event_value, mapping.non_event_value
+                                ),
+                                Style::default().fg(color),
+                            ),
+                        ])
+                    } else {
+                        Line::from("")
+                    }
+                },
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("  Missing:      ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Missing:      ", Style::default().fg(theme::MUTED)),
                     Span::styled(
                         format!("{:.2}", wizard.data.missing_threshold),
                         Style::default().fg(color),
                     ),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Gini:         ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Gini:         ", Style::default().fg(theme::MUTED)),
                     Span::styled(
                         format!("{:.2}", wizard.data.gini_threshold),
                         Style::default().fg(color),
                     ),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Correlation:  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Correlation:  ", Style::default().fg(theme::MUTED)),
                     Span::styled(
                         format!("{:.2}", wizard.data.correlation_threshold),
                         Style::default().fg(color),
@@ -1629,23 +1894,23 @@ fn render_summary(f: &mut Frame, area: Rect, wizard: &WizardState) {
                 ]),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("  Solver:       ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Solver:       ", Style::default().fg(theme::MUTED)),
                     Span::styled(solver.to_string(), Style::default().fg(color)),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Monotonicity: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Monotonicity: ", Style::default().fg(theme::MUTED)),
                     Span::styled(wizard.data.monotonicity.clone(), Style::default().fg(color)),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Weight:       ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Weight:       ", Style::default().fg(theme::MUTED)),
                     Span::styled(weight.to_string(), Style::default().fg(color)),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Drop:         ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Drop:         ", Style::default().fg(theme::MUTED)),
                     Span::styled(drop_cols, Style::default().fg(color)),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Schema:       ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Schema:       ", Style::default().fg(theme::MUTED)),
                     Span::styled(
                         format!("{} rows", wizard.data.infer_schema_length),
                         Style::default().fg(color),
@@ -1676,33 +1941,64 @@ fn render_summary(f: &mut Frame, area: Rect, wizard: &WizardState) {
                 Line::from(""),
                 Line::from(Span::styled(
                     "  Configuration Summary",
-                    Style::default().fg(Color::DarkGray).bold(),
+                    Style::default().fg(theme::SUBTEXT).bold(),
                 )),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("  Input:   ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Input:   ", Style::default().fg(theme::MUTED)),
                     Span::styled(input, Style::default().fg(color)),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Output:  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Output:  ", Style::default().fg(theme::MUTED)),
                     Span::styled(output, Style::default().fg(color)),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Mode:    ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Mode:    ", Style::default().fg(theme::MUTED)),
                     Span::styled(mode.to_string(), Style::default().fg(color)),
                 ]),
                 Line::from(vec![
-                    Span::styled("  Schema:  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("  Schema:  ", Style::default().fg(theme::MUTED)),
                     Span::styled("All rows (full scan)", Style::default().fg(color)),
                 ]),
             ]
         }
         None => vec![Line::from(Span::styled(
             "Error: No task selected",
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme::ERROR),
         ))],
     };
-    f.render_widget(Paragraph::new(content), area);
+
+    let content_height = content.len() as u16;
+    let visible_height = area.height;
+
+    // Clamp scroll offset and render scrollable paragraph
+    let max_scroll = content_height.saturating_sub(visible_height) as usize;
+    let scroll_offset = wizard.summary_scroll.min(max_scroll);
+
+    let paragraph = Paragraph::new(content).scroll((scroll_offset as u16, 0));
+    f.render_widget(paragraph, area);
+
+    // Draw scrollbar when content overflows
+    if content_height > visible_height {
+        let max_scroll_u16 = content_height.saturating_sub(visible_height);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some("▲"))
+            .end_symbol(Some("▼"))
+            .track_symbol(Some("│"))
+            .thumb_symbol("█");
+
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll_u16 as usize).position(scroll_offset);
+
+        // Render scrollbar along the right edge of the summary area
+        let scrollbar_area = Rect::new(
+            area.x + area.width.saturating_sub(1),
+            area.y,
+            1,
+            area.height,
+        );
+        f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+    }
 }
 
 /// Get available output format options based on input file extension
@@ -1734,7 +2030,7 @@ fn render_output_format(f: &mut Frame, area: Rect, wizard: &WizardState) {
         Some(WizardStep::OutputFormat { selected }) => *selected,
         _ => return,
     };
-    let color = Color::Cyan;
+    let color = theme::PRIMARY;
     let options = output_format_options(wizard.data.input.as_deref());
 
     let chunks = Layout::default()
@@ -1746,7 +2042,7 @@ fn render_output_format(f: &mut Frame, area: Rect, wizard: &WizardState) {
         Line::from(""),
         Line::from(Span::styled(
             "  Output Format",
-            Style::default().fg(Color::DarkGray).bold(),
+            Style::default().fg(theme::SUBTEXT).bold(),
         )),
     ]);
     f.render_widget(desc, chunks[0]);
@@ -1756,9 +2052,9 @@ fn render_output_format(f: &mut Frame, area: Rect, wizard: &WizardState) {
         .enumerate()
         .map(|(i, opt)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", opt)).style(style)
         })
@@ -1774,7 +2070,7 @@ fn render_conversion_mode(f: &mut Frame, area: Rect, wizard: &WizardState) {
         Some(WizardStep::ConversionMode { selected }) => *selected,
         _ => return,
     };
-    let color = Color::Cyan;
+    let color = theme::PRIMARY;
     let options = ["Fast (parallel)", "Memory-efficient (streaming)"];
 
     let chunks = Layout::default()
@@ -1786,7 +2082,7 @@ fn render_conversion_mode(f: &mut Frame, area: Rect, wizard: &WizardState) {
         Line::from(""),
         Line::from(Span::styled(
             "  Conversion Mode",
-            Style::default().fg(Color::DarkGray).bold(),
+            Style::default().fg(theme::SUBTEXT).bold(),
         )),
     ]);
     f.render_widget(desc, chunks[0]);
@@ -1796,9 +2092,9 @@ fn render_conversion_mode(f: &mut Frame, area: Rect, wizard: &WizardState) {
         .enumerate()
         .map(|(i, opt)| {
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(color).bold()
+                Style::default().fg(theme::BASE).bg(color).bold()
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme::TEXT)
             };
             ListItem::new(format!("  {}", opt)).style(style)
         })
@@ -1807,6 +2103,55 @@ fn render_conversion_mode(f: &mut Frame, area: Rect, wizard: &WizardState) {
     let mut list_state = ListState::default();
     list_state.select(Some(selected));
     f.render_stateful_widget(list, chunks[1], &mut list_state);
+}
+
+// ============================================================================
+// Data Loading Helpers
+// ============================================================================
+
+/// Load only the target column from a dataset for binary/non-binary analysis.
+///
+/// Uses Polars lazy evaluation to avoid loading the full dataset. This is used
+/// exclusively by the wizard to silently analyze the target column without
+/// printing any progress bars or log output.
+/// Load only the target column from the dataset for binary/mapping analysis.
+///
+/// Uses a small row sample (10 000 rows) and minimal schema inference to stay
+/// fast even on very large / wide files (e.g. 4 GB, 5 000+ columns).
+fn load_target_column_for_analysis(
+    path: &std::path::Path,
+    target_col: &str,
+) -> Result<polars::prelude::DataFrame> {
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // 10 000 rows is more than enough to discover unique target values
+    const SAMPLE_ROWS: u32 = 10_000;
+
+    let df = match extension.as_str() {
+        "csv" => LazyCsvReader::new(path)
+            .with_infer_schema_length(Some(100))
+            .with_n_rows(Some(SAMPLE_ROWS as usize))
+            .finish()?
+            .select([col(target_col)])
+            .collect()?,
+        "parquet" => LazyFrame::scan_parquet(path, Default::default())?
+            .select([col(target_col)])
+            .limit(SAMPLE_ROWS)
+            .collect()?,
+        "sas7bdat" => {
+            // SAS7BDAT must load the full file; filter to target column after
+            use crate::pipeline::sas7bdat::load_sas7bdat_silent;
+            let (full_df, _, _, _) = load_sas7bdat_silent(path)?;
+            full_df.select([target_col])?
+        }
+        _ => anyhow::bail!("Unsupported file format: {}", extension),
+    };
+
+    Ok(df)
 }
 
 // ============================================================================
@@ -1926,7 +2271,53 @@ fn handle_target_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<St
         KeyCode::Enter => {
             if !filtered.is_empty() {
                 let col_index = filtered[*selected];
-                wizard.data.target = Some(available_columns[col_index].clone());
+                let target_col = available_columns[col_index].clone();
+                wizard.data.target = Some(target_col.clone());
+
+                // Analyze target to determine if mapping is needed.
+                // Load only the target column quietly (no progress bars).
+                if let Some(input_path) = &wizard.data.input.clone() {
+                    match load_target_column_for_analysis(input_path, &target_col) {
+                        Ok(df) => {
+                            match crate::pipeline::analyze_target_column(&df, &target_col) {
+                                Ok(TargetAnalysis::AlreadyBinary) => {
+                                    wizard.data.target_is_binary = true;
+                                    wizard.data.target_unique_values = Vec::new();
+                                }
+                                Ok(TargetAnalysis::NeedsMapping { unique_values }) => {
+                                    wizard.data.target_is_binary = false;
+                                    wizard.data.target_unique_values = unique_values.clone();
+                                    // Populate the TargetMapping step's unique_values
+                                    for step in wizard.steps.iter_mut() {
+                                        if let WizardStep::TargetMapping {
+                                            unique_values: ref mut uv,
+                                            ref mut event_selected,
+                                            ref mut non_event_selected,
+                                            ref mut focus,
+                                        } = step
+                                        {
+                                            *uv = unique_values.clone();
+                                            *event_selected = Some(0);
+                                            *non_event_selected = Some(0);
+                                            *focus = TargetMappingFocus::Event;
+                                        }
+                                    }
+                                }
+                                Err(_) => {
+                                    // If analysis fails, treat as needing mapping with empty list
+                                    wizard.data.target_is_binary = false;
+                                    wizard.data.target_unique_values = Vec::new();
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // On load failure, fall through — mapping step will show binary message
+                            wizard.data.target_is_binary = true;
+                            wizard.data.target_unique_values = Vec::new();
+                        }
+                    }
+                }
+
                 Ok(StepAction::NextStep)
             } else {
                 Ok(StepAction::Stay)
@@ -1936,11 +2327,108 @@ fn handle_target_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<St
     }
 }
 
-fn handle_target_mapping(_wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
-    match key.code {
-        KeyCode::Enter => Ok(StepAction::NextStep),
-        KeyCode::Backspace => Ok(StepAction::PrevStep),
-        _ => Ok(StepAction::Stay),
+fn handle_target_mapping(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
+    // Binary target: no mapping needed — Enter continues, Backspace goes back
+    if wizard.data.target_is_binary || wizard.data.target_unique_values.is_empty() {
+        return match key.code {
+            KeyCode::Enter => Ok(StepAction::NextStep),
+            KeyCode::Backspace => Ok(StepAction::PrevStep),
+            _ => Ok(StepAction::Stay),
+        };
+    }
+
+    // Non-binary target: two-phase selection (Event then NonEvent)
+    let unique_values = wizard.data.target_unique_values.clone();
+
+    let step = wizard.current_step_mut();
+    let (step_unique_values, event_selected, non_event_selected, focus) = match step {
+        Some(WizardStep::TargetMapping {
+            unique_values,
+            event_selected,
+            non_event_selected,
+            focus,
+        }) => (unique_values, event_selected, non_event_selected, focus),
+        _ => return Ok(StepAction::Stay),
+    };
+
+    match focus {
+        TargetMappingFocus::Event => match key.code {
+            KeyCode::Up => {
+                let sel = event_selected.get_or_insert(0);
+                if *sel > 0 {
+                    *sel -= 1;
+                }
+                Ok(StepAction::Stay)
+            }
+            KeyCode::Down => {
+                let sel = event_selected.get_or_insert(0);
+                if *sel + 1 < unique_values.len() {
+                    *sel += 1;
+                }
+                Ok(StepAction::Stay)
+            }
+            KeyCode::Enter => {
+                if !step_unique_values.is_empty() {
+                    event_selected.get_or_insert(0);
+                    *non_event_selected = Some(0);
+                    *focus = TargetMappingFocus::NonEvent;
+                }
+                Ok(StepAction::Stay)
+            }
+            KeyCode::Backspace => Ok(StepAction::PrevStep),
+            _ => Ok(StepAction::Stay),
+        },
+        TargetMappingFocus::NonEvent => match key.code {
+            KeyCode::Up => {
+                let sel = non_event_selected.get_or_insert(0);
+                if *sel > 0 {
+                    *sel -= 1;
+                }
+                Ok(StepAction::Stay)
+            }
+            KeyCode::Down => {
+                let event_idx = event_selected.unwrap_or(0);
+                let remaining_len = unique_values.len().saturating_sub(1);
+                // Non-event list excludes the event value, adjust index for last item
+                let adj_len = if event_idx < unique_values.len() {
+                    remaining_len
+                } else {
+                    unique_values.len()
+                };
+                let sel = non_event_selected.get_or_insert(0);
+                if *sel + 1 < adj_len {
+                    *sel += 1;
+                }
+                Ok(StepAction::Stay)
+            }
+            KeyCode::Enter => {
+                let event_idx = event_selected.unwrap_or(0);
+                if event_idx < unique_values.len() {
+                    let event_value = unique_values[event_idx].clone();
+                    let remaining: Vec<String> = unique_values
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != event_idx)
+                        .map(|(_, v)| v.clone())
+                        .collect();
+                    let non_event_idx = non_event_selected.unwrap_or(0);
+                    if non_event_idx < remaining.len() {
+                        let non_event_value = remaining[non_event_idx].clone();
+                        wizard.data.target_mapping =
+                            Some(TargetMapping::new(event_value, non_event_value));
+                        return Ok(StepAction::NextStep);
+                    }
+                }
+                Ok(StepAction::Stay)
+            }
+            KeyCode::Backspace => {
+                // Go back to Event selection phase (not prev step)
+                *focus = TargetMappingFocus::Event;
+                *non_event_selected = None;
+                Ok(StepAction::Stay)
+            }
+            _ => Ok(StepAction::Stay),
+        },
     }
 }
 
@@ -2219,15 +2707,19 @@ fn handle_drop_columns(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAc
 
     match key.code {
         KeyCode::Char(' ') => {
-            // Toggle checkbox
-            if *selected < checked.len() {
-                checked[*selected] = !checked[*selected];
+            // Toggle checkbox by original column index, not filtered position
+            if let Some(&orig_idx) = filtered.get(*selected) {
+                if checked.contains(&orig_idx) {
+                    checked.remove(&orig_idx);
+                } else {
+                    checked.insert(orig_idx);
+                }
             }
             Ok(StepAction::Stay)
         }
         KeyCode::Char(c) => {
             search.push(c);
-            // Rebuild filtered list
+            // Rebuild filtered list; checked HashSet is preserved untouched
             let search_lower = search.to_lowercase();
             *filtered = available_columns
                 .iter()
@@ -2236,8 +2728,6 @@ fn handle_drop_columns(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAc
                 .map(|(i, _)| i)
                 .collect();
             *selected = 0;
-            // Rebuild checked list
-            *checked = vec![false; filtered.len()];
             Ok(StepAction::Stay)
         }
         KeyCode::Backspace => {
@@ -2245,7 +2735,7 @@ fn handle_drop_columns(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAc
                 return Ok(StepAction::PrevStep);
             }
             search.pop();
-            // Rebuild filtered list
+            // Rebuild filtered list; checked HashSet is preserved untouched
             let search_lower = search.to_lowercase();
             *filtered = available_columns
                 .iter()
@@ -2254,8 +2744,6 @@ fn handle_drop_columns(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAc
                 .map(|(i, _)| i)
                 .collect();
             *selected = 0;
-            // Rebuild checked list
-            *checked = vec![false; filtered.len()];
             Ok(StepAction::Stay)
         }
         KeyCode::Up => {
@@ -2271,12 +2759,12 @@ fn handle_drop_columns(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAc
             Ok(StepAction::Stay)
         }
         KeyCode::Enter => {
-            // Collect checked columns
-            wizard.data.columns_to_drop = filtered
+            // Collect checked columns by iterating original indices in order
+            wizard.data.columns_to_drop = available_columns
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| checked[*i])
-                .map(|(_, &col_idx)| available_columns[col_idx].clone())
+                .filter(|(i, _)| checked.contains(i))
+                .map(|(_, name)| name.clone())
                 .collect();
             Ok(StepAction::NextStep)
         }
@@ -2324,10 +2812,33 @@ fn handle_schema_inference(wizard: &mut WizardState, key: KeyEvent) -> Result<St
     }
 }
 
-fn handle_summary(wizard: &WizardState, key: KeyEvent) -> Result<StepAction> {
+fn handle_summary(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
     match key.code {
         KeyCode::Enter => generate_result(wizard),
-        KeyCode::Backspace => Ok(StepAction::PrevStep),
+        KeyCode::Backspace => {
+            wizard.summary_scroll = 0;
+            Ok(StepAction::PrevStep)
+        }
+        KeyCode::Up => {
+            wizard.summary_scroll = wizard.summary_scroll.saturating_sub(1);
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Down => {
+            wizard.summary_scroll = wizard.summary_scroll.saturating_add(1);
+            Ok(StepAction::Stay)
+        }
+        KeyCode::PageUp => {
+            wizard.summary_scroll = wizard.summary_scroll.saturating_sub(5);
+            Ok(StepAction::Stay)
+        }
+        KeyCode::PageDown => {
+            wizard.summary_scroll = wizard.summary_scroll.saturating_add(5);
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Home => {
+            wizard.summary_scroll = 0;
+            Ok(StepAction::Stay)
+        }
         _ => Ok(StepAction::Stay),
     }
 }

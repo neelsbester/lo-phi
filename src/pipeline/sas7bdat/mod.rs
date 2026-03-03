@@ -63,6 +63,18 @@ use self::subheader::{parse_subheader_pointers, process_subheader, SubheaderStat
 /// * `SasError::UnsupportedEncoding` - Unknown character encoding
 /// * `SasError::TruncatedFile` - File is shorter than expected
 pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasError> {
+    load_sas7bdat_impl(path, false)
+}
+
+/// Load a SAS7BDAT file without indicatif progress output (for TUI mode).
+pub fn load_sas7bdat_silent(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasError> {
+    load_sas7bdat_impl(path, true)
+}
+
+fn load_sas7bdat_impl(
+    path: &Path,
+    silent: bool,
+) -> Result<(DataFrame, usize, usize, f64), SasError> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
 
@@ -73,16 +85,22 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
     let mut state = SubheaderState::default();
     reader.seek(SeekFrom::Start(sas_header.header_length))?;
 
-    // Create progress bar for page iteration
-    let pb = ProgressBar::new(sas_header.page_count);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "   Loading SAS7BDAT [{bar:40.cyan/blue}] {pos}/{len} pages ({percent}%) [{eta}]",
-            )
-            .unwrap()
-            .progress_chars("=>-"),
-    );
+    // In TUI mode (silent), use a hidden progress bar so indicatif doesn't
+    // write to stdout — ratatui owns the alternate screen.
+    let pb = if silent {
+        ProgressBar::hidden()
+    } else {
+        let pb = ProgressBar::new(sas_header.page_count);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "   Loading SAS7BDAT [{bar:40.cyan/blue}] {pos}/{len} pages ({percent}%) [{eta}]",
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        pb
+    };
 
     // Sanity-check page_size before allocating to prevent absurd allocations
     if sas_header.page_size > 268_435_456 {
@@ -247,7 +265,8 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
                             Compression::None => {
                                 return Err(SasError::DecompressionError {
                                     page_index: page_idx,
-                                    message: "Attempted to decompress row in a non-compressed file".to_string(),
+                                    message: "Attempted to decompress row in a non-compressed file"
+                                        .to_string(),
                                 });
                             }
                         };
@@ -319,13 +338,18 @@ pub fn load_sas7bdat(path: &Path) -> Result<(DataFrame, usize, usize, f64), SasE
     pb.finish_and_clear();
 
     // Step 4: Build Polars Series for each column
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::default_spinner()
-            .template("   {spinner:.cyan} Building DataFrame...")
-            .unwrap(),
-    );
-    spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+    let spinner = if silent {
+        ProgressBar::hidden()
+    } else {
+        let s = ProgressBar::new_spinner();
+        s.set_style(
+            ProgressStyle::default_spinner()
+                .template("   {spinner:.cyan} Building DataFrame...")
+                .unwrap(),
+        );
+        s.enable_steady_tick(std::time::Duration::from_millis(100));
+        s
+    };
 
     let mut column_vec: Vec<Column> = Vec::with_capacity(columns.len());
     for (col, values) in columns.iter().zip(column_values.into_iter()) {

@@ -495,8 +495,7 @@ fn test_auto_uses_matrix_for_large_column_count() {
     let threshold = 0.9;
 
     let auto_pairs = find_correlated_pairs_auto(&df, threshold, &weights, Some("target")).unwrap();
-    let mat_pairs =
-        find_correlated_pairs_matrix(&df, threshold, &weights, Some("target")).unwrap();
+    let mat_pairs = find_correlated_pairs_matrix(&df, threshold, &weights, Some("target")).unwrap();
 
     assert_eq!(
         auto_pairs.len(),
@@ -555,8 +554,7 @@ fn test_constant_column_does_not_crash() {
     // Constant column should not appear in valid correlated pairs with a finite correlation
     if let Ok(pairs) = result {
         for pair in &pairs {
-            let involves_constant =
-                pair.feature1 == "constant" || pair.feature2 == "constant";
+            let involves_constant = pair.feature1 == "constant" || pair.feature2 == "constant";
             if involves_constant {
                 assert!(
                     pair.correlation.is_finite(),
@@ -587,8 +585,14 @@ fn test_constant_column_matrix_does_not_crash() {
     // The constant column should not appear in any correlated pair
     let pairs = result.unwrap();
     for pair in &pairs {
-        assert_ne!(pair.feature1, "constant", "Constant column should be excluded");
-        assert_ne!(pair.feature2, "constant", "Constant column should be excluded");
+        assert_ne!(
+            pair.feature1, "constant",
+            "Constant column should be excluded"
+        );
+        assert_ne!(
+            pair.feature2, "constant",
+            "Constant column should be excluded"
+        );
     }
 }
 

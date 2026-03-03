@@ -7,6 +7,8 @@ use polars::prelude::*;
 use rayon::prelude::*;
 use std::sync::Arc;
 
+use super::progress::{PipelineStage, ProgressEvent, ProgressSender};
+
 /// Represents a correlated pair of features
 #[derive(Debug, Clone)]
 pub struct CorrelatedPair {
@@ -23,11 +25,22 @@ pub struct CorrelatedPair {
 /// * `threshold` - Correlation threshold above which pairs are considered highly correlated
 /// * `weights` - Sample weights for weighted correlation calculation
 /// * `weight_column` - Optional name of the weight column to exclude from analysis
+#[allow(dead_code)]
 pub fn find_correlated_pairs(
     df: &DataFrame,
     threshold: f64,
     weights: &[f64],
     weight_column: Option<&str>,
+) -> Result<Vec<CorrelatedPair>> {
+    find_correlated_pairs_impl(df, threshold, weights, weight_column, false)
+}
+
+fn find_correlated_pairs_impl(
+    df: &DataFrame,
+    threshold: f64,
+    weights: &[f64],
+    weight_column: Option<&str>,
+    silent: bool,
 ) -> Result<Vec<CorrelatedPair>> {
     if df.height() == 0 {
         return Ok(Vec::new());
@@ -73,17 +86,23 @@ pub fn find_correlated_pairs(
     // Calculate total number of pairs for progress bar (upper triangle)
     let total_pairs = (num_cols * (num_cols - 1)) / 2;
 
-    // Create progress bar with steady tick for smooth rendering
-    let pb = ProgressBar::new(total_pairs as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "   Calculating correlations [{bar:40.cyan/blue}] {pos}/{len} pairs ({percent}%) [{eta}]",
-            )
-            .unwrap()
-            .progress_chars("=>-"),
-    );
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    // In TUI mode (silent), use a hidden progress bar so indicatif doesn't
+    // write to stdout — ratatui owns the alternate screen.
+    let pb = if silent {
+        ProgressBar::hidden()
+    } else {
+        let pb = ProgressBar::new(total_pairs as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "   Calculating correlations [{bar:40.cyan/blue}] {pos}/{len} pairs ({percent}%) [{eta}]",
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        pb
+    };
 
     // Generate all pairs (indices for upper triangle)
     let pairs: Vec<(usize, usize)> = (0..num_cols)
@@ -206,7 +225,10 @@ fn compute_correlation_matrix_fast(
 ) -> Result<(Mat<f64>, Vec<String>)> {
     let n_cols = float_columns.len();
     if n_cols < 2 {
-        anyhow::bail!("Need at least 2 columns to compute a correlation matrix, got {}", n_cols);
+        anyhow::bail!(
+            "Need at least 2 columns to compute a correlation matrix, got {}",
+            n_cols
+        );
     }
 
     // Extract column names
@@ -370,11 +392,22 @@ fn extract_correlated_pairs_from_matrix(
 /// This is significantly faster than pairwise computation when there are many columns
 /// because matrix multiplication is highly optimized (O(n²) operations in optimized BLAS
 /// vs O(n² * m) for pairwise where m is row count).
+#[allow(dead_code)]
 pub fn find_correlated_pairs_matrix(
     df: &DataFrame,
     threshold: f64,
     weights: &[f64],
     weight_column: Option<&str>,
+) -> Result<Vec<CorrelatedPair>> {
+    find_correlated_pairs_matrix_impl(df, threshold, weights, weight_column, false)
+}
+
+fn find_correlated_pairs_matrix_impl(
+    df: &DataFrame,
+    threshold: f64,
+    weights: &[f64],
+    weight_column: Option<&str>,
+    silent: bool,
 ) -> Result<Vec<CorrelatedPair>> {
     if df.height() == 0 {
         return Ok(Vec::new());
@@ -416,14 +449,20 @@ pub fn find_correlated_pairs_matrix(
         })
         .collect();
 
-    // Show progress for matrix computation
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("   {spinner:.cyan} Computing correlation matrix ({msg})")
-            .unwrap(),
-    );
-    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    // In TUI mode (silent), use a hidden progress bar so indicatif doesn't
+    // write to stdout — ratatui owns the alternate screen.
+    let pb = if silent {
+        ProgressBar::hidden()
+    } else {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("   {spinner:.cyan} Computing correlation matrix ({msg})")
+                .unwrap(),
+        );
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+        pb
+    };
     pb.set_message(format!("{} columns", float_columns.len()));
 
     // Compute correlation matrix
@@ -458,6 +497,28 @@ pub fn find_correlated_pairs_auto(
     weights: &[f64],
     weight_column: Option<&str>,
 ) -> Result<Vec<CorrelatedPair>> {
+    find_correlated_pairs_auto_impl(df, threshold, weights, weight_column, None)
+}
+
+/// Same as `find_correlated_pairs_auto` but sends a single progress event when the
+/// analysis begins so the TUI overlay can show a detail line.
+pub fn find_correlated_pairs_auto_with_progress(
+    df: &DataFrame,
+    threshold: f64,
+    weights: &[f64],
+    weight_column: Option<&str>,
+    progress_tx: &ProgressSender,
+) -> Result<Vec<CorrelatedPair>> {
+    find_correlated_pairs_auto_impl(df, threshold, weights, weight_column, Some(progress_tx))
+}
+
+fn find_correlated_pairs_auto_impl(
+    df: &DataFrame,
+    threshold: f64,
+    weights: &[f64],
+    weight_column: Option<&str>,
+    progress_tx: Option<&ProgressSender>,
+) -> Result<Vec<CorrelatedPair>> {
     // Count numeric columns
     let num_cols = df
         .get_columns()
@@ -467,10 +528,26 @@ pub fn find_correlated_pairs_auto(
         })
         .count();
 
+    // When a progress channel is provided we're in TUI mode — indicatif
+    // progress bars must not write to stdout because ratatui owns the
+    // alternate screen.  Pass `silent = true` so the inner functions use
+    // ProgressBar::hidden() instead.
+    let silent = progress_tx.is_some();
+
+    if let Some(tx) = progress_tx {
+        let total_pairs = (num_cols * num_cols.saturating_sub(1)) / 2;
+        tx.send(ProgressEvent::update(
+            PipelineStage::CorrelationAnalysis,
+            "Correlation analysis",
+            format!("{} numeric features, {} pairs", num_cols, total_pairs),
+        ))
+        .ok();
+    }
+
     if num_cols >= MATRIX_METHOD_COLUMN_THRESHOLD {
-        find_correlated_pairs_matrix(df, threshold, weights, weight_column)
+        find_correlated_pairs_matrix_impl(df, threshold, weights, weight_column, silent)
     } else {
-        find_correlated_pairs(df, threshold, weights, weight_column)
+        find_correlated_pairs_impl(df, threshold, weights, weight_column, silent)
     }
 }
 
