@@ -391,7 +391,8 @@ fn process_columnname_subheader(
 
     // Additional bounds check against known column count to prevent phantom entries
     let max_entries = if state.column_count_from_size > 0 {
-        let remaining = state.column_count_from_size as usize - state.column_name_entries.len();
+        let remaining =
+            (state.column_count_from_size as usize).saturating_sub(state.column_name_entries.len());
         num_entries.min(remaining)
     } else {
         num_entries
@@ -451,7 +452,8 @@ fn process_columnattrs_subheader(
 
     // Bounds-check against known column count to prevent phantom entries
     let max_entries = if state.column_count_from_size > 0 {
-        let remaining = state.column_count_from_size as usize - state.column_attr_entries.len();
+        let remaining =
+            (state.column_count_from_size as usize).saturating_sub(state.column_attr_entries.len());
         num_entries.min(remaining)
     } else {
         num_entries

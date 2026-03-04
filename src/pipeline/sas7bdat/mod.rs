@@ -188,6 +188,18 @@ fn load_sas7bdat_impl(
         ));
     }
 
+    // Sanity-check total cell count to prevent excessive pre-allocation
+    let total_cells = (sas_header.row_count as u128) * (columns.len() as u128);
+    if total_cells > 2_000_000_000 {
+        pb.finish_and_clear();
+        return Err(SasError::InvalidHeader(format!(
+            "Dataset too large: {} rows x {} columns = {} cells exceeds 2B cell limit",
+            sas_header.row_count,
+            columns.len(),
+            total_cells
+        )));
+    }
+
     // Step 3: Second pass - extract data rows
     reader.seek(SeekFrom::Start(sas_header.header_length))?;
     pb.set_position(0);
@@ -237,8 +249,14 @@ fn load_sas7bdat_impl(
                 // Compressed row subheaders: compression == 4, subheader_type == 1.
                 // Skip truncated markers (compression == 1) and metadata subheaders.
                 if pointer.compression != 0 && pointer.subheader_type == 1 {
-                    let offset = pointer.offset as usize;
-                    let length = pointer.length as usize;
+                    let offset = match usize::try_from(pointer.offset) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let length = match usize::try_from(pointer.length) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
 
                     if length == 0 || offset + length > page_buf.len() {
                         continue;
@@ -368,6 +386,14 @@ pub fn get_sas7bdat_columns(path: &Path) -> Result<Vec<String>, SasError> {
     // Iterate metadata pages only
     let mut state = SubheaderState::default();
     reader.seek(SeekFrom::Start(sas_header.header_length))?;
+
+    // Sanity-check page_size before allocating (same guard as load_sas7bdat_impl)
+    if sas_header.page_size > 268_435_456 {
+        return Err(SasError::InvalidHeader(format!(
+            "Page size {} exceeds 256MB limit",
+            sas_header.page_size
+        )));
+    }
 
     let mut page_buf = vec![0u8; sas_header.page_size as usize];
 

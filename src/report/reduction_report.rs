@@ -644,7 +644,7 @@ pub fn export_reduction_report_csv(report: &ReductionReport, output_path: &Path)
         writeln!(
             file,
             "{},{},{},{},{},{},{},{},{},{},{},{}",
-            feature.name,
+            escape_csv_field(&feature.name),
             feature.status,
             stage,
             reason,
@@ -662,9 +662,21 @@ pub fn export_reduction_report_csv(report: &ReductionReport, output_path: &Path)
     Ok(())
 }
 
-/// Escape a field for CSV (handle commas and quotes)
+/// Escape a field for CSV (handle commas, quotes, and formula injection)
+///
+/// Prevents CSV injection by quoting fields that start with formula-triggering
+/// characters (=, +, -, @, \t, \r) which could be interpreted as formulas
+/// when opened in spreadsheet applications like Excel or Google Sheets.
 fn escape_csv_field(field: &str) -> String {
-    if field.contains(',') || field.contains('"') || field.contains('\n') {
+    let needs_quoting = field.contains(',') || field.contains('"') || field.contains('\n');
+    let starts_with_formula_char = field.starts_with('=')
+        || field.starts_with('+')
+        || field.starts_with('-')
+        || field.starts_with('@')
+        || field.starts_with('\t')
+        || field.starts_with('\r');
+
+    if needs_quoting || starts_with_formula_char {
         format!("\"{}\"", field.replace('"', "\"\""))
     } else {
         field.to_string()

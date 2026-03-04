@@ -114,7 +114,9 @@ pub fn extract_rows_from_page(
         let row_stride = (row_idx as usize)
             .checked_mul(row_length)
             .ok_or_else(|| SasError::InvalidHeader("Row offset overflow".into()))?;
-        let row_offset = data_start + row_stride;
+        let row_offset = data_start
+            .checked_add(row_stride)
+            .ok_or_else(|| SasError::InvalidHeader("Row offset overflow".into()))?;
 
         // Ensure we don't read past the page boundary
         if row_offset + row_length > page_data.len() {
@@ -249,20 +251,31 @@ fn extract_numeric_value(
             // SAS date: days since 1960-01-01
             // Unix date: days since 1970-01-01
             let unix_days = (value as i64) - SAS_EPOCH_OFFSET_DAYS;
-            Ok(ColumnValue::Int32(unix_days as i32))
+            match i32::try_from(unix_days) {
+                Ok(days) => Ok(ColumnValue::Int32(days)),
+                Err(_) => Ok(ColumnValue::Null), // Out-of-range date
+            }
         }
         PolarsOutputType::Datetime => {
             // SAS datetime: seconds since 1960-01-01 00:00:00
             // Unix datetime: milliseconds since 1970-01-01 00:00:00
             let unix_seconds = value - (SAS_EPOCH_OFFSET_SECONDS as f64);
-            let unix_ms = (unix_seconds * MS_PER_SECOND as f64) as i64;
-            Ok(ColumnValue::Int64(unix_ms))
+            let unix_ms = unix_seconds * MS_PER_SECOND as f64;
+            if unix_ms.is_finite() && unix_ms >= i64::MIN as f64 && unix_ms <= i64::MAX as f64 {
+                Ok(ColumnValue::Int64(unix_ms as i64))
+            } else {
+                Ok(ColumnValue::Null) // Out-of-range datetime
+            }
         }
         PolarsOutputType::Time => {
             // SAS time: seconds since midnight
             // Polars time: nanoseconds since midnight
-            let ns = (value * NS_PER_SECOND as f64) as i64;
-            Ok(ColumnValue::Int64(ns))
+            let ns = value * NS_PER_SECOND as f64;
+            if ns.is_finite() && ns >= i64::MIN as f64 && ns <= i64::MAX as f64 {
+                Ok(ColumnValue::Int64(ns as i64))
+            } else {
+                Ok(ColumnValue::Null) // Out-of-range time
+            }
         }
         PolarsOutputType::Utf8 => {
             // Should not happen for numeric columns

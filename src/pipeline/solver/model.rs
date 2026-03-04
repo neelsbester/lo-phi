@@ -179,7 +179,13 @@ fn solve_with_monotonicity(
 
     let objective: Expression = objective_terms.into_iter().sum();
 
-    let mut problem = vars.maximise(objective).using(default_solver);
+    let mut problem = vars
+        .maximise(objective)
+        .using(default_solver)
+        .set_time_limit(config.timeout_seconds as f64)
+        // gap_tolerance is pre-validated to [0.0, 1.0] by CLI
+        .set_mip_rel_gap(config.gap_tolerance as f32)
+        .expect("gap_tolerance already validated");
 
     // Constraint 1: Exactly K bins
     let bin_count: Expression = z.iter().flat_map(|row| row.iter().filter_map(|v| *v)).sum();
@@ -406,7 +412,13 @@ pub fn solve_categorical_binning(
     }
 
     let objective: Expression = objective_terms.into_iter().sum();
-    let mut problem = vars.maximise(objective).using(default_solver);
+    let mut problem = vars
+        .maximise(objective)
+        .using(default_solver)
+        .set_time_limit(config.timeout_seconds as f64)
+        // gap_tolerance is pre-validated to [0.0, 1.0] by CLI
+        .set_mip_rel_gap(config.gap_tolerance as f32)
+        .expect("gap_tolerance already validated");
 
     // Constraint: Exactly K bins
     let bin_count: Expression = z.iter().flat_map(|row| row.iter().filter_map(|v| *v)).sum();
