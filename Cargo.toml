@@ -1,6 +1,6 @@
 [package]
 name = "lophi"
-version = "1.0.0"
+version = "1.0.2"
 edition = "2021"
 description = "Lo-phi: A CLI tool for feature reduction using missing value and correlation analysis"
 authors = ["Neels Bester"]
