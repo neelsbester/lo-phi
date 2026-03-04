@@ -106,9 +106,7 @@ fn find_correlated_pairs_impl(
         .map(|col| col.name().to_string())
         .collect();
 
-    let num_cols = numeric_cols.len();
-
-    if num_cols < 2 {
+    if numeric_cols.len() < 2 {
         return Ok(Vec::new());
     }
 
@@ -133,7 +131,8 @@ fn find_correlated_pairs_impl(
         .collect();
 
     // Calculate total number of pairs for progress bar (upper triangle)
-    let total_pairs = (num_cols * (num_cols - 1)) / 2;
+    let n_valid = float_columns.len();
+    let total_pairs = (n_valid * n_valid.saturating_sub(1)) / 2;
 
     // In TUI mode (silent), use a hidden progress bar so indicatif doesn't
     // write to stdout — ratatui owns the alternate screen.
@@ -153,9 +152,9 @@ fn find_correlated_pairs_impl(
         pb
     };
 
-    // Generate all pairs (indices for upper triangle)
-    let pairs: Vec<(usize, usize)> = (0..num_cols)
-        .flat_map(|i| ((i + 1)..num_cols).map(move |j| (i, j)))
+    // Generate all pairs (indices for upper triangle of valid Float64 columns)
+    let pairs: Vec<(usize, usize)> = (0..n_valid)
+        .flat_map(|i| ((i + 1)..n_valid).map(move |j| (i, j)))
         .collect();
 
     // Process pairs in parallel using Rayon
@@ -339,6 +338,10 @@ pub fn compute_cramers_v(col_a: &Column, col_b: &Column, weights: Option<&[f64]>
 
     // Bergsma (2013) bias correction
     let n = total;
+    if n <= 1.0 {
+        // Bias correction divides by (n - 1); undefined for n <= 1.
+        return Some(0.0);
+    }
     let rf = r as f64;
     let cf = c as f64;
 
@@ -418,6 +421,8 @@ pub fn compute_eta(categorical: &Column, numeric: &Column, weights: Option<&[f64
         .map(|g| g.weight * (g.mean - global_mean).powi(2))
         .sum();
 
+    // Return η (not η²) so the value is on the same [0,1] scale as
+    // |Pearson r| and Cramér's V, allowing a single correlation threshold.
     let eta_sq = ss_between / ss_total;
     Some(eta_sq.sqrt().clamp(0.0, 1.0))
 }
@@ -501,15 +506,21 @@ fn compute_correlation_matrix_fast(
         anyhow::bail!("Cannot compute correlation matrix: total weight is zero or negative");
     }
 
-    // Build data matrix and compute weighted statistics in parallel
-    // For each column: extract values, compute weighted mean/std, standardize
+    // Build data matrix and compute weighted statistics in parallel.
+    // For each column: extract values, compute weighted mean/std, standardize.
+    //
+    // IMPORTANT: Uses `sum_w` (total weight across ALL rows) as the common
+    // normalizer for every column.  This matches the pairwise Welford path's
+    // behaviour when there are no nulls (the caller ensures no nulls reach
+    // the matrix path — see `has_any_nulls` guard in the auto-selection
+    // logic).  Null entries are set to 0.0 in the standardized vector,
+    // contributing nothing to the dot-product correlation.
     let standardized_cols: Vec<Option<Vec<f64>>> = float_columns
         .par_iter()
         .map(|(_, col)| {
             let ca = col.f64().ok()?;
 
-            // Extract values, replacing nulls with 0 (will be handled by weight)
-            // Compute weighted mean first
+            // Compute weighted mean using total weight sum
             let mut sum_wx = 0.0;
             let mut sum_w_valid = 0.0;
 
@@ -540,24 +551,25 @@ fn compute_correlation_matrix_fast(
             }
 
             let std = (sum_w_sq_dev / sum_w_valid).sqrt();
-            if std == 0.0 {
+            if std.abs() < f64::EPSILON {
                 return None; // Constant column - skip
             }
 
-            // Standardize: (x - mean) / std, with sqrt(w) applied
-            // For weighted correlation: Z_weighted = sqrt(W) * Z
+            // Standardize: z_i = sqrt(w_i / sum_w) * (x_i - mean) / std
+            // Using sum_w (not per-column sum_w_valid) so R = Z^T * Z
+            // produces the correct weighted Pearson correlation.
             let standardized: Vec<f64> = ca
                 .iter()
                 .zip(weights.iter())
                 .map(|(val, &w)| {
                     if let Some(x) = val {
                         if w > 0.0 {
-                            (w.sqrt() / sum_w_valid.sqrt()) * (x - mean) / std
+                            (w.sqrt() / sum_w.sqrt()) * (x - mean) / std
                         } else {
                             0.0
                         }
                     } else {
-                        0.0 // Null values contribute 0 after weighting
+                        0.0
                     }
                 })
                 .collect();
@@ -672,9 +684,7 @@ fn find_correlated_pairs_matrix_impl(
         .map(|col| col.name().to_string())
         .collect();
 
-    let num_cols = numeric_cols.len();
-
-    if num_cols < 2 {
+    if numeric_cols.len() < 2 {
         return Ok(Vec::new());
     }
 
@@ -847,8 +857,18 @@ fn find_correlated_pairs_auto_impl(
     }
 
     // ── Num-Num block (existing Pearson logic) ───────────────────────────
+    // The matrix path (Z^T * Z) uses a single global weight normalizer and
+    // substitutes 0 for nulls, which is only equivalent to the pairwise
+    // Welford path (pairwise deletion) when there are NO null values.
+    // Fall back to pairwise when any numeric column contains nulls.
+    let has_any_nulls = numeric_cols.iter().any(|name| {
+        df.column(name)
+            .map(|c| c.null_count() > 0)
+            .unwrap_or(false)
+    });
+
     let mut all_pairs = if num_count >= 2 {
-        if num_count >= MATRIX_METHOD_COLUMN_THRESHOLD {
+        if num_count >= MATRIX_METHOD_COLUMN_THRESHOLD && !has_any_nulls {
             find_correlated_pairs_matrix_impl(df, threshold, weights, weight_column, silent)?
         } else {
             find_correlated_pairs_impl(df, threshold, weights, weight_column, silent)?

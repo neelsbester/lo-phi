@@ -577,3 +577,332 @@ fn test_association_measure_display() {
     assert_eq!(format!("{}", AssociationMeasure::CramersV), "CramersV");
     assert_eq!(format!("{}", AssociationMeasure::Eta), "Eta");
 }
+
+// ── Null-value handling ──────────────────────────────────────────────────────
+
+#[test]
+fn test_cramers_v_with_null_values() {
+    // Null values are scattered through both categorical columns.
+    // compute_cramers_v must not panic; the result must be a valid f64.
+    let a = Column::new(
+        "a".into(),
+        vec![
+            Some("x"),
+            None,
+            Some("y"),
+            Some("x"),
+            None,
+            Some("z"),
+            Some("y"),
+            Some("z"),
+        ],
+    );
+    let b = Column::new(
+        "b".into(),
+        vec![
+            Some("p"),
+            Some("q"),
+            None,
+            Some("p"),
+            Some("q"),
+            None,
+            Some("p"),
+            Some("q"),
+        ],
+    );
+
+    let result = compute_cramers_v(&a, &b, None);
+    // The function returns None for edge-case degenerate inputs; here we
+    // expect a valid numeric value because multiple categories remain after
+    // null removal.
+    assert!(
+        result.is_some(),
+        "compute_cramers_v with scattered nulls should return Some"
+    );
+    let v = result.unwrap();
+    assert!(
+        v.is_finite() && (0.0..=1.0).contains(&v),
+        "Cramér's V with nulls must be finite and in [0, 1], got {}",
+        v
+    );
+}
+
+#[test]
+fn test_eta_with_null_values() {
+    // Nulls in both the categorical and numeric columns.
+    let cat = Column::new(
+        "cat".into(),
+        vec![
+            Some("a"),
+            None,
+            Some("b"),
+            Some("a"),
+            Some("b"),
+            None,
+            Some("a"),
+            Some("b"),
+        ],
+    );
+    let num = Column::new(
+        "num".into(),
+        vec![
+            Some(1.0f64),
+            Some(5.0),
+            None,
+            Some(1.5),
+            Some(4.5),
+            Some(9.0),
+            None,
+            Some(5.5),
+        ],
+    );
+
+    let result = compute_eta(&cat, &num, None);
+    assert!(
+        result.is_some(),
+        "compute_eta with scattered nulls should return Some"
+    );
+    let eta = result.unwrap();
+    assert!(
+        eta.is_finite() && (0.0..=1.0).contains(&eta),
+        "Eta with nulls must be finite and in [0, 1], got {}",
+        eta
+    );
+}
+
+// ── Known-value cross-checks ─────────────────────────────────────────────────
+
+#[test]
+fn test_cramers_v_2x2_known_value() {
+    // 2×2 contingency: [[30, 10], [10, 30]]
+    // n=80, a=30, b=10, c=10, d=30.
+    //
+    // chi2 = n * (ad - bc)^2 / [(a+b)(c+d)(a+c)(b+d)]
+    //      = 80 * (900 - 100)^2 / (40 * 40 * 40 * 40)
+    //      = 80 * 640000 / 2560000 = 20.0
+    //
+    // Bias-corrected Cramér's V (Bergsma 2013):
+    //   phi_c^2_corr = max(0, chi2/n - (k-1)(r-1)/(n-1))
+    //                = max(0, 20/80 - 1*1/79) = max(0, 0.25 - 0.012658) = 0.237342
+    //   r_corr = r - 1/(n-1) = 2 - 1/79 = 1.987342
+    //   c_corr = c - 1/(n-1) = 2 - 1/79 = 1.987342
+    //   denom  = min(r_corr, c_corr) - 1 = 0.987342
+    //   V = sqrt(phi_c^2_corr / denom) = sqrt(0.237342 / 0.987342) ≈ 0.4902
+    //
+    // Expand the 2×2 table into individual rows.
+    let mut a_vals: Vec<&str> = Vec::new();
+    let mut b_vals: Vec<&str> = Vec::new();
+    // cell (x, p): 30 occurrences
+    for _ in 0..30 {
+        a_vals.push("x");
+        b_vals.push("p");
+    }
+    // cell (x, q): 10 occurrences
+    for _ in 0..10 {
+        a_vals.push("x");
+        b_vals.push("q");
+    }
+    // cell (y, p): 10 occurrences
+    for _ in 0..10 {
+        a_vals.push("y");
+        b_vals.push("p");
+    }
+    // cell (y, q): 30 occurrences
+    for _ in 0..30 {
+        a_vals.push("y");
+        b_vals.push("q");
+    }
+
+    let col_a = Column::new("a".into(), a_vals);
+    let col_b = Column::new("b".into(), b_vals);
+
+    let v = compute_cramers_v(&col_a, &col_b, None)
+        .expect("Should return Some for a valid 2×2 table");
+
+    let expected = 0.4902_f64;
+    assert!(
+        (v - expected).abs() < 0.001,
+        "Bias-corrected V for [[30,10],[10,30]] should be ≈ {:.4}, got {:.4}",
+        expected,
+        v
+    );
+}
+
+#[test]
+fn test_eta_known_reference_value() {
+    // 3 groups with zero within-group variance:
+    //   group "a": [1, 1, 1]
+    //   group "b": [5, 5, 5]
+    //   group "c": [10, 10, 10]
+    // All variance is between-group; Eta should be exactly 1.0.
+    let cat = Column::new("cat".into(), vec!["a", "a", "a", "b", "b", "b", "c", "c", "c"]);
+    let num = Column::new(
+        "num".into(),
+        vec![1.0f64, 1.0, 1.0, 5.0, 5.0, 5.0, 10.0, 10.0, 10.0],
+    );
+
+    let eta = compute_eta(&cat, &num, None).expect("Should return Some for perfect separation");
+    assert!(
+        (eta - 1.0).abs() < 1e-10,
+        "Zero within-group variance should give Eta = 1.0, got {:.12}",
+        eta
+    );
+}
+
+// ── Edge cases: degenerate inputs ───────────────────────────────────────────
+
+#[test]
+fn test_cramers_v_single_row_returns_zero_or_none() {
+    // n=1 → bias correction divides by (n-1)=0.  The implementation must
+    // either return None or clamp to 0.0 rather than NaN/Inf/panic.
+    let col_a = Column::new("a".into(), vec!["x"]);
+    let col_b = Column::new("b".into(), vec!["p"]);
+
+    let result = compute_cramers_v(&col_a, &col_b, None);
+    match result {
+        None => {} // acceptable: function recognises the degenerate case
+        Some(v) => {
+            assert!(
+                v == 0.0 || v.is_finite(),
+                "Single-row result must be 0.0 or at least finite, got {}",
+                v
+            );
+        }
+    }
+}
+
+// ── High-cardinality boundary ────────────────────────────────────────────────
+
+#[test]
+fn test_high_cardinality_boundary_exactly_100() {
+    // A categorical column with exactly 100 unique values should be INCLUDED.
+    // A column with 101 unique values should be EXCLUDED.
+    let n = 200usize;
+
+    // 100 unique values, each repeated twice.
+    let cat_100: Vec<String> = (0..n).map(|i| format!("v{:03}", i % 100)).collect();
+    // 101 unique values — crosses the threshold.
+    let cat_101: Vec<String> = (0..n).map(|i| format!("u{:03}", i % 101)).collect();
+    // A numeric column to pair against for eta pairs.
+    let num: Vec<f64> = (0..n).map(|i| i as f64).collect();
+
+    let df = DataFrame::new(vec![
+        Column::new("cat_100".into(), cat_100),
+        Column::new("cat_101".into(), cat_101),
+        Column::new("numeric".into(), num),
+    ])
+    .unwrap();
+
+    let weights = vec![1.0; n];
+    // Threshold = 0.0 to allow any association to surface.
+    let pairs = find_correlated_pairs_auto(&df, 0.0, &weights, None, None).unwrap();
+
+    // cat_101 must not appear in any pair.
+    for pair in &pairs {
+        assert_ne!(
+            pair.feature1, "cat_101",
+            "cat_101 (101 unique values) must be excluded from all pairs"
+        );
+        assert_ne!(
+            pair.feature2, "cat_101",
+            "cat_101 (101 unique values) must be excluded from all pairs"
+        );
+    }
+
+    // cat_100 should appear (it is within the limit and will form eta pairs
+    // with the numeric column at threshold 0.0).
+    let cat_100_present = pairs
+        .iter()
+        .any(|p| p.feature1 == "cat_100" || p.feature2 == "cat_100");
+    assert!(
+        cat_100_present,
+        "cat_100 (exactly 100 unique values) should be included in pairs"
+    );
+}
+
+// ── Weight effects on Eta ────────────────────────────────────────────────────
+
+#[test]
+fn test_eta_non_uniform_weights_change_result() {
+    // Construct data where heavily-weighting the "separation" rows should
+    // increase Eta compared to uniform weights.
+    let cat = Column::new(
+        "cat".into(),
+        vec!["a", "a", "a", "a", "b", "b", "b", "b"],
+    );
+    // Group "a" ~ 1.0, group "b" ~ 10.0 (well separated).
+    // Noise rows are at positions 3 and 7 — they reduce separation.
+    let num = Column::new(
+        "num".into(),
+        vec![1.0f64, 1.0, 1.0, 7.0, 10.0, 10.0, 10.0, 4.0],
+    );
+
+    let eta_uniform = compute_eta(&cat, &num, None).unwrap();
+    // Heavily weight the clean rows (0-2, 4-6) and down-weight the noisy ones (3, 7).
+    let weights = vec![10.0, 10.0, 10.0, 0.01, 10.0, 10.0, 10.0, 0.01];
+    let eta_weighted = compute_eta(&cat, &num, Some(&weights)).unwrap();
+
+    assert!(
+        (eta_uniform - eta_weighted).abs() > 1e-3,
+        "Non-uniform weights that down-weight noisy rows should produce a different Eta: uniform={:.6}, weighted={:.6}",
+        eta_uniform,
+        eta_weighted
+    );
+    // The weighted version (noise suppressed) should show stronger separation.
+    assert!(
+        eta_weighted > eta_uniform,
+        "Down-weighting noisy rows should increase Eta: uniform={:.6}, weighted={:.6}",
+        eta_uniform,
+        eta_weighted
+    );
+}
+
+// ── Drop-logic partial metadata ───────────────────────────────────────────────
+
+#[test]
+fn test_drop_logic_partial_metadata() {
+    // Only feature "a" has IV metadata; "b" does not.
+    // The IV comparison requires *both* features to have IV.
+    // When one is missing, the logic must fall through to frequency tiebreaking.
+    let pairs = vec![make_pair("a", "b", 0.95, AssociationMeasure::CramersV)];
+
+    let mut metadata = HashMap::new();
+    metadata.insert(
+        "a".to_string(),
+        FeatureMetadata {
+            iv: Some(0.80),
+            missing_ratio: Some(0.0),
+        },
+    );
+    // "b" intentionally absent from metadata.
+
+    let drops = select_features_to_drop(&pairs, "target", Some(&metadata));
+    assert_eq!(drops.len(), 1, "Should produce exactly one drop decision");
+
+    // With only one IV value available, frequency comparison runs next.
+    // Both "a" and "b" appear in exactly 1 pair (freq=1 tie) → alphabetical.
+    // Alphabetical: "a" < "b" → drop "b".
+    assert_eq!(
+        drops[0].feature, "b",
+        "With partial metadata and equal frequency, should fall back to alphabetical and drop 'b'"
+    );
+}
+
+#[test]
+fn test_drop_no_metadata_equal_frequency_uses_alphabetical() {
+    // No metadata provided; each feature appears in exactly one pair (freq=1 tie).
+    // Must use alphabetical fallback: keep the lexicographically first, drop the latter.
+    let pairs = vec![make_pair("zebra", "apple", 0.91, AssociationMeasure::Pearson)];
+
+    let drops = select_features_to_drop(&pairs, "target", None);
+    assert_eq!(drops.len(), 1);
+    assert_eq!(
+        drops[0].feature, "zebra",
+        "With no metadata and equal frequency, alphabetical fallback should drop 'zebra' (keep 'apple')"
+    );
+    assert!(
+        drops[0].reason.contains("alphabetical"),
+        "Reason should mention alphabetical tie-break: {}",
+        drops[0].reason
+    );
+}

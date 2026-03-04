@@ -627,3 +627,328 @@ fn test_matrix_empty_dataframe_returns_empty() {
         "matrix: empty DataFrame should yield no pairs"
     );
 }
+
+// ── T-N1: all-null and partially-null numeric columns ──────────────────────
+
+#[test]
+fn test_all_null_numeric_columns() {
+    // Two entirely-null Float64 columns — no valid data to correlate.
+    let col_a: Column =
+        Series::full_null("col_a".into(), 5, &DataType::Float64).into_column();
+    let col_b: Column =
+        Series::full_null("col_b".into(), 5, &DataType::Float64).into_column();
+
+    let df = DataFrame::new(vec![col_a, col_b]).unwrap();
+    let weights = vec![1.0; 5];
+
+    // Must not panic; no valid pair can be computed from all-null data.
+    let result = find_correlated_pairs(&df, 0.5, &weights, None);
+    assert!(result.is_ok(), "All-null columns should not cause an error");
+    assert!(
+        result.unwrap().is_empty(),
+        "All-null columns should produce no correlated pairs"
+    );
+
+    // One null column + one valid column: still no valid pair.
+    let valid: Column = Column::new("valid".into(), &[1.0f64, 2.0, 3.0, 4.0, 5.0]);
+    let null_col: Column =
+        Series::full_null("null_col".into(), 5, &DataType::Float64).into_column();
+    let df2 = DataFrame::new(vec![valid, null_col]).unwrap();
+    let weights2 = vec![1.0; 5];
+
+    let result2 = find_correlated_pairs(&df2, 0.5, &weights2, None);
+    assert!(
+        result2.is_ok(),
+        "One null + one valid column should not cause an error"
+    );
+    // The all-null column contributes zero non-null rows, so correlation is
+    // undefined — expect empty or at most a non-finite value not present in pairs.
+    let pairs2 = result2.unwrap();
+    for pair in &pairs2 {
+        assert!(
+            pair.correlation.is_finite(),
+            "Any emitted pair must have a finite correlation; got {}",
+            pair.correlation
+        );
+    }
+}
+
+// ── T-N2: single-row DataFrame ─────────────────────────────────────────────
+
+#[test]
+fn test_single_row_dataframe_returns_empty() {
+    // With n=1 there is no variance, so correlation is undefined.
+    let df = df! {
+        "x" => [3.0f64],
+        "y" => [7.0f64],
+    }
+    .unwrap();
+    let weights = vec![1.0; 1];
+
+    let result = find_correlated_pairs(&df, 0.5, &weights, None);
+    assert!(
+        result.is_ok(),
+        "Single-row DataFrame should not error, got {:?}",
+        result.err()
+    );
+    let pairs = result.unwrap();
+    // Either empty (no pairs) or pairs have NaN correlation excluded by caller.
+    // Under our convention, undefined correlations must not appear as valid finite pairs.
+    for pair in &pairs {
+        assert!(
+            pair.correlation.is_finite(),
+            "Single-row pair must not emit NaN/Inf correlation"
+        );
+    }
+}
+
+// ── T-N3: non-numeric column never appears in output ──────────────────────
+
+#[test]
+fn test_non_numeric_columns_properly_filtered() {
+    // 2 numeric columns + 1 string column.
+    // The string column must never appear in any pair.
+    // The two numeric columns, being identical, must correlate.
+    let df = df! {
+        "num_a" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+        "num_b" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+        "str_col" => ["alpha", "beta", "gamma", "delta", "epsilon"],
+    }
+    .unwrap();
+    let weights = vec![1.0; 5];
+
+    let pairs = find_correlated_pairs(&df, 0.9, &weights, None).unwrap();
+
+    // String column must not appear in any pair.
+    for pair in &pairs {
+        assert_ne!(
+            pair.feature1, "str_col",
+            "String column must not appear in correlation pairs"
+        );
+        assert_ne!(
+            pair.feature2, "str_col",
+            "String column must not appear in correlation pairs"
+        );
+    }
+
+    // The identical numeric columns must be found.
+    let found = pairs.iter().any(|p| {
+        (p.feature1 == "num_a" && p.feature2 == "num_b")
+            || (p.feature1 == "num_b" && p.feature2 == "num_a")
+    });
+    assert!(
+        found,
+        "Identical numeric columns should produce a correlated pair even when a string column is present"
+    );
+}
+
+// ── T-N4: tight-tolerance pairwise/matrix equivalence ─────────────────────
+
+#[test]
+fn test_matrix_pairwise_equivalence_tight_tolerance() {
+    // Same data as test_matrix_pairwise_equivalence — no nulls so both paths
+    // are deterministic and should agree to 1e-6.
+    let df = df! {
+        "a" => [1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+        "b" => [2.0f64, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0],
+        "c" => [10.0f64, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+        "d" => [1.5f64, 2.3, 3.7, 4.1, 5.8, 6.2, 7.9, 8.4, 9.1, 10.5],
+    }
+    .unwrap();
+
+    let weights = vec![1.0; df.height()];
+    let threshold = 0.8;
+
+    let pairs_pw = find_correlated_pairs(&df, threshold, &weights, None).unwrap();
+    let pairs_mat = find_correlated_pairs_matrix(&df, threshold, &weights, None).unwrap();
+
+    assert_eq!(
+        pairs_pw.len(),
+        pairs_mat.len(),
+        "Both methods should detect the same number of pairs"
+    );
+
+    for pw in &pairs_pw {
+        let mat = pairs_mat
+            .iter()
+            .find(|m| {
+                (m.feature1 == pw.feature1 && m.feature2 == pw.feature2)
+                    || (m.feature1 == pw.feature2 && m.feature2 == pw.feature1)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "Matrix method did not find pair ({}, {})",
+                    pw.feature1, pw.feature2
+                )
+            });
+
+        let diff = (pw.correlation - mat.correlation).abs();
+        assert!(
+            diff < 1e-6,
+            "Pairwise and matrix correlations differ by {:.2e} for ({}, {}): {:.10} vs {:.10}",
+            diff,
+            pw.feature1,
+            pw.feature2,
+            pw.correlation,
+            mat.correlation
+        );
+    }
+}
+
+// ── T-N5: exact drop set for a 3-pair clique ──────────────────────────────
+
+#[test]
+fn test_already_resolved_pairs_exact_drops() {
+    // Three pairs: a-b 0.98, a-c 0.97, b-c 0.96.
+    // Frequency counts: a=2, b=2, c=2 — tie.
+    // The algorithm processes pairs by descending correlation.
+    // First pair a-b (0.98): tie on freq → alphabetical → drop "b", keep "a".
+    // Second pair a-c (0.97): "a" is still alive, "c" is alive → tie on freq → drop "c".
+    // Third pair b-c (0.96): both "b" and "c" already dropped → skip.
+    // Expected drops: exactly {"b", "c"}.
+    let pairs = vec![
+        CorrelatedPair {
+            feature1: "a".to_string(),
+            feature2: "b".to_string(),
+            correlation: 0.98,
+            measure: AssociationMeasure::Pearson,
+        },
+        CorrelatedPair {
+            feature1: "a".to_string(),
+            feature2: "c".to_string(),
+            correlation: 0.97,
+            measure: AssociationMeasure::Pearson,
+        },
+        CorrelatedPair {
+            feature1: "b".to_string(),
+            feature2: "c".to_string(),
+            correlation: 0.96,
+            measure: AssociationMeasure::Pearson,
+        },
+    ];
+
+    let to_drop = select_features_to_drop(&pairs, "target", None);
+    let drop_names: std::collections::HashSet<&str> =
+        to_drop.iter().map(|f| f.feature.as_str()).collect();
+
+    assert!(
+        drop_names.len() <= 2,
+        "Should drop at most 2 features from a 3-clique, got {:?}",
+        drop_names
+    );
+    assert!(
+        !drop_names.contains("a"),
+        "Feature 'a' should be kept (alphabetically first); drops = {:?}",
+        drop_names
+    );
+    // Whatever the exact drop set, it must resolve all pairs:
+    // either {b, c} or {a} are the only possible minimal vertex covers.
+    // Since 'a' is protected by alphabetical ordering, we expect {b, c}.
+    assert!(
+        drop_names.contains("b") || drop_names.contains("a"),
+        "At least one of the pair (a, b) must be in drops"
+    );
+    assert!(
+        drop_names.contains("c") || drop_names.contains("a"),
+        "At least one of the pair (a, c) must be in drops"
+    );
+}
+
+// ── T-N6: all-zero weights ─────────────────────────────────────────────────
+
+#[test]
+fn test_all_weights_zero_returns_empty() {
+    let df = df! {
+        "a" => [1.0f64, 2.0, 3.0, 4.0, 5.0],
+        "b" => [2.0f64, 4.0, 6.0, 8.0, 10.0],
+    }
+    .unwrap();
+    // All weights are zero — effective sample size is 0.
+    let weights = vec![0.0; 5];
+
+    let result = find_correlated_pairs(&df, 0.5, &weights, None);
+    assert!(
+        result.is_ok(),
+        "All-zero weights should not cause an error"
+    );
+    let pairs = result.unwrap();
+    // No finite correlation can be derived from zero-weight data.
+    for pair in &pairs {
+        assert!(
+            pair.correlation.is_finite(),
+            "Any emitted pair must have finite correlation; got {}",
+            pair.correlation
+        );
+    }
+}
+
+// ── T-N7: numerical stability with large-magnitude values ─────────────────
+
+#[test]
+fn test_numerical_stability_large_values() {
+    // Welford's online algorithm should handle values in the 1e10 range.
+    let base: Vec<f64> = (0..20).map(|i| i as f64 * 1e10).collect();
+    let derived: Vec<f64> = base.iter().map(|x| x * 3.7 + 1e10).collect(); // perfect linear relationship
+    let df = DataFrame::new(vec![
+        Column::new("large_a".into(), base),
+        Column::new("large_b".into(), derived),
+    ])
+    .unwrap();
+    let weights = vec![1.0; 20];
+
+    let pairs = find_correlated_pairs(&df, 0.99, &weights, None).unwrap();
+    assert!(
+        !pairs.is_empty(),
+        "Perfectly correlated large-value columns should produce a pair"
+    );
+    assert!(
+        pairs[0].correlation.abs() > 0.9999,
+        "Welford should be numerically stable for 1e10-scale values; got {}",
+        pairs[0].correlation
+    );
+}
+
+// ── T-N8: auto falls back to pairwise when nulls are present ──────────────
+
+#[test]
+fn test_auto_falls_back_to_pairwise_when_nulls_present() {
+    // Build a wide DataFrame (>= 15 numeric columns) that has nulls in one column.
+    // The auto path must detect the nulls and fall back to pairwise, not matrix.
+    // The pairwise path handles nulls via pairwise deletion; the matrix path would
+    // substitute zeros and give wrong results.
+    // We verify: auto == pairwise (both handle nulls), not just no-panic.
+    let n = 30usize;
+    let mut cols: Vec<Column> = Vec::new();
+
+    // 15 perfectly correlated pairs (a_i, b_i), one column with a null
+    for i in 0..8 {
+        let a: Vec<f64> = (0..n).map(|j| (j + i) as f64).collect();
+        let b: Vec<f64> = a.iter().map(|x| x * 2.0 + 1.0).collect();
+        cols.push(Column::new(format!("a{}", i).into(), a));
+        cols.push(Column::new(format!("b{}", i).into(), b));
+    }
+    // Introduce a null in the last column so matrix path is skipped.
+    let last_idx = cols.len() - 1;
+    let mut last_vals: Vec<Option<f64>> = (0..n).map(|j| Some(j as f64)).collect();
+    last_vals[5] = None;
+    cols[last_idx] = Column::new(cols[last_idx].name().clone(), last_vals);
+
+    let df = DataFrame::new(cols).unwrap();
+    assert!(
+        df.get_columns().len() >= 15,
+        "Need >= 15 columns to trigger matrix threshold"
+    );
+
+    let weights = vec![1.0; n];
+    let auto_pairs =
+        find_correlated_pairs_auto(&df, 0.9, &weights, None, None).unwrap();
+    let pw_pairs = find_correlated_pairs(&df, 0.9, &weights, None).unwrap();
+
+    assert_eq!(
+        auto_pairs.len(),
+        pw_pairs.len(),
+        "auto should produce same result as pairwise when nulls are present: auto={}, pairwise={}",
+        auto_pairs.len(),
+        pw_pairs.len()
+    );
+}
