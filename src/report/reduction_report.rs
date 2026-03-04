@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::Serialize;
 
-use crate::pipeline::{CorrelatedPair, FeatureType, IvAnalysis};
+use crate::pipeline::{CorrelatedPair, FeatureToDrop, FeatureType, IvAnalysis};
 use crate::report::ReductionSummary;
 
 /// Drop stage enum for tracking where feature was dropped
@@ -45,6 +45,8 @@ pub struct GiniAnalysisEntry {
 pub struct CorrelationEntry {
     pub feature: String,
     pub correlation: f64,
+    /// The association measure used (Pearson, CramersV, or Eta).
+    pub measure: String,
 }
 
 /// Correlation analysis result for a feature
@@ -58,6 +60,9 @@ pub struct CorrelationAnalysisEntry {
     pub passed: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub all_correlations: Vec<CorrelationEntry>,
+    /// Human-readable reason for dropping (only present when dropped).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drop_reason: Option<String>,
 }
 
 /// Complete analysis for a feature
@@ -193,7 +198,7 @@ pub struct ReductionReportBuilder {
     dropped_missing: HashSet<String>,
     dropped_gini: HashSet<String>,
     dropped_correlation: HashSet<String>,
-    dropped_correlation_reasons: HashMap<String, (String, f64)>, // feature -> (correlated_with, coefficient)
+    dropped_correlation_reasons: HashMap<String, String>, // feature -> human-readable drop reason
 
     // Timing
     timing: TimingInfo,
@@ -266,34 +271,15 @@ impl ReductionReportBuilder {
     }
 
     /// Record correlation analysis results
-    pub fn set_correlation_results(&mut self, pairs: &[CorrelatedPair], dropped: &[String]) {
+    pub fn set_correlation_results(&mut self, pairs: &[CorrelatedPair], dropped: &[FeatureToDrop]) {
         // Store all correlation pairs
         self.correlation_pairs = pairs.to_vec();
 
-        // Store dropped features with their reasons
-        // For each dropped feature, find the pair that caused it to be dropped
-        for feature in dropped {
-            self.dropped_correlation.insert(feature.clone());
-
-            // Find the strongest correlation for this feature
-            let mut max_corr: Option<(String, f64)> = None;
-            for pair in pairs {
-                if &pair.feature1 == feature || &pair.feature2 == feature {
-                    let other = if &pair.feature1 == feature {
-                        &pair.feature2
-                    } else {
-                        &pair.feature1
-                    };
-                    let abs_corr = pair.correlation.abs();
-                    if max_corr.as_ref().is_none_or(|(_, prev)| abs_corr > *prev) {
-                        max_corr = Some((other.clone(), abs_corr));
-                    }
-                }
-            }
-            if let Some((other, corr)) = max_corr {
-                self.dropped_correlation_reasons
-                    .insert(feature.clone(), (other, corr));
-            }
+        // Store dropped features with their human-readable reasons
+        for ftd in dropped {
+            self.dropped_correlation.insert(ftd.feature.clone());
+            self.dropped_correlation_reasons
+                .insert(ftd.feature.clone(), ftd.reason.clone());
         }
     }
 
@@ -415,15 +401,11 @@ impl ReductionReportBuilder {
                 )),
             )
         } else if self.dropped_correlation.contains(feature_name) {
-            let reason =
-                if let Some((other, corr)) = self.dropped_correlation_reasons.get(feature_name) {
-                    format!(
-                        "Correlated with {} (r={:.4}), dropped due to higher correlation frequency",
-                        other, corr
-                    )
-                } else {
-                    "Dropped due to high correlation".to_string()
-                };
+            let reason = self
+                .dropped_correlation_reasons
+                .get(feature_name)
+                .cloned()
+                .unwrap_or_else(|| "Dropped due to high correlation".to_string());
             (
                 "dropped".to_string(),
                 Some(DropStage::Correlation),
@@ -474,11 +456,13 @@ impl ReductionReportBuilder {
                         Some(CorrelationEntry {
                             feature: pair.feature2.clone(),
                             correlation: pair.correlation,
+                            measure: pair.measure.to_string(),
                         })
                     } else if pair.feature2 == feature_name {
                         Some(CorrelationEntry {
                             feature: pair.feature1.clone(),
                             correlation: pair.correlation,
+                            measure: pair.measure.to_string(),
                         })
                     } else {
                         None
@@ -497,6 +481,7 @@ impl ReductionReportBuilder {
             let max_correlation = correlations.first().map(|c| c.correlation.abs());
             let correlated_with = correlations.first().map(|c| c.feature.clone());
             let passed = !self.dropped_correlation.contains(feature_name);
+            let drop_reason = self.dropped_correlation_reasons.get(feature_name).cloned();
 
             Some(CorrelationAnalysisEntry {
                 max_correlation,
@@ -504,6 +489,7 @@ impl ReductionReportBuilder {
                 threshold: self.correlation_threshold,
                 passed,
                 all_correlations: correlations,
+                drop_reason,
             })
         } else {
             None
@@ -553,7 +539,7 @@ pub fn export_reduction_report_csv(report: &ReductionReport, output_path: &Path)
     // Write header
     writeln!(
         file,
-        "feature,status,dropped_at_stage,reason,missing_ratio,gini,iv,feature_type,max_correlation,correlated_with"
+        "feature,status,dropped_at_stage,reason,missing_ratio,gini,iv,feature_type,max_correlation,measure,drop_reason,correlated_with"
     )?;
 
     // Write each feature
@@ -606,6 +592,24 @@ pub fn export_reduction_report_csv(report: &ReductionReport, output_path: &Path)
             .map(|c| format!("{:.4}", c))
             .unwrap_or_default();
 
+        // Extract the measure from the first (strongest) correlation entry
+        let measure = feature
+            .analysis
+            .correlation
+            .as_ref()
+            .and_then(|c| c.all_correlations.first())
+            .map(|e| e.measure.clone())
+            .unwrap_or_default();
+
+        // Drop reason from the correlation analysis
+        let drop_reason = feature
+            .analysis
+            .correlation
+            .as_ref()
+            .and_then(|c| c.drop_reason.as_ref())
+            .map(|r| escape_csv_field(r))
+            .unwrap_or_default();
+
         // Build list of all correlated features with their coefficients
         // Format: "feature_1: 0.92 | feature_2: 0.88" (pipe-separated for clarity)
         let correlated_with = feature
@@ -619,7 +623,12 @@ pub fn export_reduction_report_csv(report: &ReductionReport, output_path: &Path)
                     let pairs: Vec<String> = c
                         .all_correlations
                         .iter()
-                        .map(|entry| format!("{}: {:.4}", entry.feature, entry.correlation))
+                        .map(|entry| {
+                            format!(
+                                "{}: {:.4} ({})",
+                                entry.feature, entry.correlation, entry.measure
+                            )
+                        })
                         .collect();
                     // Always quote if there are multiple correlations for cleaner CSV display
                     let joined = pairs.join(" | ");
@@ -634,7 +643,7 @@ pub fn export_reduction_report_csv(report: &ReductionReport, output_path: &Path)
 
         writeln!(
             file,
-            "{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
             feature.name,
             feature.status,
             stage,
@@ -644,6 +653,8 @@ pub fn export_reduction_report_csv(report: &ReductionReport, output_path: &Path)
             iv,
             feature_type,
             max_corr,
+            measure,
+            drop_reason,
             correlated_with
         )?;
     }
@@ -720,7 +731,7 @@ pub fn package_reduction_reports(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipeline::FeatureType;
+    use crate::pipeline::{AssociationMeasure, FeatureType};
 
     fn create_test_builder() -> ReductionReportBuilder {
         ReductionReportBuilder::new(ReportBuilderParams {
@@ -793,8 +804,12 @@ mod tests {
             feature1: "feature_1".to_string(),
             feature2: "feature_2".to_string(),
             correlation: 0.92,
+            measure: AssociationMeasure::Pearson,
         }];
-        let dropped = vec!["feature_1".to_string()];
+        let dropped = vec![FeatureToDrop {
+            feature: "feature_1".to_string(),
+            reason: "Correlated with feature_2 (Pearson 0.9200); lower IV".to_string(),
+        }];
 
         builder.set_correlation_results(&pairs, &dropped);
 

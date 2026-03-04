@@ -490,8 +490,7 @@ pub fn run_progress_overlay(
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 if overlay.complete {
-                    if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' '))
-                    {
+                    if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ')) {
                         return Ok(());
                     }
                 } else if matches!(

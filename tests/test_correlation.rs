@@ -2,7 +2,7 @@
 
 use lophi::pipeline::{
     find_correlated_pairs, find_correlated_pairs_auto, find_correlated_pairs_matrix,
-    select_features_to_drop, CorrelatedPair,
+    select_features_to_drop, AssociationMeasure, CorrelatedPair,
 };
 use polars::prelude::*;
 
@@ -76,19 +76,15 @@ fn test_select_features_to_drop_protects_target() {
         feature1: "target".to_string(),
         feature2: "feature_a".to_string(),
         correlation: 0.98,
+        measure: AssociationMeasure::Pearson,
     }];
 
-    let to_drop = select_features_to_drop(&pairs, "target");
+    let to_drop = select_features_to_drop(&pairs, "target", None);
+    let drop_names: Vec<&str> = to_drop.iter().map(|f| f.feature.as_str()).collect();
 
     assert_eq!(to_drop.len(), 1, "Should drop exactly 1 feature");
-    assert!(
-        to_drop.contains(&"feature_a".to_string()),
-        "Should drop feature_a"
-    );
-    assert!(
-        !to_drop.contains(&"target".to_string()),
-        "Should NEVER drop target"
-    );
+    assert!(drop_names.contains(&"feature_a"), "Should drop feature_a");
+    assert!(!drop_names.contains(&"target"), "Should NEVER drop target");
 }
 
 #[test]
@@ -97,14 +93,16 @@ fn test_select_features_to_drop_target_in_second_position() {
         feature1: "feature_a".to_string(),
         feature2: "target".to_string(),
         correlation: 0.98,
+        measure: AssociationMeasure::Pearson,
     }];
 
-    let to_drop = select_features_to_drop(&pairs, "target");
+    let to_drop = select_features_to_drop(&pairs, "target", None);
+    let drop_names: Vec<&str> = to_drop.iter().map(|f| f.feature.as_str()).collect();
 
     assert_eq!(to_drop.len(), 1);
-    assert!(to_drop.contains(&"feature_a".to_string()));
+    assert!(drop_names.contains(&"feature_a"));
     assert!(
-        !to_drop.contains(&"target".to_string()),
+        !drop_names.contains(&"target"),
         "Target should be protected regardless of position"
     );
 }
@@ -117,27 +115,30 @@ fn test_select_drops_more_frequent_feature() {
             feature1: "feature_a".to_string(),
             feature2: "feature_b".to_string(),
             correlation: 0.96,
+            measure: AssociationMeasure::Pearson,
         },
         CorrelatedPair {
             feature1: "feature_a".to_string(),
             feature2: "feature_c".to_string(),
             correlation: 0.97,
+            measure: AssociationMeasure::Pearson,
         },
     ];
 
-    let to_drop = select_features_to_drop(&pairs, "target");
+    let to_drop = select_features_to_drop(&pairs, "target", None);
+    let drop_names: Vec<&str> = to_drop.iter().map(|f| f.feature.as_str()).collect();
 
     // feature_a should be dropped (appears more frequently)
     assert!(
-        to_drop.contains(&"feature_a".to_string()),
+        drop_names.contains(&"feature_a"),
         "Should drop feature_a (appears in more pairs)"
     );
     assert!(
-        !to_drop.contains(&"feature_b".to_string()),
+        !drop_names.contains(&"feature_b"),
         "Should NOT drop feature_b"
     );
     assert!(
-        !to_drop.contains(&"feature_c".to_string()),
+        !drop_names.contains(&"feature_c"),
         "Should NOT drop feature_c"
     );
 }
@@ -150,20 +151,23 @@ fn test_already_resolved_pairs_skipped() {
             feature1: "a".to_string(),
             feature2: "b".to_string(),
             correlation: 0.98,
+            measure: AssociationMeasure::Pearson,
         },
         CorrelatedPair {
             feature1: "a".to_string(),
             feature2: "c".to_string(),
             correlation: 0.97,
+            measure: AssociationMeasure::Pearson,
         },
         CorrelatedPair {
             feature1: "b".to_string(),
             feature2: "c".to_string(),
             correlation: 0.96,
+            measure: AssociationMeasure::Pearson,
         },
     ];
 
-    let to_drop = select_features_to_drop(&pairs, "target");
+    let to_drop = select_features_to_drop(&pairs, "target", None);
 
     // Should resolve pairs efficiently without dropping everything
     // The exact result depends on frequency, but we shouldn't drop all 3
@@ -232,7 +236,7 @@ fn test_sorted_by_correlation_descending() {
 #[test]
 fn test_empty_pairs_drop_selection() {
     let pairs: Vec<CorrelatedPair> = vec![];
-    let to_drop = select_features_to_drop(&pairs, "target");
+    let to_drop = select_features_to_drop(&pairs, "target", None);
 
     assert!(
         to_drop.is_empty(),
@@ -475,7 +479,8 @@ fn test_auto_uses_pairwise_for_small_column_count() {
     let weights = vec![1.0; 20];
     let threshold = 0.9;
 
-    let auto_pairs = find_correlated_pairs_auto(&df, threshold, &weights, Some("target")).unwrap();
+    let auto_pairs =
+        find_correlated_pairs_auto(&df, threshold, &weights, Some("target"), None).unwrap();
     let pw_pairs = find_correlated_pairs(&df, threshold, &weights, Some("target")).unwrap();
 
     assert_eq!(
@@ -494,7 +499,8 @@ fn test_auto_uses_matrix_for_large_column_count() {
     let weights = vec![1.0; 30];
     let threshold = 0.9;
 
-    let auto_pairs = find_correlated_pairs_auto(&df, threshold, &weights, Some("target")).unwrap();
+    let auto_pairs =
+        find_correlated_pairs_auto(&df, threshold, &weights, Some("target"), None).unwrap();
     let mat_pairs = find_correlated_pairs_matrix(&df, threshold, &weights, Some("target")).unwrap();
 
     assert_eq!(
@@ -511,7 +517,7 @@ fn test_auto_empty_dataframe_returns_empty() {
     let df = DataFrame::empty();
     let weights: Vec<f64> = vec![];
 
-    let result = find_correlated_pairs_auto(&df, 0.9, &weights, None).unwrap();
+    let result = find_correlated_pairs_auto(&df, 0.9, &weights, None, None).unwrap();
     assert!(result.is_empty(), "Empty DataFrame should yield no pairs");
 }
 
@@ -523,7 +529,7 @@ fn test_auto_single_column_returns_empty() {
     .unwrap();
     let weights = vec![1.0; 3];
 
-    let result = find_correlated_pairs_auto(&df, 0.9, &weights, None).unwrap();
+    let result = find_correlated_pairs_auto(&df, 0.9, &weights, None, None).unwrap();
     assert!(
         result.is_empty(),
         "Single column cannot correlate with itself"

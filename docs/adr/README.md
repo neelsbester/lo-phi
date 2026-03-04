@@ -22,6 +22,7 @@ ADRs capture important architectural decisions along with their context and cons
 | [ADR-006](ADR-006-sequential-pipeline.md) | Sequential Pipeline Stages | Architecture | Accepted |
 | [ADR-007](ADR-007-dual-file-format.md) | Dual CSV/Parquet Support | Infrastructure | Accepted |
 | [ADR-008](ADR-008-ratatui-tui.md) | Ratatui Terminal UI | User Interface | Accepted |
+| [ADR-009](ADR-009-categorical-correlation.md) | Categorical Association Measures | Algorithm | Accepted |
 
 ## Reading Guide
 
@@ -94,4 +95,4 @@ When making significant architectural changes:
 
 ---
 
-**Last Updated:** 2026-02-01
+**Last Updated:** 2026-03-03

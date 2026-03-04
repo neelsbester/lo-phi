@@ -119,12 +119,9 @@ fn assert_matches_expected(stem: &str) {
         .unwrap_or_else(|e| panic!("load_sas7bdat_silent failed for {}: {}", stem, e));
 
     assert_eq!(
-        rows,
-        expected.rows,
+        rows, expected.rows,
         "{}: row count mismatch (lophi={}, pandas={})",
-        stem,
-        rows,
-        expected.rows
+        stem, rows, expected.rows
     );
 
     assert_eq!(
@@ -142,8 +139,7 @@ fn assert_matches_expected(stem: &str) {
         .map(|s| s.to_string())
         .collect();
     assert_eq!(
-        lophi_cols,
-        expected.columns,
+        lophi_cols, expected.columns,
         "{}: column names mismatch",
         stem
     );
@@ -153,13 +149,9 @@ fn assert_matches_expected(stem: &str) {
         let expected_nulls = *expected.null_counts.get(col).unwrap_or(&0);
         let lophi_nulls_col = *lophi_nulls.get(col).unwrap_or(&0);
         assert_eq!(
-            lophi_nulls_col,
-            expected_nulls,
+            lophi_nulls_col, expected_nulls,
             "{}: null count mismatch for column '{}' (lophi={}, pandas={})",
-            stem,
-            col,
-            lophi_nulls_col,
-            expected_nulls
+            stem, col, lophi_nulls_col, expected_nulls
         );
     }
 }
@@ -200,8 +192,7 @@ fn cross_validate_many_columns_shape() {
         Some(e) => e,
         None => return,
     };
-    let (df, rows, _cols, _mem) = load_sas7bdat_silent(&path)
-        .expect("load many_columns.sas7bdat");
+    let (df, rows, _cols, _mem) = load_sas7bdat_silent(&path).expect("load many_columns.sas7bdat");
 
     assert_eq!(rows, expected.rows, "many_columns row count mismatch");
     assert_eq!(
@@ -215,7 +206,10 @@ fn cross_validate_many_columns_shape() {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    assert_eq!(lophi_cols, expected.columns, "many_columns column names mismatch");
+    assert_eq!(
+        lophi_cols, expected.columns,
+        "many_columns column names mismatch"
+    );
 }
 
 #[test]
@@ -372,9 +366,12 @@ fn compression_equivalence_test1_through_test16() {
     let first = shapes[0];
     for (i, shape) in shapes.iter().enumerate() {
         assert_eq!(
-            *shape, first,
+            *shape,
+            first,
             "test{}.sas7bdat shape {:?} differs from test1 shape {:?}",
-            i + 1, shape, first
+            i + 1,
+            shape,
+            first
         );
     }
 }
@@ -388,8 +385,8 @@ fn compression_equivalence_expected_shape() {
         if !path.exists() {
             continue;
         }
-        let (df, rows, _cols, _mem) = load_sas7bdat_silent(&path)
-            .unwrap_or_else(|e| panic!("failed for test{}: {}", i, e));
+        let (df, rows, _cols, _mem) =
+            load_sas7bdat_silent(&path).unwrap_or_else(|e| panic!("failed for test{}: {}", i, e));
 
         assert_eq!(
             rows, 10,
@@ -416,15 +413,15 @@ fn compression_equivalence_expected_shape() {
 #[test]
 fn no_false_positive_nulls_airline() {
     let path = fixture_path("airline.sas7bdat");
-    let (df, rows, _, _) = load_sas7bdat_silent(&path)
-        .expect("load airline.sas7bdat");
+    let (df, rows, _, _) = load_sas7bdat_silent(&path).expect("load airline.sas7bdat");
 
     assert_eq!(rows, 32, "airline should have 32 rows");
 
     for series in df.get_columns() {
         let null_cnt = series.null_count();
         assert_eq!(
-            null_cnt, 0,
+            null_cnt,
+            0,
             "airline column '{}' should have 0 nulls, found {}",
             series.name(),
             null_cnt
@@ -436,8 +433,7 @@ fn no_false_positive_nulls_airline() {
 #[test]
 fn no_false_positive_nulls_cars() {
     let path = fixture_path("cars.sas7bdat");
-    let (df, rows, _, _) = load_sas7bdat_silent(&path)
-        .expect("load cars.sas7bdat");
+    let (df, rows, _, _) = load_sas7bdat_silent(&path).expect("load cars.sas7bdat");
 
     assert_eq!(rows, 392);
 
@@ -457,16 +453,12 @@ fn no_false_positive_nulls_cars() {
 
 fn write_parquet(df: &mut DataFrame, path: &Path) {
     let file = std::fs::File::create(path).expect("create parquet file");
-    ParquetWriter::new(file)
-        .finish(df)
-        .expect("write parquet");
+    ParquetWriter::new(file).finish(df).expect("write parquet");
 }
 
 fn read_parquet(path: &Path) -> DataFrame {
     let file = std::fs::File::open(path).expect("open parquet file");
-    ParquetReader::new(file)
-        .finish()
-        .expect("read parquet")
+    ParquetReader::new(file).finish().expect("read parquet")
 }
 
 /// Load airline.sas7bdat, persist as Parquet, reload and compare shape.
@@ -787,23 +779,19 @@ fn compare_dataframes(
     // 2. Column names must match (order-sensitive) ----------------------------
     let our_names: Vec<&str> = sas_df.get_column_names_str();
     let pd_names: Vec<&str> = pandas_df.get_column_names_str();
-    assert_eq!(
-        our_names, pd_names,
-        "{file_name}: column name mismatch"
-    );
+    assert_eq!(our_names, pd_names, "{file_name}: column name mismatch");
 
     // 3. Cell-by-cell comparison ---------------------------------------------
     let n_rows = sas_df.height();
     for col_name in &our_names {
         let our_col = sas_df.column(col_name).expect("our column must exist");
-        let pd_col = pandas_df.column(col_name).expect("pandas column must exist");
+        let pd_col = pandas_df
+            .column(col_name)
+            .expect("pandas column must exist");
 
         for row in 0..n_rows {
             // Check null alignment first.
-            let our_null = our_col
-                .is_null()
-                .get(row)
-                .expect("is_null index in bounds");
+            let our_null = our_col.is_null().get(row).expect("is_null index in bounds");
             let pd_null = pd_col.is_null().get(row).expect("is_null index in bounds");
 
             if our_null != pd_null {
@@ -866,8 +854,7 @@ fn exact_match_airline() {
     let (sas_df, _, _, _) = load_sas7bdat_silent(&sas_path).expect("load airline.sas7bdat");
     let pandas_df = load_pandas_parquet("airline");
 
-    let mismatches =
-        compare_dataframes(&sas_df, &pandas_df, "airline", CompareOptions::exact());
+    let mismatches = compare_dataframes(&sas_df, &pandas_df, "airline", CompareOptions::exact());
     assert!(
         mismatches.is_empty(),
         "airline: {} cell mismatches found:\n{}",
@@ -883,8 +870,7 @@ fn exact_match_productsales() {
     // since Unix epoch); pandas emits it as `datetime[ms]` at midnight UTC.
     // The Date-vs-Datetime arm in `compare_cell` handles this conversion.
     let sas_path = fixture_path("productsales.sas7bdat");
-    let (sas_df, _, _, _) =
-        load_sas7bdat_silent(&sas_path).expect("load productsales.sas7bdat");
+    let (sas_df, _, _, _) = load_sas7bdat_silent(&sas_path).expect("load productsales.sas7bdat");
     let pandas_df = load_pandas_parquet("productsales");
 
     let mismatches =
@@ -906,8 +892,7 @@ fn exact_match_test1() {
     let (sas_df, _, _, _) = load_sas7bdat_silent(&sas_path).expect("load test1.sas7bdat");
     let pandas_df = load_pandas_parquet("test1");
 
-    let mismatches =
-        compare_dataframes(&sas_df, &pandas_df, "test1", CompareOptions::exact());
+    let mismatches = compare_dataframes(&sas_df, &pandas_df, "test1", CompareOptions::exact());
     assert!(
         mismatches.is_empty(),
         "test1: {} cell mismatches found:\n{}",
@@ -922,12 +907,10 @@ fn exact_match_test_12659() {
     // all Float64).  Any floating-point rounding differences introduced by
     // our IEEE-754 double reconstruction will surface here.
     let sas_path = fixture_path("test_12659.sas7bdat");
-    let (sas_df, _, _, _) =
-        load_sas7bdat_silent(&sas_path).expect("load test_12659.sas7bdat");
+    let (sas_df, _, _, _) = load_sas7bdat_silent(&sas_path).expect("load test_12659.sas7bdat");
     let pandas_df = load_pandas_parquet("test_12659");
 
-    let mismatches =
-        compare_dataframes(&sas_df, &pandas_df, "test_12659", CompareOptions::exact());
+    let mismatches = compare_dataframes(&sas_df, &pandas_df, "test_12659", CompareOptions::exact());
     assert!(
         mismatches.is_empty(),
         "test_12659: {} cell mismatches found:\n{}",
@@ -993,8 +976,7 @@ fn exact_match_datetime_strict() {
     let (sas_df, _, _, _) = load_sas7bdat_silent(&sas_path).expect("load datetime.sas7bdat");
     let pandas_df = load_pandas_parquet("datetime");
 
-    let mismatches =
-        compare_dataframes(&sas_df, &pandas_df, "datetime", CompareOptions::exact());
+    let mismatches = compare_dataframes(&sas_df, &pandas_df, "datetime", CompareOptions::exact());
     assert!(
         mismatches.is_empty(),
         "datetime (strict): {} cell mismatches found:\n{}",

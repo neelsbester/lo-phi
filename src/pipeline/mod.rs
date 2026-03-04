@@ -13,8 +13,9 @@ pub mod weights;
 // Re-exports: some items only consumed by tests/benchmarks, not the binary crate
 #[allow(unused_imports)]
 pub use correlation::{
-    find_correlated_pairs, find_correlated_pairs_auto, find_correlated_pairs_auto_with_progress,
-    find_correlated_pairs_matrix, select_features_to_drop, CorrelatedPair,
+    compute_cramers_v, compute_eta, find_correlated_pairs, find_correlated_pairs_auto,
+    find_correlated_pairs_auto_with_progress, find_correlated_pairs_matrix,
+    select_features_to_drop, AssociationMeasure, CorrelatedPair, FeatureMetadata, FeatureToDrop,
 };
 #[allow(unused_imports)]
 pub use iv::{

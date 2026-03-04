@@ -391,8 +391,7 @@ fn process_columnname_subheader(
 
     // Additional bounds check against known column count to prevent phantom entries
     let max_entries = if state.column_count_from_size > 0 {
-        let remaining =
-            state.column_count_from_size as usize - state.column_name_entries.len();
+        let remaining = state.column_count_from_size as usize - state.column_name_entries.len();
         num_entries.min(remaining)
     } else {
         num_entries
@@ -433,7 +432,7 @@ fn process_columnattrs_subheader(
 ) -> Result<(), SasError> {
     let int_len: usize = if is_64bit { 8 } else { 4 };
     let entry_size = int_len + 8; // 12 for 32-bit, 16 for 64-bit
-    // Entries follow the subheader signature (int_len bytes) + 8-byte metadata header.
+                                  // Entries follow the subheader signature (int_len bytes) + 8-byte metadata header.
     let entries_start = int_len + 8;
 
     if data.len() < entries_start {
@@ -452,8 +451,7 @@ fn process_columnattrs_subheader(
 
     // Bounds-check against known column count to prevent phantom entries
     let max_entries = if state.column_count_from_size > 0 {
-        let remaining =
-            state.column_count_from_size as usize - state.column_attr_entries.len();
+        let remaining = state.column_count_from_size as usize - state.column_attr_entries.len();
         num_entries.min(remaining)
     } else {
         num_entries
@@ -814,7 +812,11 @@ mod tests {
 
         process_columnname_subheader(&data, false, true, &mut state).unwrap();
 
-        assert_eq!(state.column_name_entries.len(), 1, "Expected exactly 1 entry");
+        assert_eq!(
+            state.column_name_entries.len(),
+            1,
+            "Expected exactly 1 entry"
+        );
         assert_eq!(state.column_name_entries[0].text_index, 1);
         assert_eq!(state.column_name_entries[0].offset, 5);
         assert_eq!(state.column_name_entries[0].length, 4);
@@ -850,7 +852,11 @@ mod tests {
 
         process_columnattrs_subheader(&data, false, true, &mut state).unwrap();
 
-        assert_eq!(state.column_attr_entries.len(), 1, "Expected exactly 1 entry");
+        assert_eq!(
+            state.column_attr_entries.len(),
+            1,
+            "Expected exactly 1 entry"
+        );
         assert_eq!(state.column_attr_entries[0].offset, 1);
         assert_eq!(state.column_attr_entries[0].length, 8);
         assert!(matches!(

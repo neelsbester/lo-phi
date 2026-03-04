@@ -128,9 +128,7 @@ fn extract_text_from_blocks(
 /// * `String` - Decoded text, trimmed of surrounding whitespace
 fn decode_text(bytes: &[u8], encoding: &SasEncoding) -> String {
     let decoded = match encoding {
-        SasEncoding::Utf8 | SasEncoding::Ascii => {
-            String::from_utf8_lossy(bytes).into_owned()
-        }
+        SasEncoding::Utf8 | SasEncoding::Ascii => String::from_utf8_lossy(bytes).into_owned(),
         SasEncoding::Latin1 | SasEncoding::Unspecified | SasEncoding::Windows1252 => {
             // Windows-1252 is a superset of Latin-1; use it for all three variants
             encoding_rs::WINDOWS_1252.decode(bytes).0.into_owned()
@@ -185,40 +183,17 @@ fn infer_polars_type(format: &str, data_type: &super::SasDataType) -> PolarsOutp
 
     // --- Datetime formats (check before Date to avoid "DATETIME" matching Date) ---
     const DATETIME_FORMATS: &[&str] = &[
-        "DATETIME",
-        "DTDATE",
-        "DTMONYY",
-        "DTWKDATX",
-        "E8601DT",
-        "B8601DT",
-        "NLDATM",
-        "DATEAMPM",
+        "DATETIME", "DTDATE", "DTMONYY", "DTWKDATX", "E8601DT", "B8601DT", "NLDATM", "DATEAMPM",
     ];
     // Any format starting with "DT" is a datetime
-    if clean_format.starts_with("DT")
-        || DATETIME_FORMATS.contains(&clean_format.as_str())
-    {
+    if clean_format.starts_with("DT") || DATETIME_FORMATS.contains(&clean_format.as_str()) {
         return PolarsOutputType::Datetime;
     }
 
     // --- Date formats ---
     const DATE_FORMATS: &[&str] = &[
-        "DATE",
-        "DDMMYY",
-        "MMDDYY",
-        "YYMMDD",
-        "YYMMDDD",
-        "JULIAN",
-        "MONYY",
-        "YYMON",
-        "MONNAME",
-        "WEEKDATE",
-        "WEEKDAY",
-        "QTR",
-        "YEAR",
-        "E8601DA",
-        "B8601DA",
-        "EURDFDD",
+        "DATE", "DDMMYY", "MMDDYY", "YYMMDD", "YYMMDDD", "JULIAN", "MONYY", "YYMON", "MONNAME",
+        "WEEKDATE", "WEEKDAY", "QTR", "YEAR", "E8601DA", "B8601DA", "EURDFDD",
     ];
     if DATE_FORMATS.contains(&clean_format.as_str()) {
         return PolarsOutputType::Date;
@@ -226,14 +201,7 @@ fn infer_polars_type(format: &str, data_type: &super::SasDataType) -> PolarsOutp
 
     // --- Time formats ---
     const TIME_FORMATS: &[&str] = &[
-        "TIME",
-        "TOD",
-        "HHMM",
-        "MMSS",
-        "E8601TM",
-        "B8601TM",
-        "TIMEAMPM",
-        "HOUR",
+        "TIME", "TOD", "HHMM", "MMSS", "E8601TM", "B8601TM", "TIMEAMPM", "HOUR",
     ];
     if TIME_FORMATS.contains(&clean_format.as_str()) {
         return PolarsOutputType::Time;

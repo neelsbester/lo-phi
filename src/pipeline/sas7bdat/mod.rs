@@ -183,7 +183,9 @@ fn load_sas7bdat_impl(
     let columns = build_columns(&state, &sas_header.encoding);
     if columns.is_empty() {
         pb.finish_and_clear();
-        return Err(SasError::InvalidHeader("File contains zero columns".to_string()));
+        return Err(SasError::InvalidHeader(
+            "File contains zero columns".to_string(),
+        ));
     }
 
     // Step 3: Second pass - extract data rows
@@ -250,18 +252,17 @@ fn load_sas7bdat_impl(
                     let compressed_data = &page_buf[offset..offset + length];
                     let row_length = sas_header.row_length as usize;
 
-                    let decompressed =
-                        match sas_header.compression {
-                            Compression::Rle => decompress_rle(compressed_data, row_length, page_idx)?,
-                            Compression::Rdc => decompress_rdc(compressed_data, row_length, page_idx)?,
-                            Compression::None => {
-                                return Err(SasError::DecompressionError {
-                                    page_index: page_idx,
-                                    message: "Attempted to decompress row in a non-compressed file"
-                                        .to_string(),
-                                });
-                            }
-                        };
+                    let decompressed = match sas_header.compression {
+                        Compression::Rle => decompress_rle(compressed_data, row_length, page_idx)?,
+                        Compression::Rdc => decompress_rdc(compressed_data, row_length, page_idx)?,
+                        Compression::None => {
+                            return Err(SasError::DecompressionError {
+                                page_index: page_idx,
+                                message: "Attempted to decompress row in a non-compressed file"
+                                    .to_string(),
+                            });
+                        }
+                    };
 
                     let row_values = extract_row_values(
                         &decompressed,

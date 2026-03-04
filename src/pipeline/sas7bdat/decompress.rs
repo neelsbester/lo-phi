@@ -34,7 +34,11 @@ use crate::pipeline::sas7bdat::error::SasError;
 /// # Reference
 ///
 /// Based on ReadStat RLE decompression algorithm.
-pub fn decompress_rle(input: &[u8], output_length: usize, page_index: u64) -> Result<Vec<u8>, SasError> {
+pub fn decompress_rle(
+    input: &[u8],
+    output_length: usize,
+    page_index: u64,
+) -> Result<Vec<u8>, SasError> {
     let mut output = Vec::with_capacity(output_length);
     let mut input_pos = 0;
 
@@ -295,7 +299,11 @@ pub fn decompress_rle(input: &[u8], output_length: usize, page_index: u64) -> Re
 /// # Reference
 ///
 /// Based on Parso BinDecompressor.java RDC implementation.
-pub fn decompress_rdc(input: &[u8], output_length: usize, page_index: u64) -> Result<Vec<u8>, SasError> {
+pub fn decompress_rdc(
+    input: &[u8],
+    output_length: usize,
+    page_index: u64,
+) -> Result<Vec<u8>, SasError> {
     let mut output = Vec::with_capacity(output_length);
     let mut input_pos = 0;
 

@@ -32,8 +32,9 @@ fn test_full_pipeline_reduces_features() {
     // Step 2: Correlation analysis (should drop one of feature_good/feature_corr)
     let weights = vec![1.0; df.height()];
     let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
-    let corr_drops = select_features_to_drop(&pairs, "target");
-    df = df.drop_many(&corr_drops);
+    let corr_drops = select_features_to_drop(&pairs, "target", None);
+    let corr_drop_names: Vec<String> = corr_drops.iter().map(|f| f.feature.clone()).collect();
+    df = df.drop_many(&corr_drop_names);
 
     // Verify reduction occurred
     let (_, final_cols) = df.shape();
@@ -156,9 +157,10 @@ fn test_pipeline_missing_then_correlation() {
     // Step 2: Correlation (should still work after missing step)
     let weights = vec![1.0; df.height()];
     let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
-    let corr_drops = select_features_to_drop(&pairs, "target");
+    let corr_drops = select_features_to_drop(&pairs, "target", None);
     let corr_drop_count = corr_drops.len();
-    df = df.drop_many(&corr_drops);
+    let corr_drop_names: Vec<String> = corr_drops.iter().map(|f| f.feature.clone()).collect();
+    df = df.drop_many(&corr_drop_names);
 
     assert_eq!(
         df.width(),
@@ -199,7 +201,7 @@ fn test_pipeline_with_highly_correlated_pair() {
 
     assert!(!pairs.is_empty(), "Should find correlated pairs");
 
-    let to_drop = select_features_to_drop(&pairs, "target");
+    let to_drop = select_features_to_drop(&pairs, "target", None);
 
     // The algorithm should drop features to resolve correlations
     // Since 'a' is involved in multiple correlations (with b and c),
@@ -210,18 +212,18 @@ fn test_pipeline_with_highly_correlated_pair() {
     );
 
     // Verify that not ALL features are dropped - we should keep some
-    let keeps_some = !to_drop.contains(&"a".to_string())
-        || !to_drop.contains(&"b".to_string())
-        || !to_drop.contains(&"c".to_string());
+    let drop_names: Vec<&str> = to_drop.iter().map(|f| f.feature.as_str()).collect();
+    let keeps_some =
+        !drop_names.contains(&"a") || !drop_names.contains(&"b") || !drop_names.contains(&"c");
     assert!(
         keeps_some,
         "Should not drop all correlated features, got drops: {:?}",
-        to_drop
+        drop_names
     );
 
     // Verify target is never dropped
     assert!(
-        !to_drop.contains(&"target".to_string()),
+        !drop_names.contains(&"target"),
         "Target should never be dropped"
     );
 }
@@ -244,7 +246,7 @@ fn test_pipeline_large_dataset() {
 
     let pairs = find_correlated_pairs(&df, 0.95, &weights, None).unwrap();
     // Seeded random data is very unlikely to have high correlations at 0.95 threshold
-    let drop_list = select_features_to_drop(&pairs, "target");
+    let drop_list = select_features_to_drop(&pairs, "target", None);
     assert!(
         drop_list.len() <= 5,
         "Seeded random data should produce few correlated pairs; got {} drops: {:?}",
@@ -252,8 +254,9 @@ fn test_pipeline_large_dataset() {
         drop_list
     );
     // Target must never appear in the drop list
+    let drop_names: Vec<&str> = drop_list.iter().map(|f| f.feature.as_str()).collect();
     assert!(
-        !drop_list.contains(&"target".to_string()),
+        !drop_names.contains(&"target"),
         "Target column must not appear in drop list"
     );
 }

@@ -264,7 +264,8 @@ fn load_dataset_impl(
                 df
             } else {
                 use super::sas7bdat::load_sas7bdat;
-                let (mut df, _, _, _) = load_sas7bdat(path).context("Failed to load SAS7BDAT file")?;
+                let (mut df, _, _, _) =
+                    load_sas7bdat(path).context("Failed to load SAS7BDAT file")?;
                 df.rechunk_mut();
                 df
             }

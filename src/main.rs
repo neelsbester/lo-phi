@@ -25,9 +25,9 @@ use pipeline::{
     analyze_target_column, create_progress_channel, find_correlated_pairs_auto,
     find_correlated_pairs_auto_with_progress, get_column_names, get_features_above_threshold,
     get_low_gini_features, get_weights, load_dataset_with_progress,
-    load_dataset_with_progress_channel, select_features_to_drop, BinningStrategy,
-    MonotonicityConstraint, PipelineStage, ProgressEvent, ProgressSender, SolverConfig,
-    TargetAnalysis, TargetMapping,
+    load_dataset_with_progress_channel, select_features_to_drop, BinningStrategy, FeatureMetadata,
+    FeatureToDrop, MonotonicityConstraint, PipelineStage, ProgressEvent, ProgressSender,
+    SolverConfig, TargetAnalysis, TargetMapping,
 };
 use report::{
     export_gini_analysis_enhanced, export_reduction_report, export_reduction_report_csv,
@@ -516,6 +516,10 @@ fn run_pipeline_bg(mut config: PipelineConfig, tx: ProgressSender) -> Result<()>
         df = df.drop_many(&summary.dropped_gini);
     }
 
+    // Build metadata maps for IV-first correlation drop logic
+    let (feature_metadata, feature_types) =
+        build_correlation_metadata(&gini_analyses, &missing_ratios);
+
     tx.send(ProgressEvent::stage_complete(
         PipelineStage::GiniAnalysis,
         "Gini/IV analysis complete",
@@ -531,8 +535,15 @@ fn run_pipeline_bg(mut config: PipelineConfig, tx: ProgressSender) -> Result<()>
     .ok();
 
     let stage_start = Instant::now();
-    let (correlated_pairs, features_to_drop_corr) =
-        run_correlation_analysis_bg(&mut df, &config, &weights, &mut summary, &tx)?;
+    let (correlated_pairs, features_to_drop_corr) = run_correlation_analysis_bg(
+        &mut df,
+        &config,
+        &weights,
+        &mut summary,
+        &tx,
+        &feature_metadata,
+        &feature_types,
+    )?;
     report_builder.set_correlation_results(&correlated_pairs, &features_to_drop_corr);
 
     tx.send(ProgressEvent::stage_complete(
@@ -683,9 +694,19 @@ fn run_pipeline_no_tui(mut config: PipelineConfig) -> Result<()> {
         df = df.drop_many(&summary.dropped_gini);
     }
 
+    // Build metadata maps for IV-first correlation drop logic
+    let (feature_metadata, feature_types) =
+        build_correlation_metadata(&gini_analyses, &missing_ratios);
+
     // Run correlation analysis
-    let (correlated_pairs, features_to_drop_corr) =
-        run_correlation_analysis(&mut df, &config, &weights, &mut summary)?;
+    let (correlated_pairs, features_to_drop_corr) = run_correlation_analysis(
+        &mut df,
+        &config,
+        &weights,
+        &mut summary,
+        &feature_metadata,
+        &feature_types,
+    )?;
     report_builder.set_correlation_results(&correlated_pairs, &features_to_drop_corr);
 
     // Save results
@@ -1112,13 +1133,48 @@ fn run_gini_analysis_bg(
     Ok((gini_analyses, features_to_drop_gini))
 }
 
+/// Build `FeatureMetadata` and `FeatureType` maps from the Gini/IV and missing
+/// analysis stages.  These are consumed by the correlation drop logic.
+fn build_correlation_metadata(
+    gini_analyses: &[pipeline::IvAnalysis],
+    missing_ratios: &[(String, f64)],
+) -> (
+    std::collections::HashMap<String, FeatureMetadata>,
+    std::collections::HashMap<String, pipeline::FeatureType>,
+) {
+    let missing_lookup: std::collections::HashMap<&str, f64> = missing_ratios
+        .iter()
+        .map(|(n, r)| (n.as_str(), *r))
+        .collect();
+
+    // Single pass over gini_analyses to build both maps (avoids double iteration
+    // and halves String clone count).
+    let mut feature_metadata = std::collections::HashMap::with_capacity(gini_analyses.len());
+    let mut feature_types = std::collections::HashMap::with_capacity(gini_analyses.len());
+
+    for a in gini_analyses {
+        feature_types.insert(a.feature_name.clone(), a.feature_type);
+        feature_metadata.insert(
+            a.feature_name.clone(),
+            FeatureMetadata {
+                iv: Some(a.iv),
+                missing_ratio: missing_lookup.get(a.feature_name.as_str()).copied(),
+            },
+        );
+    }
+
+    (feature_metadata, feature_types)
+}
+
 /// Run correlation analysis (indicatif path)
 fn run_correlation_analysis(
     df: &mut polars::prelude::DataFrame,
     config: &PipelineConfig,
     weights: &[f64],
     summary: &mut ReductionSummary,
-) -> Result<(Vec<pipeline::CorrelatedPair>, Vec<String>)> {
+    feature_metadata: &std::collections::HashMap<String, FeatureMetadata>,
+    feature_types: &std::collections::HashMap<String, pipeline::FeatureType>,
+) -> Result<(Vec<pipeline::CorrelatedPair>, Vec<FeatureToDrop>)> {
     print_step_header(3, "Correlation Analysis");
 
     let step_start = Instant::now();
@@ -1127,8 +1183,10 @@ fn run_correlation_analysis(
         config.correlation_threshold,
         weights,
         config.weight_column.as_deref(),
+        Some(feature_types),
     )?;
-    let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &config.target);
+    let features_to_drop_corr =
+        select_features_to_drop(&correlated_pairs, &config.target, Some(feature_metadata));
     print_success("Correlation analysis complete");
 
     apply_correlation_drops(df, &correlated_pairs, &features_to_drop_corr, summary);
@@ -1147,16 +1205,20 @@ fn run_correlation_analysis_bg(
     weights: &[f64],
     summary: &mut ReductionSummary,
     tx: &ProgressSender,
-) -> Result<(Vec<pipeline::CorrelatedPair>, Vec<String>)> {
+    feature_metadata: &std::collections::HashMap<String, FeatureMetadata>,
+    feature_types: &std::collections::HashMap<String, pipeline::FeatureType>,
+) -> Result<(Vec<pipeline::CorrelatedPair>, Vec<FeatureToDrop>)> {
     let step_start = Instant::now();
     let correlated_pairs = find_correlated_pairs_auto_with_progress(
         df,
         config.correlation_threshold,
         weights,
         config.weight_column.as_deref(),
+        Some(feature_types),
         tx,
     )?;
-    let features_to_drop_corr = select_features_to_drop(&correlated_pairs, &config.target);
+    let features_to_drop_corr =
+        select_features_to_drop(&correlated_pairs, &config.target, Some(feature_metadata));
 
     apply_correlation_drops(df, &correlated_pairs, &features_to_drop_corr, summary);
 
@@ -1169,16 +1231,20 @@ fn run_correlation_analysis_bg(
 fn apply_correlation_drops(
     df: &mut polars::prelude::DataFrame,
     correlated_pairs: &[pipeline::CorrelatedPair],
-    features_to_drop_corr: &[String],
+    features_to_drop_corr: &[FeatureToDrop],
     summary: &mut ReductionSummary,
 ) {
     if correlated_pairs.is_empty() {
         return;
     }
     if !features_to_drop_corr.is_empty() {
+        let drop_names: Vec<String> = features_to_drop_corr
+            .iter()
+            .map(|f| f.feature.clone())
+            .collect();
         let taken = std::mem::take(df);
-        *df = taken.drop_many(features_to_drop_corr);
-        summary.add_correlation_drops(features_to_drop_corr.to_vec());
+        *df = taken.drop_many(&drop_names);
+        summary.add_correlation_drops(drop_names);
     }
 }
 
