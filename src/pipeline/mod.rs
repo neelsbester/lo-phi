@@ -5,6 +5,7 @@ pub mod iv;
 pub mod loader;
 pub mod missing;
 pub mod progress;
+pub mod sampling;
 pub mod sas7bdat;
 pub mod solver;
 pub mod target;
@@ -26,7 +27,13 @@ pub use loader::{
     get_column_names, load_dataset_with_progress, load_dataset_with_progress_channel,
 };
 pub use missing::{analyze_missing_values, get_features_above_threshold};
-pub use progress::{create_progress_channel, PipelineStage, ProgressEvent, ProgressSender};
+pub use progress::{
+    create_progress_channel, ConversionSummaryData, PipelineStage, ProgressEvent, ProgressSender,
+    SamplingSummaryData,
+};
+pub use sampling::{
+    analyze_strata, execute_sampling, SampleSize, SamplingConfig, SamplingMethod, StratumSpec,
+};
 pub use solver::{MonotonicityConstraint, SolverConfig};
 #[allow(unused_imports)]
 pub use target::{

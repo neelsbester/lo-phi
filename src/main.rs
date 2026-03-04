@@ -22,12 +22,13 @@ use cli::{
 };
 use pipeline::{
     analyze_features_iv, analyze_features_iv_with_progress, analyze_missing_values,
-    analyze_target_column, create_progress_channel, find_correlated_pairs_auto,
+    analyze_target_column, create_progress_channel, execute_sampling, find_correlated_pairs_auto,
     find_correlated_pairs_auto_with_progress, get_column_names, get_features_above_threshold,
     get_low_gini_features, get_weights, load_dataset_with_progress,
-    load_dataset_with_progress_channel, select_features_to_drop, BinningStrategy, FeatureMetadata,
-    FeatureToDrop, MonotonicityConstraint, PipelineStage, ProgressEvent, ProgressSender,
-    SolverConfig, TargetAnalysis, TargetMapping,
+    load_dataset_with_progress_channel, select_features_to_drop, BinningStrategy,
+    ConversionSummaryData, FeatureMetadata, FeatureToDrop, MonotonicityConstraint, PipelineStage,
+    ProgressEvent, ProgressSender, SampleSize, SamplingConfig, SamplingMethod, SamplingSummaryData,
+    SolverConfig, StratumSpec, TargetAnalysis, TargetMapping,
 };
 use report::{
     export_gini_analysis_enhanced, export_reduction_report, export_reduction_report_csv,
@@ -96,6 +97,87 @@ fn main() -> Result<()> {
                 infer_schema_length,
                 fast,
             } => cli::convert::run_convert(input, output.as_deref(), *infer_schema_length, *fast),
+            Commands::Sample {
+                input,
+                output,
+                method,
+                strata_column,
+                count,
+                fraction,
+                strata_sizes,
+                seed,
+                infer_schema_length,
+            } => {
+                let sampling_method = match method.to_lowercase().as_str() {
+                    "random" => SamplingMethod::Random,
+                    "stratified" => SamplingMethod::Stratified,
+                    "equal" => SamplingMethod::EqualAllocation,
+                    _ => anyhow::bail!(
+                        "Unknown sampling method '{}'. Use: random, stratified, equal",
+                        method
+                    ),
+                };
+
+                let sample_size = match (count, fraction) {
+                    (Some(n), None) => Some(SampleSize::Count(*n)),
+                    (None, Some(f)) => Some(SampleSize::Fraction(*f)),
+                    (Some(_), Some(_)) => {
+                        anyhow::bail!("Cannot specify both --count and --fraction")
+                    }
+                    (None, None) => None,
+                };
+
+                // Parse per-stratum sizes: "value1:100,value2:200"
+                let strata_specs = if let Some(sizes_str) = strata_sizes {
+                    sizes_str
+                        .split(',')
+                        .map(|pair| {
+                            let parts: Vec<&str> = pair.splitn(2, ':').collect();
+                            if parts.len() != 2 {
+                                anyhow::bail!(
+                                    "Invalid strata_sizes format '{}'. Expected 'value:count'",
+                                    pair
+                                );
+                            }
+                            let value = parts[0].to_string();
+                            let n: usize = parts[1].parse().map_err(|_| {
+                                anyhow::anyhow!("Invalid count '{}' in strata_sizes", parts[1])
+                            })?;
+                            Ok(StratumSpec {
+                                value,
+                                population_count: 0, // Filled during execution
+                                sample_size: n,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                } else {
+                    Vec::new()
+                };
+
+                let output_path = output.clone().unwrap_or_else(|| {
+                    derive_output_path(
+                        input,
+                        "sampled",
+                        input
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("parquet"),
+                    )
+                });
+
+                let config = SamplingConfig {
+                    input: input.clone(),
+                    output: output_path,
+                    method: sampling_method,
+                    strata_column: strata_column.clone(),
+                    sample_size,
+                    strata_specs,
+                    seed: *seed,
+                    infer_schema_length: *infer_schema_length,
+                };
+
+                run_sampling_pipeline(config)
+            }
         };
     }
 
@@ -368,17 +450,27 @@ fn setup_configuration_interactive(
             let cfg_opt = config_to_pipeline_config(*boxed_cfg)?;
             Ok((cfg_opt, terminal_opt))
         }
-        (WizardResult::RunConversion(conversion_config), _) => {
-            cli::convert::run_convert(
-                &conversion_config.input,
-                Some(&conversion_config.output),
-                conversion_config.infer_schema_length,
-                conversion_config.fast,
-            )?;
-            println!(
-                "Conversion complete: {}",
-                conversion_config.output.display()
-            );
+        (WizardResult::RunConversion(conversion_config), terminal_opt) => {
+            if let Some(mut terminal) = terminal_opt {
+                run_conversion_with_tui(*conversion_config, &mut terminal)?;
+                cli::wizard::teardown_terminal();
+            } else {
+                cli::convert::run_convert(
+                    &conversion_config.input,
+                    Some(&conversion_config.output),
+                    conversion_config.infer_schema_length,
+                    conversion_config.fast,
+                )?;
+            }
+            Ok((None, None))
+        }
+        (WizardResult::RunSampling(sampling_config), terminal_opt) => {
+            if let Some(mut terminal) = terminal_opt {
+                run_sampling_pipeline_with_tui(*sampling_config, &mut terminal)?;
+                cli::wizard::teardown_terminal();
+            } else {
+                run_sampling_pipeline(*sampling_config)?;
+            }
             Ok((None, None))
         }
         (WizardResult::Quit, _) => {
@@ -406,12 +498,211 @@ fn run_pipeline_with_tui(
     let handle = std::thread::spawn(move || run_pipeline_bg(config_clone, tx));
 
     // Drive the TUI overlay until complete or user aborts
-    cli::progress_overlay::run_progress_overlay(terminal, rx)?;
+    let overlay = cli::progress_overlay::ProgressOverlay::new();
+    cli::progress_overlay::run_progress_overlay(terminal, rx, overlay)?;
 
     // Collect pipeline result (propagate errors)
     handle
         .join()
         .map_err(|_| anyhow::anyhow!("Pipeline thread panicked"))??;
+
+    Ok(())
+}
+
+fn run_sampling_pipeline_with_tui(
+    config: SamplingConfig,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+) -> Result<()> {
+    let (tx, rx) = create_progress_channel();
+
+    let handle = std::thread::spawn(move || run_sampling_pipeline_bg(config, tx));
+
+    // Drive the TUI overlay until complete or user aborts
+    let overlay = cli::progress_overlay::ProgressOverlay::new_sampling();
+    cli::progress_overlay::run_progress_overlay(terminal, rx, overlay)?;
+
+    // Collect pipeline result (propagate errors)
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Sampling thread panicked"))??;
+
+    Ok(())
+}
+
+fn run_conversion_with_tui(
+    config: cli::wizard::ConversionConfig,
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+) -> Result<()> {
+    let (tx, rx) = create_progress_channel();
+
+    let handle = std::thread::spawn(move || run_conversion_bg(config, tx));
+
+    let overlay = cli::progress_overlay::ProgressOverlay::new_conversion();
+    cli::progress_overlay::run_progress_overlay(terminal, rx, overlay)?;
+
+    handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Conversion thread panicked"))??;
+
+    Ok(())
+}
+
+fn run_conversion_bg(config: cli::wizard::ConversionConfig, tx: ProgressSender) -> Result<()> {
+    use anyhow::Context;
+    use polars::prelude::*;
+
+    let input = &config.input;
+    let output = &config.output;
+
+    let input_ext = input
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let output_ext = output
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    let input_format = match input_ext.as_str() {
+        "sas7bdat" => "SAS7BDAT",
+        "parquet" => "Parquet",
+        "csv" => "CSV",
+        other => other,
+    }
+    .to_string();
+    let output_format = match output_ext.as_str() {
+        "parquet" => "Parquet",
+        "csv" => "CSV",
+        other => other,
+    }
+    .to_string();
+
+    // ── Stage: Loading ──────────────────────────────────────────────────────
+    tx.send(ProgressEvent::stage_start(
+        PipelineStage::Loading,
+        "Loading dataset",
+    ))
+    .ok();
+
+    let stage_start = Instant::now();
+    let (mut df, row_count, col_count) = match input_ext.as_str() {
+        "sas7bdat" => {
+            let (df, rows, cols, _elapsed) = pipeline::sas7bdat::load_sas7bdat_silent(input)
+                .map_err(|e| anyhow::anyhow!("Failed to load SAS7BDAT: {}", e))?;
+            (df, rows, cols)
+        }
+        "parquet" => {
+            let lf = LazyFrame::scan_parquet(input, Default::default())
+                .with_context(|| format!("Failed to read Parquet: {}", input.display()))?;
+            let df = lf
+                .collect()
+                .with_context(|| "Failed to load Parquet into memory")?;
+            let rows = df.height();
+            let cols = df.width();
+            (df, rows, cols)
+        }
+        "csv" => {
+            let schema_length = if config.infer_schema_length == 0 {
+                None
+            } else {
+                Some(config.infer_schema_length)
+            };
+            let lf = LazyCsvReader::new(input)
+                .with_infer_schema_length(schema_length)
+                .with_rechunk(config.fast)
+                .finish()
+                .with_context(|| format!("Failed to read CSV: {}", input.display()))?;
+            let df = lf
+                .collect()
+                .with_context(|| "Failed to load CSV into memory")?;
+            let rows = df.height();
+            let cols = df.width();
+            (df, rows, cols)
+        }
+        _ => anyhow::bail!("Unsupported input format: .{}", input_ext),
+    };
+
+    tx.send(ProgressEvent::stage_complete(
+        PipelineStage::Loading,
+        format!("Loaded {} rows x {} columns", row_count, col_count),
+        stage_start.elapsed(),
+    ))
+    .ok();
+
+    // ── Stage: Converting (writing output) ──────────────────────────────────
+    tx.send(ProgressEvent::stage_start(
+        PipelineStage::Converting,
+        "Converting format",
+    ))
+    .ok();
+
+    let stage_start = Instant::now();
+    match output_ext.as_str() {
+        "parquet" => {
+            let file = std::fs::File::create(output)
+                .with_context(|| format!("Failed to create: {}", output.display()))?;
+            ParquetWriter::new(file)
+                .with_compression(ParquetCompression::Snappy)
+                .with_statistics(StatisticsOptions::full())
+                .with_row_group_size(Some(100_000))
+                .finish(&mut df)
+                .with_context(|| format!("Failed to write Parquet: {}", output.display()))?;
+        }
+        "csv" => {
+            let file = std::fs::File::create(output)
+                .with_context(|| format!("Failed to create: {}", output.display()))?;
+            CsvWriter::new(file)
+                .finish(&mut df)
+                .with_context(|| format!("Failed to write CSV: {}", output.display()))?;
+        }
+        _ => anyhow::bail!("Unsupported output format: .{}", output_ext),
+    }
+
+    tx.send(ProgressEvent::stage_complete(
+        PipelineStage::Converting,
+        "Format converted",
+        stage_start.elapsed(),
+    ))
+    .ok();
+
+    // ── Stage: Saving (finalize + collect metadata) ─────────────────────────
+    tx.send(ProgressEvent::stage_start(
+        PipelineStage::Saving,
+        "Saving output",
+    ))
+    .ok();
+
+    let stage_start = Instant::now();
+    let input_size_mb = std::fs::metadata(input)
+        .map(|m| m.len() as f64 / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
+    let output_size_mb = std::fs::metadata(output)
+        .map(|m| m.len() as f64 / (1024.0 * 1024.0))
+        .unwrap_or(0.0);
+
+    tx.send(ProgressEvent::stage_complete(
+        PipelineStage::Saving,
+        "Output saved",
+        stage_start.elapsed(),
+    ))
+    .ok();
+
+    // ── Complete ────────────────────────────────────────────────────────────
+    let mut complete_event =
+        ProgressEvent::stage_start(PipelineStage::Complete, "Conversion complete");
+    complete_event.is_complete = true;
+    complete_event.conversion_summary = Some(ConversionSummaryData {
+        input_format,
+        output_format,
+        row_count,
+        col_count,
+        input_size_mb,
+        output_size_mb,
+        output_path: output.display().to_string(),
+    });
+    tx.send(complete_event).ok();
 
     Ok(())
 }
@@ -624,6 +915,8 @@ fn run_pipeline_bg(mut config: PipelineConfig, tx: ProgressSender) -> Result<()>
             dropped_gini: summary.dropped_gini.len(),
             dropped_correlation: summary.dropped_correlation.len(),
         }),
+        sampling_summary: None,
+        conversion_summary: None,
     })
     .ok();
 
@@ -1363,6 +1656,187 @@ fn save_dataset(df: &mut polars::prelude::DataFrame, path: &std::path::Path) -> 
             extension
         ),
     }
+
+    Ok(())
+}
+
+/// Run the sampling pipeline: load, sample, save, report.
+fn run_sampling_pipeline(mut config: SamplingConfig) -> Result<()> {
+    let start = Instant::now();
+
+    print_banner(env!("CARGO_PKG_VERSION"));
+    println!(
+        "  {} Sampling dataset: {}",
+        style("[1/3]").bold().cyan(),
+        config.input.display()
+    );
+
+    // Load dataset
+    let spinner = create_spinner("Loading dataset...");
+    let (df, _rows, _cols, _elapsed) =
+        load_dataset_with_progress(&config.input, config.infer_schema_length)?;
+    finish_with_success(
+        &spinner,
+        &format!("Loaded {} rows x {} columns", df.height(), df.width()),
+    );
+
+    // For stratified sampling with CLI strata_specs, populate the population_count
+    if config.method == SamplingMethod::Stratified && !config.strata_specs.is_empty() {
+        if let Some(strata_col) = &config.strata_column {
+            let strata_info = pipeline::analyze_strata(&df, strata_col)?;
+            let counts: std::collections::HashMap<&str, usize> =
+                strata_info.iter().map(|(v, c)| (v.as_str(), *c)).collect();
+            for spec in &mut config.strata_specs {
+                if let Some(&pop) = counts.get(spec.value.as_str()) {
+                    spec.population_count = pop;
+                } else {
+                    anyhow::bail!(
+                        "Stratum '{}' not found in column '{}'",
+                        spec.value,
+                        strata_col
+                    );
+                }
+            }
+        }
+    }
+
+    // Execute sampling
+    println!(
+        "  {} Sampling ({:?})...",
+        style("[2/3]").bold().cyan(),
+        config.method
+    );
+    let spinner = create_spinner("Sampling...");
+    let mut sampled = execute_sampling(&df, &config)?;
+    finish_with_success(
+        &spinner,
+        &format!(
+            "Sampled {} rows with sampling_weight column",
+            sampled.height()
+        ),
+    );
+
+    // Save output
+    println!(
+        "  {} Saving to: {}",
+        style("[3/3]").bold().cyan(),
+        config.output.display()
+    );
+    let spinner = create_spinner("Writing output...");
+    save_dataset(&mut sampled, &config.output)?;
+    finish_with_success(&spinner, "Output saved");
+
+    let elapsed = start.elapsed();
+    println!();
+    println!(
+        "  {} Sampling complete in {:.1}s",
+        style("done").green().bold(),
+        elapsed.as_secs_f64()
+    );
+    println!(
+        "  {} {} rows -> {} rows (output: {})",
+        style(">>").dim(),
+        df.height(),
+        sampled.height(),
+        config.output.display()
+    );
+
+    Ok(())
+}
+
+/// Run the sampling pipeline in a background thread, sending progress events to the TUI overlay.
+fn run_sampling_pipeline_bg(mut config: SamplingConfig, tx: ProgressSender) -> Result<()> {
+    // ── Stage: Loading ──────────────────────────────────────────────────────
+    tx.send(ProgressEvent::stage_start(
+        PipelineStage::Loading,
+        "Loading dataset",
+    ))
+    .ok();
+
+    let stage_start = Instant::now();
+    let (df, _rows, _cols, _elapsed) =
+        load_dataset_with_progress_channel(&config.input, config.infer_schema_length, &tx)?;
+    let input_rows = df.height();
+
+    tx.send(ProgressEvent::stage_complete(
+        PipelineStage::Loading,
+        format!("Loaded {} rows x {} columns", df.height(), df.width()),
+        stage_start.elapsed(),
+    ))
+    .ok();
+
+    // For stratified sampling with CLI strata_specs, populate the population_count
+    if config.method == SamplingMethod::Stratified && !config.strata_specs.is_empty() {
+        if let Some(strata_col) = &config.strata_column {
+            let strata_info = pipeline::analyze_strata(&df, strata_col)?;
+            let counts: std::collections::HashMap<&str, usize> =
+                strata_info.iter().map(|(v, c)| (v.as_str(), *c)).collect();
+            for spec in &mut config.strata_specs {
+                if let Some(&pop) = counts.get(spec.value.as_str()) {
+                    spec.population_count = pop;
+                } else {
+                    anyhow::bail!(
+                        "Stratum '{}' not found in column '{}'",
+                        spec.value,
+                        strata_col
+                    );
+                }
+            }
+        }
+    }
+
+    // ── Stage: Sampling ─────────────────────────────────────────────────────
+    tx.send(ProgressEvent::stage_start(
+        PipelineStage::Sampling,
+        "Executing sampling",
+    ))
+    .ok();
+
+    let stage_start = Instant::now();
+    let mut sampled = execute_sampling(&df, &config)?;
+    let sampled_rows = sampled.height();
+
+    tx.send(ProgressEvent::stage_complete(
+        PipelineStage::Sampling,
+        format!("Sampled {} rows", sampled_rows),
+        stage_start.elapsed(),
+    ))
+    .ok();
+
+    // ── Stage: Saving ───────────────────────────────────────────────────────
+    tx.send(ProgressEvent::stage_start(
+        PipelineStage::Saving,
+        "Saving results",
+    ))
+    .ok();
+
+    let stage_start = Instant::now();
+    save_dataset(&mut sampled, &config.output)?;
+
+    tx.send(ProgressEvent::stage_complete(
+        PipelineStage::Saving,
+        "Results saved",
+        stage_start.elapsed(),
+    ))
+    .ok();
+
+    // ── Complete ────────────────────────────────────────────────────────────
+    let method_name = match config.method {
+        SamplingMethod::Random => "Random",
+        SamplingMethod::Stratified => "Stratified",
+        SamplingMethod::EqualAllocation => "Equal allocation",
+    };
+
+    let mut complete_event =
+        ProgressEvent::stage_start(PipelineStage::Complete, "Sampling complete");
+    complete_event.is_complete = true;
+    complete_event.sampling_summary = Some(SamplingSummaryData {
+        input_rows,
+        sampled_rows,
+        output_path: config.output.display().to_string(),
+        method: method_name.to_string(),
+    });
+    tx.send(complete_event).ok();
 
     Ok(())
 }

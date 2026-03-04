@@ -141,6 +141,50 @@ pub fn assert_missing_columns(df: &DataFrame, unexpected_cols: &[&str]) {
     }
 }
 
+/// Create a DataFrame with stratified data for sampling tests
+///
+/// 100 rows with:
+/// - "region" column: 4 strata ("North"=30, "South"=25, "East"=25, "West"=20)
+/// - "value" column: random-looking but deterministic numeric values
+/// - "category" column: categorical feature for variety
+pub fn create_stratified_test_dataframe() -> DataFrame {
+    let mut regions = Vec::with_capacity(100);
+    let mut values = Vec::with_capacity(100);
+    let mut categories = Vec::with_capacity(100);
+
+    // North: 30 rows
+    for i in 0..30 {
+        regions.push("North");
+        values.push((i as f64) * 1.5 + 10.0);
+        categories.push(if i % 2 == 0 { "A" } else { "B" });
+    }
+    // South: 25 rows
+    for i in 0..25 {
+        regions.push("South");
+        values.push((i as f64) * 2.0 + 50.0);
+        categories.push(if i % 3 == 0 { "A" } else { "C" });
+    }
+    // East: 25 rows
+    for i in 0..25 {
+        regions.push("East");
+        values.push((i as f64) * 1.2 + 30.0);
+        categories.push("B");
+    }
+    // West: 20 rows
+    for i in 0..20 {
+        regions.push("West");
+        values.push((i as f64) * 3.0 + 5.0);
+        categories.push(if i % 2 == 0 { "C" } else { "A" });
+    }
+
+    df! {
+        "region" => regions,
+        "value" => values,
+        "category" => categories,
+    }
+    .unwrap()
+}
+
 /// Create a minimal binary target DataFrame for IV/Gini tests
 pub fn create_binary_target_dataframe() -> DataFrame {
     df! {

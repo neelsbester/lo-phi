@@ -154,6 +154,46 @@ pub enum Commands {
         #[arg(long, default_value = "false")]
         fast: bool,
     },
+
+    /// Sample a dataset with inverse probability weights
+    Sample {
+        /// Input file path (CSV, Parquet, or SAS7BDAT)
+        input: PathBuf,
+
+        /// Output file path (optional, defaults to {input}_sampled.{ext})
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Sampling method: "random", "stratified", or "equal"
+        #[arg(short, long, default_value = "random")]
+        method: String,
+
+        /// Stratification column (required for stratified and equal methods)
+        #[arg(long)]
+        strata_column: Option<String>,
+
+        /// Absolute sample count (mutually exclusive with --fraction).
+        /// For random: total count. For equal: per-stratum count.
+        #[arg(short = 'n', long)]
+        count: Option<usize>,
+
+        /// Sample fraction 0.0-1.0 (mutually exclusive with --count).
+        /// For random: fraction of total rows.
+        #[arg(short, long)]
+        fraction: Option<f64>,
+
+        /// Per-stratum sample sizes for stratified method (format: "value1:100,value2:200")
+        #[arg(long)]
+        strata_sizes: Option<String>,
+
+        /// Random seed for reproducibility
+        #[arg(long)]
+        seed: Option<u64>,
+
+        /// Number of rows to use for schema inference (CSV only)
+        #[arg(long, default_value = "10000")]
+        infer_schema_length: usize,
+    },
 }
 
 #[allow(dead_code)]

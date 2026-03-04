@@ -13,12 +13,14 @@ pub enum PipelineStage {
     MissingAnalysis,
     GiniAnalysis,
     CorrelationAnalysis,
+    Sampling,
+    Converting,
     Saving,
     Reports,
     Complete,
 }
 
-/// Lightweight summary counts for the TUI overlay.
+/// Lightweight summary counts for the TUI overlay (feature reduction).
 #[derive(Debug, Clone, Default)]
 pub struct SummaryData {
     pub initial_features: usize,
@@ -26,6 +28,27 @@ pub struct SummaryData {
     pub dropped_missing: usize,
     pub dropped_gini: usize,
     pub dropped_correlation: usize,
+}
+
+/// Summary data for the sampling TUI overlay.
+#[derive(Debug, Clone)]
+pub struct SamplingSummaryData {
+    pub input_rows: usize,
+    pub sampled_rows: usize,
+    pub output_path: String,
+    pub method: String,
+}
+
+/// Summary data for the conversion TUI overlay.
+#[derive(Debug, Clone)]
+pub struct ConversionSummaryData {
+    pub input_format: String,
+    pub output_format: String,
+    pub row_count: usize,
+    pub col_count: usize,
+    pub input_size_mb: f64,
+    pub output_size_mb: f64,
+    pub output_path: String,
 }
 
 /// A single progress event emitted by the pipeline.
@@ -44,6 +67,10 @@ pub struct ProgressEvent {
     pub elapsed_secs: Option<f64>,
     /// Reduction summary data, attached only to the `Complete` event.
     pub summary: Option<SummaryData>,
+    /// Sampling summary data, attached only to the `Complete` event.
+    pub sampling_summary: Option<SamplingSummaryData>,
+    /// Conversion summary data, attached only to the `Complete` event.
+    pub conversion_summary: Option<ConversionSummaryData>,
 }
 
 pub type ProgressSender = mpsc::Sender<ProgressEvent>;
@@ -64,6 +91,8 @@ impl ProgressEvent {
             is_complete: false,
             elapsed_secs: None,
             summary: None,
+            sampling_summary: None,
+            conversion_summary: None,
         }
     }
 
@@ -80,6 +109,8 @@ impl ProgressEvent {
             is_complete: false,
             elapsed_secs: None,
             summary: None,
+            sampling_summary: None,
+            conversion_summary: None,
         }
     }
 
@@ -96,6 +127,8 @@ impl ProgressEvent {
             is_complete: true,
             elapsed_secs: Some(elapsed.as_secs_f64()),
             summary: None,
+            sampling_summary: None,
+            conversion_summary: None,
         }
     }
 }

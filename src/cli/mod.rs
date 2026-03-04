@@ -14,4 +14,4 @@ pub use config_menu::{
     FileSelectResult, TargetMappingResult,
 };
 #[allow(unused_imports)]
-pub use wizard::{run_wizard, run_wizard_keep_tui, ConversionConfig, WizardResult};
+pub use wizard::{run_wizard, run_wizard_keep_tui, ConversionConfig, WizardResult, WizardTask};

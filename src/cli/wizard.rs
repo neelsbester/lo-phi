@@ -63,7 +63,9 @@ use super::shared::{
     check_terminal_size, draw_too_small_overlay, render_logo, themed, MIN_COLS, MIN_ROWS,
 };
 use super::theme;
-use crate::pipeline::{TargetAnalysis, TargetMapping};
+use crate::pipeline::{
+    SampleSize, SamplingConfig, SamplingMethod, StratumSpec, TargetAnalysis, TargetMapping,
+};
 // ============================================================================
 // Core Result Types
 // ============================================================================
@@ -76,6 +78,8 @@ pub enum WizardResult {
     RunReduction(Box<Config>),
     /// User completed conversion configuration
     RunConversion(Box<ConversionConfig>),
+    /// User completed sampling configuration
+    RunSampling(Box<SamplingConfig>),
     /// User quit the wizard
     Quit,
 }
@@ -106,6 +110,8 @@ pub enum WizardTask {
     Reduction,
     /// CSV to Parquet conversion
     Conversion,
+    /// Dataset sampling with inverse probability weights
+    Sampling,
 }
 
 // ============================================================================
@@ -192,6 +198,38 @@ pub enum WizardStep {
 
     /// Conversion mode selection (fast vs streaming)
     ConversionMode { selected: usize },
+
+    /// Sampling method selection (Random / Stratified / Equal)
+    SamplingMethodSelection { selected: usize },
+
+    /// Sample size input (count or fraction, toggle with Tab)
+    SampleSizeInput {
+        input: String,
+        error: Option<String>,
+        is_count: bool,
+    },
+
+    /// Strata column selection with search/filter
+    StrataColumnSelection {
+        search: String,
+        filtered: Vec<usize>,
+        selected: usize,
+    },
+
+    /// Per-stratum size configuration table
+    StratumSizeConfig {
+        /// (value, population_count, user_input_string)
+        strata: Vec<(String, usize, String)>,
+        selected: usize,
+        error: Option<String>,
+        scroll_offset: usize,
+    },
+
+    /// Optional seed input
+    SeedInput {
+        input: String,
+        error: Option<String>,
+    },
 }
 
 /// Focus state for target mapping step
@@ -227,6 +265,11 @@ impl WizardStep {
             WizardStep::Summary => "Summary",
             WizardStep::OutputFormat { .. } => "Output Format",
             WizardStep::ConversionMode { .. } => "Conversion Mode",
+            WizardStep::SamplingMethodSelection { .. } => "Sampling Method",
+            WizardStep::SampleSizeInput { .. } => "Sample Size",
+            WizardStep::StrataColumnSelection { .. } => "Strata Column",
+            WizardStep::StratumSizeConfig { .. } => "Stratum Sizes",
+            WizardStep::SeedInput { .. } => "Random Seed",
         }
     }
 }
@@ -279,6 +322,15 @@ pub struct WizardData {
     pub conversion_output: Option<PathBuf>,
     pub conversion_fast: bool,
 
+    // Sampling-specific fields
+    pub sampling_method: Option<SamplingMethod>,
+    pub sampling_strata_column: Option<String>,
+    pub sampling_size: Option<SampleSize>,
+    pub sampling_strata_specs: Vec<StratumSpec>,
+    pub sampling_seed: Option<u64>,
+    /// Loaded after strata column selection: (value, count) sorted by count desc
+    pub sampling_strata_info: Vec<(String, usize)>,
+
     // Temporary state for multi-step processes
     pub available_columns: Vec<String>,
     pub target_unique_values: Vec<String>,
@@ -303,6 +355,12 @@ impl Default for WizardData {
             infer_schema_length: 10000,
             conversion_output: None,
             conversion_fast: true,
+            sampling_method: None,
+            sampling_strata_column: None,
+            sampling_size: None,
+            sampling_strata_specs: Vec::new(),
+            sampling_seed: None,
+            sampling_strata_info: Vec::new(),
             available_columns: Vec::new(),
             target_unique_values: Vec::new(),
             target_is_binary: false,
@@ -465,6 +523,70 @@ impl WizardState {
                 steps.push(WizardStep::Summary);
                 self.steps = steps;
             }
+            WizardTask::Sampling => {
+                let all_indices: Vec<usize> = (0..self.data.available_columns.len()).collect();
+                let mut steps = vec![
+                    WizardStep::TaskSelection,
+                    WizardStep::SamplingMethodSelection { selected: 0 },
+                ];
+
+                let method = self
+                    .data
+                    .sampling_method
+                    .clone()
+                    .unwrap_or(SamplingMethod::Random);
+
+                match method {
+                    SamplingMethod::Random => {
+                        steps.push(WizardStep::SampleSizeInput {
+                            input: String::new(),
+                            error: None,
+                            is_count: true,
+                        });
+                    }
+                    SamplingMethod::Stratified => {
+                        steps.push(WizardStep::StrataColumnSelection {
+                            search: String::new(),
+                            filtered: all_indices,
+                            selected: 0,
+                        });
+                        // StratumSizeConfig is populated after column selection
+                        let strata_data: Vec<(String, usize, String)> = self
+                            .data
+                            .sampling_strata_info
+                            .iter()
+                            .map(|(v, c)| (v.clone(), *c, String::new()))
+                            .collect();
+                        if !strata_data.is_empty() {
+                            steps.push(WizardStep::StratumSizeConfig {
+                                strata: strata_data,
+                                selected: 0,
+                                error: None,
+                                scroll_offset: 0,
+                            });
+                        }
+                    }
+                    SamplingMethod::EqualAllocation => {
+                        steps.push(WizardStep::StrataColumnSelection {
+                            search: String::new(),
+                            filtered: all_indices,
+                            selected: 0,
+                        });
+                        steps.push(WizardStep::SampleSizeInput {
+                            input: String::new(),
+                            error: None,
+                            is_count: true,
+                        });
+                    }
+                }
+
+                steps.push(WizardStep::SeedInput {
+                    input: String::new(),
+                    error: None,
+                });
+                steps.push(WizardStep::Summary);
+                self.steps = steps;
+            }
         }
     }
 
@@ -555,8 +677,8 @@ pub fn run_wizard(cli: &Cli) -> Result<WizardResult> {
 /// `Terminal` so that the caller can display the progress overlay without
 /// tearing down and re-entering alternate screen.
 ///
-/// On `Quit` or `RunConversion` the terminal is torn down before this function
-/// returns and the `Option<Terminal>` is `None`.
+/// On `Quit` the terminal is torn down before this function returns and the
+/// `Option<Terminal>` is `None`.
 pub fn run_wizard_keep_tui(
     cli: &Cli,
 ) -> Result<(WizardResult, Option<Terminal<CrosstermBackend<Stdout>>>)> {
@@ -606,6 +728,14 @@ fn run_wizard_impl(
         Ok(WizardResult::RunReduction(cfg)) => {
             // Keep TUI alive — caller will display the progress overlay
             Ok((WizardResult::RunReduction(cfg), Some(terminal)))
+        }
+        Ok(WizardResult::RunSampling(cfg)) => {
+            // Keep TUI alive — caller will display the sampling progress overlay
+            Ok((WizardResult::RunSampling(cfg), Some(terminal)))
+        }
+        Ok(WizardResult::RunConversion(cfg)) => {
+            // Keep TUI alive — caller will display the conversion progress overlay
+            Ok((WizardResult::RunConversion(cfg), Some(terminal)))
         }
         Ok(other) => {
             teardown_terminal();
@@ -741,6 +871,15 @@ fn handle_step_event(wizard: &mut WizardState, key: KeyEvent) -> Result<StepActi
         Some(WizardStep::Summary) => handle_summary(wizard, key),
         Some(WizardStep::OutputFormat { .. }) => handle_output_format(wizard, key),
         Some(WizardStep::ConversionMode { .. }) => handle_conversion_mode(wizard, key),
+        Some(WizardStep::SamplingMethodSelection { .. }) => {
+            handle_sampling_method_selection(wizard, key)
+        }
+        Some(WizardStep::SampleSizeInput { .. }) => handle_sample_size_input(wizard, key),
+        Some(WizardStep::StrataColumnSelection { .. }) => {
+            handle_strata_column_selection(wizard, key)
+        }
+        Some(WizardStep::StratumSizeConfig { .. }) => handle_stratum_size_config(wizard, key),
+        Some(WizardStep::SeedInput { .. }) => handle_seed_input(wizard, key),
         None => Ok(StepAction::Stay),
     }
 }
@@ -810,6 +949,35 @@ fn generate_result(wizard: &WizardState) -> Result<StepAction> {
                 config,
             ))))
         }
+        Some(WizardTask::Sampling) => {
+            let input = wizard
+                .data
+                .input
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("No input file selected"))?;
+            let method = wizard
+                .data
+                .sampling_method
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("No sampling method selected"))?;
+
+            let output = generate_output_path(&input, "_sampled")?;
+
+            let config = SamplingConfig {
+                input,
+                output,
+                method: method.clone(),
+                strata_column: wizard.data.sampling_strata_column.clone(),
+                sample_size: wizard.data.sampling_size.clone(),
+                strata_specs: wizard.data.sampling_strata_specs.clone(),
+                seed: wizard.data.sampling_seed,
+                infer_schema_length: wizard.data.infer_schema_length,
+            };
+
+            Ok(StepAction::Complete(WizardResult::RunSampling(Box::new(
+                config,
+            ))))
+        }
         None => Err(anyhow::anyhow!("No task selected")),
     }
 }
@@ -862,7 +1030,11 @@ fn step_color(step: &WizardStep) -> Color {
         WizardStep::TaskSelection
         | WizardStep::OptionalSettingsPrompt
         | WizardStep::OutputFormat { .. }
-        | WizardStep::ConversionMode { .. } => theme::PRIMARY,
+        | WizardStep::ConversionMode { .. }
+        | WizardStep::SamplingMethodSelection { .. } => theme::PRIMARY,
+        WizardStep::SampleSizeInput { .. } | WizardStep::StratumSizeConfig { .. } => theme::WARNING,
+        WizardStep::StrataColumnSelection { .. } => theme::ACCENT,
+        WizardStep::SeedInput { .. } => theme::SUCCESS,
     }
 }
 
@@ -983,6 +1155,24 @@ fn render_wizard(f: &mut Frame, wizard: &WizardState) {
             let sel = non_event_selected.unwrap_or(0);
             Some(format!(" {}/{} values ", sel + 1, remaining_len))
         }
+        Some(WizardStep::StrataColumnSelection {
+            filtered, selected, ..
+        }) => {
+            if !filtered.is_empty() {
+                Some(format!(" {}/{} columns ", selected + 1, filtered.len()))
+            } else {
+                None
+            }
+        }
+        Some(WizardStep::StratumSizeConfig {
+            strata, selected, ..
+        }) => {
+            if !strata.is_empty() {
+                Some(format!(" {}/{} strata ", selected + 1, strata.len()))
+            } else {
+                None
+            }
+        }
         _ => None,
     };
     if let Some(ct) = count_text {
@@ -1036,6 +1226,13 @@ fn render_step(f: &mut Frame, area: Rect, wizard: &WizardState) {
         WizardStep::WeightColumn { .. } => render_weight_column(f, area, wizard),
         WizardStep::DropColumns { .. } => render_drop_columns(f, area, wizard),
         WizardStep::SchemaInference { .. } => render_schema_inference(f, area, wizard),
+        WizardStep::SamplingMethodSelection { .. } => {
+            render_sampling_method_selection(f, area, wizard)
+        }
+        WizardStep::SampleSizeInput { .. } => render_sample_size_input(f, area, wizard),
+        WizardStep::StrataColumnSelection { .. } => render_strata_column_selection(f, area, wizard),
+        WizardStep::StratumSizeConfig { .. } => render_stratum_size_config(f, area, wizard),
+        WizardStep::SeedInput { .. } => render_seed_input(f, area, wizard),
         WizardStep::Summary => render_summary(f, area, wizard),
         WizardStep::OutputFormat { .. } => render_output_format(f, area, wizard),
         WizardStep::ConversionMode { .. } => render_conversion_mode(f, area, wizard),
@@ -1053,13 +1250,17 @@ fn render_help_bar(f: &mut Frame, area: Rect, wizard: &WizardState) {
             | Some(WizardStep::GiniThreshold { .. })
             | Some(WizardStep::CorrelationThreshold { .. })
             | Some(WizardStep::SchemaInference { .. })
+            | Some(WizardStep::SampleSizeInput { .. })
+            | Some(WizardStep::SeedInput { .. })
     );
     let has_search = matches!(
         step,
         Some(WizardStep::TargetSelection { .. })
             | Some(WizardStep::WeightColumn { .. })
             | Some(WizardStep::DropColumns { .. })
+            | Some(WizardStep::StrataColumnSelection { .. })
     );
+    let is_stratum_config = matches!(step, Some(WizardStep::StratumSizeConfig { .. }));
     let is_target_mapping_non_binary = matches!(step, Some(WizardStep::TargetMapping { .. }))
         && !wizard.data.target_is_binary
         && !wizard.data.target_unique_values.is_empty();
@@ -1116,9 +1317,14 @@ fn render_help_bar(f: &mut Frame, area: Rect, wizard: &WizardState) {
             spans.push(Span::styled(" search  ", desc_style));
         }
 
-        if is_summary {
+        if is_summary || is_stratum_config {
             spans.push(Span::styled("↑/↓", key_style));
-            spans.push(Span::styled(" scroll  ", desc_style));
+            spans.push(Span::styled(" navigate  ", desc_style));
+        }
+
+        if is_stratum_config {
+            spans.push(Span::styled("Type", key_style));
+            spans.push(Span::styled(" digits  ", desc_style));
         }
 
         if wizard.current_index > 0 {
@@ -1219,7 +1425,11 @@ fn render_threshold_content(
 }
 
 fn render_task_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let options = ["Reduce features", "Convert format (csv, parquet, sas7bdat)"];
+    let options = [
+        "Reduce features",
+        "Convert format (csv, parquet, sas7bdat)",
+        "Sample dataset",
+    ];
     let color = theme::PRIMARY;
 
     let chunks = Layout::default()
@@ -1962,6 +2172,102 @@ fn render_summary(f: &mut Frame, area: Rect, wizard: &WizardState) {
                 ]),
             ]
         }
+        Some(WizardTask::Sampling) => {
+            let input = wizard
+                .data
+                .input
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "None".to_string());
+            let method = match &wizard.data.sampling_method {
+                Some(SamplingMethod::Random) => "Random",
+                Some(SamplingMethod::Stratified) => "Stratified",
+                Some(SamplingMethod::EqualAllocation) => "Equal allocation",
+                None => "None",
+            };
+            let size_desc = match &wizard.data.sampling_size {
+                Some(SampleSize::Count(n)) => format!("{} rows", n),
+                Some(SampleSize::Fraction(f)) => format!("{:.1}%", f * 100.0),
+                None => "Per-stratum (see below)".to_string(),
+            };
+            let strata_col = wizard
+                .data
+                .sampling_strata_column
+                .as_deref()
+                .unwrap_or("N/A");
+            let seed_desc = wizard
+                .data
+                .sampling_seed
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "Random".to_string());
+
+            let mut lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Sampling Summary",
+                    Style::default().fg(theme::SUBTEXT).bold(),
+                )),
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("  Input:    ", Style::default().fg(theme::MUTED)),
+                    Span::styled(input, Style::default().fg(color)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Method:   ", Style::default().fg(theme::MUTED)),
+                    Span::styled(method.to_string(), Style::default().fg(color)),
+                ]),
+                Line::from(vec![
+                    Span::styled("  Size:     ", Style::default().fg(theme::MUTED)),
+                    Span::styled(size_desc, Style::default().fg(color)),
+                ]),
+            ];
+
+            if wizard.data.sampling_method != Some(SamplingMethod::Random) {
+                lines.push(Line::from(vec![
+                    Span::styled("  Strata:   ", Style::default().fg(theme::MUTED)),
+                    Span::styled(strata_col.to_string(), Style::default().fg(color)),
+                ]));
+            }
+
+            if wizard.data.sampling_method == Some(SamplingMethod::Stratified)
+                && !wizard.data.sampling_strata_specs.is_empty()
+            {
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "  Per-stratum sizes:",
+                    Style::default().fg(theme::MUTED),
+                )));
+                for spec in &wizard.data.sampling_strata_specs {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("    {}: ", spec.value),
+                            Style::default().fg(theme::MUTED),
+                        ),
+                        Span::styled(
+                            format!(
+                                "{}/{} (weight: {:.2})",
+                                spec.sample_size,
+                                spec.population_count,
+                                if spec.sample_size > 0 {
+                                    spec.population_count as f64 / spec.sample_size as f64
+                                } else {
+                                    0.0
+                                }
+                            ),
+                            Style::default().fg(color),
+                        ),
+                    ]));
+                }
+            }
+
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("  Seed:     ", Style::default().fg(theme::MUTED)),
+                Span::styled(seed_desc, Style::default().fg(color)),
+            ]));
+
+            lines
+        }
         None => vec![Line::from(Span::styled(
             "Error: No task selected",
             Style::default().fg(theme::ERROR),
@@ -2167,16 +2473,16 @@ fn handle_task_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<Step
             Ok(StepAction::Stay)
         }
         KeyCode::Down => {
-            if wizard.task_selected_index < 1 {
+            if wizard.task_selected_index < 2 {
                 wizard.task_selected_index += 1;
             }
             Ok(StepAction::Stay)
         }
         KeyCode::Enter => {
-            wizard.data.task = Some(if wizard.task_selected_index == 0 {
-                WizardTask::Reduction
-            } else {
-                WizardTask::Conversion
+            wizard.data.task = Some(match wizard.task_selected_index {
+                0 => WizardTask::Reduction,
+                1 => WizardTask::Conversion,
+                _ => WizardTask::Sampling,
             });
 
             // Open file selector immediately (skip intermediate FileSelection step)
@@ -2913,6 +3219,622 @@ fn handle_conversion_mode(wizard: &mut WizardState, key: KeyEvent) -> Result<Ste
             Ok(StepAction::NextStep)
         }
         KeyCode::Backspace => Ok(StepAction::PrevStep),
+        _ => Ok(StepAction::Stay),
+    }
+}
+
+// ============================================================================
+// Sampling Step Renderers
+// ============================================================================
+
+fn render_sampling_method_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let selected = match wizard.current_step() {
+        Some(WizardStep::SamplingMethodSelection { selected }) => *selected,
+        _ => return,
+    };
+    let color = theme::PRIMARY;
+    let options = [
+        ("Random", "Simple random sample (SRS)"),
+        ("Stratified", "Per-stratum sizes (requires strata column)"),
+        (
+            "Equal allocation",
+            "Same n per stratum (requires strata column)",
+        ),
+    ];
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    let title = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Select sampling method",
+            Style::default().fg(theme::MUTED),
+        )),
+    ]);
+    f.render_widget(title, chunks[0]);
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, (name, desc))| {
+            if i == selected {
+                let style = Style::default().fg(theme::BASE).bg(color).bold();
+                ListItem::new(format!("  {:<20}{}", name, desc)).style(style)
+            } else {
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!("  {:<20}", name), Style::default().fg(theme::TEXT)),
+                    Span::styled(*desc, Style::default().fg(theme::MUTED)),
+                ]))
+            }
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+}
+
+fn render_sample_size_input(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (input, error, is_count) = match wizard.current_step() {
+        Some(WizardStep::SampleSizeInput {
+            input,
+            error,
+            is_count,
+        }) => (input, error, *is_count),
+        _ => return,
+    };
+
+    let mode_label = if is_count { "Count" } else { "Fraction" };
+    let description = if is_count {
+        "Enter the number of rows to sample"
+    } else {
+        "Enter fraction (0.0-1.0) of rows to sample"
+    };
+
+    let title = format!("Sample Size ({})", mode_label);
+    render_threshold_content(f, area, &title, description, input, error);
+
+    // Tab hint at the bottom
+    let hint_y = area.y + 8;
+    if hint_y < area.y + area.height {
+        let hint_area = Rect::new(area.x, hint_y, area.width, 1);
+        let toggle = if is_count {
+            "Tab: switch to fraction"
+        } else {
+            "Tab: switch to count"
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(toggle, Style::default().fg(theme::MUTED))),
+            hint_area,
+        );
+    }
+}
+
+fn render_strata_column_selection(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (search, filtered, selected) = match wizard.current_step() {
+        Some(WizardStep::StrataColumnSelection {
+            search,
+            filtered,
+            selected,
+        }) => (search, filtered, *selected),
+        _ => return,
+    };
+
+    let color = theme::ACCENT;
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(1)])
+        .split(area);
+
+    // Search box
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::SURFACE))
+        .title(" Search ")
+        .title_style(Style::default().fg(theme::SURFACE));
+
+    let search_para = Paragraph::new(Line::from(vec![
+        Span::styled(search.to_string(), Style::default().fg(theme::TEXT)),
+        Span::styled("\u{258c}", Style::default().fg(color)),
+    ]))
+    .block(search_block);
+    f.render_widget(search_para, chunks[0]);
+
+    // Column list with scrolling
+    let filtered_cols: Vec<&String> = filtered
+        .iter()
+        .map(|&i| &wizard.data.available_columns[i])
+        .collect();
+
+    let max_visible = chunks[1].height as usize;
+    let start_idx = if selected >= max_visible {
+        selected - max_visible + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = filtered_cols
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, col)| {
+            let style = if i == selected {
+                Style::default().fg(theme::BASE).bg(color).bold()
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            ListItem::new(format!("  {}", col)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+}
+
+fn render_stratum_size_config(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (strata, selected, error, scroll_offset) = match wizard.current_step() {
+        Some(WizardStep::StratumSizeConfig {
+            strata,
+            selected,
+            error,
+            scroll_offset,
+        }) => (strata, *selected, error, *scroll_offset),
+        _ => return,
+    };
+
+    let color = theme::WARNING;
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(4), // Header
+            Constraint::Min(1),    // Table
+            Constraint::Length(2), // Footer (total + error)
+        ])
+        .split(area);
+
+    // Header
+    let header = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Configure sample sizes per stratum",
+            Style::default().fg(theme::SUBTEXT).bold(),
+        )),
+        Line::from(vec![
+            Span::styled("  Stratum", Style::default().fg(theme::MUTED)),
+            Span::styled("                    N_h", Style::default().fg(theme::MUTED)),
+            Span::styled("       n_h", Style::default().fg(theme::MUTED)),
+        ]),
+    ]);
+    f.render_widget(header, chunks[0]);
+
+    // Table rows
+    let max_visible = chunks[1].height as usize;
+    let start_idx = scroll_offset;
+
+    let items: Vec<ListItem> = strata
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_visible)
+        .map(|(i, (value, n_h, input_str))| {
+            let is_selected = i == selected;
+            let prefix = if is_selected { "> " } else { "  " };
+            let value_display = if value.len() > 18 {
+                format!("{}...", &value[..15])
+            } else {
+                format!("{:<18}", value)
+            };
+            let n_h_display = format!("{:>8}", format_number(*n_h));
+            let input_display = if is_selected {
+                format!("  [{}{}]", input_str, "\u{258c}")
+            } else if input_str.is_empty() {
+                "  [___]".to_string()
+            } else {
+                format!("  {}", input_str)
+            };
+
+            let style = if is_selected {
+                Style::default().fg(color).bold()
+            } else {
+                Style::default().fg(theme::TEXT)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{}{}", prefix, value_display), style),
+                Span::styled(n_h_display, Style::default().fg(theme::MUTED)),
+                Span::styled(input_display, style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected.saturating_sub(start_idx)));
+    f.render_stateful_widget(list, chunks[1], &mut list_state);
+
+    // Footer: total + error
+    let total_n: usize = strata
+        .iter()
+        .filter_map(|(_, _, s)| s.parse::<usize>().ok())
+        .sum();
+    let total_pop: usize = strata.iter().map(|(_, n, _)| n).sum();
+    let mut footer_lines = vec![Line::from(vec![
+        Span::styled(
+            format!("  Total: {}", format_number(total_pop)),
+            Style::default().fg(theme::MUTED),
+        ),
+        Span::styled(
+            format!("                  {}", format_number(total_n)),
+            Style::default().fg(color),
+        ),
+    ])];
+    if let Some(err) = error {
+        footer_lines.push(Line::from(Span::styled(
+            format!("  {}", err),
+            Style::default().fg(theme::ERROR),
+        )));
+    }
+    f.render_widget(Paragraph::new(footer_lines), chunks[2]);
+}
+
+fn render_seed_input(f: &mut Frame, area: Rect, wizard: &WizardState) {
+    let (input, error) = match wizard.current_step() {
+        Some(WizardStep::SeedInput { input, error }) => (input, error),
+        _ => return,
+    };
+
+    render_threshold_content(
+        f,
+        area,
+        "Random Seed (optional)",
+        "Enter a seed for reproducibility, or leave empty for random",
+        input,
+        error,
+    );
+}
+
+/// Format a number with thousands separators
+fn format_number(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
+// ============================================================================
+// Sampling Step Handlers
+// ============================================================================
+
+fn handle_sampling_method_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
+    let step = wizard.current_step_mut();
+    let selected = match step {
+        Some(WizardStep::SamplingMethodSelection { selected }) => selected,
+        _ => return Ok(StepAction::Stay),
+    };
+
+    match key.code {
+        KeyCode::Up => {
+            if *selected > 0 {
+                *selected -= 1;
+            }
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Down => {
+            if *selected < 2 {
+                *selected += 1;
+            }
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Enter => {
+            let method = match *selected {
+                0 => SamplingMethod::Random,
+                1 => SamplingMethod::Stratified,
+                _ => SamplingMethod::EqualAllocation,
+            };
+            wizard.data.sampling_method = Some(method);
+            wizard.build_steps();
+            // Move to step after SamplingMethodSelection (index 2)
+            wizard.current_index = 2;
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Backspace => Ok(StepAction::PrevStep),
+        _ => Ok(StepAction::Stay),
+    }
+}
+
+fn handle_sample_size_input(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
+    let step = wizard.current_step_mut();
+    let (input, error, is_count) = match step {
+        Some(WizardStep::SampleSizeInput {
+            input,
+            error,
+            is_count,
+        }) => (input, error, is_count),
+        _ => return Ok(StepAction::Stay),
+    };
+
+    match key.code {
+        KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+            input.push(c);
+            *error = None;
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Tab => {
+            *is_count = !*is_count;
+            input.clear();
+            *error = None;
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Backspace => {
+            if input.is_empty() {
+                return Ok(StepAction::PrevStep);
+            }
+            input.pop();
+            *error = None;
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Enter => {
+            if input.is_empty() {
+                *error = Some("Value is required".to_string());
+                return Ok(StepAction::Stay);
+            }
+            if *is_count {
+                match input.parse::<usize>() {
+                    Ok(0) => {
+                        *error = Some("Sample size must be positive".to_string());
+                        Ok(StepAction::Stay)
+                    }
+                    Ok(n) => {
+                        wizard.data.sampling_size = Some(SampleSize::Count(n));
+                        Ok(StepAction::NextStep)
+                    }
+                    Err(_) => {
+                        *error = Some("Invalid number".to_string());
+                        Ok(StepAction::Stay)
+                    }
+                }
+            } else {
+                match input.parse::<f64>() {
+                    Ok(f) if f <= 0.0 => {
+                        *error = Some("Fraction must be positive".to_string());
+                        Ok(StepAction::Stay)
+                    }
+                    Ok(f) if f >= 1.0 => {
+                        *error = Some("Fraction must be in (0.0, 1.0)".to_string());
+                        Ok(StepAction::Stay)
+                    }
+                    Ok(f) => {
+                        wizard.data.sampling_size = Some(SampleSize::Fraction(f));
+                        Ok(StepAction::NextStep)
+                    }
+                    Err(_) => {
+                        *error = Some("Invalid number".to_string());
+                        Ok(StepAction::Stay)
+                    }
+                }
+            }
+        }
+        _ => Ok(StepAction::Stay),
+    }
+}
+
+fn handle_strata_column_selection(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
+    let available_columns = wizard.data.available_columns.clone();
+
+    let step = wizard.current_step_mut();
+    let (search, filtered, selected) = match step {
+        Some(WizardStep::StrataColumnSelection {
+            search,
+            filtered,
+            selected,
+        }) => (search, filtered, selected),
+        _ => return Ok(StepAction::Stay),
+    };
+
+    match key.code {
+        KeyCode::Char(c) => {
+            search.push(c);
+            let search_lower = search.to_lowercase();
+            *filtered = available_columns
+                .iter()
+                .enumerate()
+                .filter(|(_, col)| col.to_lowercase().contains(&search_lower))
+                .map(|(i, _)| i)
+                .collect();
+            *selected = 0;
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Backspace => {
+            if search.is_empty() {
+                return Ok(StepAction::PrevStep);
+            }
+            search.pop();
+            let search_lower = search.to_lowercase();
+            *filtered = available_columns
+                .iter()
+                .enumerate()
+                .filter(|(_, col)| col.to_lowercase().contains(&search_lower))
+                .map(|(i, _)| i)
+                .collect();
+            *selected = 0;
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Up => {
+            if *selected > 0 {
+                *selected -= 1;
+            }
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Down => {
+            if *selected < filtered.len().saturating_sub(1) {
+                *selected += 1;
+            }
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Enter => {
+            if !filtered.is_empty() {
+                let col_index = filtered[*selected];
+                let col_name = available_columns[col_index].clone();
+                wizard.data.sampling_strata_column = Some(col_name.clone());
+
+                // Load strata info from the dataset
+                if let Some(input_path) = &wizard.data.input.clone() {
+                    let df = load_target_column_for_analysis(input_path, &col_name)?;
+                    let strata_info = crate::pipeline::analyze_strata(&df, &col_name)?;
+                    wizard.data.sampling_strata_info = strata_info;
+                }
+
+                // Rebuild steps to include StratumSizeConfig if stratified
+                wizard.build_steps();
+
+                // Navigate to the step after StrataColumnSelection (index 3)
+                wizard.current_index = 3;
+                Ok(StepAction::Stay)
+            } else {
+                Ok(StepAction::Stay)
+            }
+        }
+        _ => Ok(StepAction::Stay),
+    }
+}
+
+fn handle_stratum_size_config(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
+    let step = wizard.current_step_mut();
+    let (strata, selected, error, scroll_offset) = match step {
+        Some(WizardStep::StratumSizeConfig {
+            strata,
+            selected,
+            error,
+            scroll_offset,
+        }) => (strata, selected, error, scroll_offset),
+        _ => return Ok(StepAction::Stay),
+    };
+
+    match key.code {
+        KeyCode::Up => {
+            if *selected > 0 {
+                *selected -= 1;
+                if *selected < *scroll_offset {
+                    *scroll_offset = *selected;
+                }
+            }
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Down => {
+            if *selected < strata.len().saturating_sub(1) {
+                *selected += 1;
+            }
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            if let Some(row) = strata.get_mut(*selected) {
+                row.2.push(c);
+                *error = None;
+            }
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Backspace => {
+            if let Some(row) = strata.get_mut(*selected) {
+                if !row.2.is_empty() {
+                    row.2.pop();
+                    *error = None;
+                    return Ok(StepAction::Stay);
+                }
+            }
+            Ok(StepAction::PrevStep)
+        }
+        KeyCode::Enter => {
+            // Validate all strata have valid sizes
+            let mut specs = Vec::new();
+            for (value, pop_count, input_str) in strata.iter() {
+                if input_str.is_empty() {
+                    *error = Some(format!("Missing size for stratum '{}'", value));
+                    return Ok(StepAction::Stay);
+                }
+                match input_str.parse::<usize>() {
+                    Ok(0) => {
+                        *error = Some(format!("Size for '{}' must be positive", value));
+                        return Ok(StepAction::Stay);
+                    }
+                    Ok(n) if n > *pop_count => {
+                        *error = Some(format!(
+                            "Size {} exceeds population {} for '{}'",
+                            n, pop_count, value
+                        ));
+                        return Ok(StepAction::Stay);
+                    }
+                    Ok(n) => {
+                        specs.push(StratumSpec {
+                            value: value.clone(),
+                            population_count: *pop_count,
+                            sample_size: n,
+                        });
+                    }
+                    Err(_) => {
+                        *error = Some(format!("Invalid number for '{}'", value));
+                        return Ok(StepAction::Stay);
+                    }
+                }
+            }
+            wizard.data.sampling_strata_specs = specs;
+            wizard.data.sampling_size = None; // Stratified uses per-stratum specs
+            Ok(StepAction::NextStep)
+        }
+        _ => Ok(StepAction::Stay),
+    }
+}
+
+fn handle_seed_input(wizard: &mut WizardState, key: KeyEvent) -> Result<StepAction> {
+    let step = wizard.current_step_mut();
+    let (input, error) = match step {
+        Some(WizardStep::SeedInput { input, error }) => (input, error),
+        _ => return Ok(StepAction::Stay),
+    };
+
+    match key.code {
+        KeyCode::Char(c) if c.is_ascii_digit() => {
+            input.push(c);
+            *error = None;
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Backspace => {
+            if input.is_empty() {
+                return Ok(StepAction::PrevStep);
+            }
+            input.pop();
+            *error = None;
+            Ok(StepAction::Stay)
+        }
+        KeyCode::Enter => {
+            if input.is_empty() {
+                // Empty = no seed (random)
+                wizard.data.sampling_seed = None;
+            } else {
+                match input.parse::<u64>() {
+                    Ok(seed) => {
+                        wizard.data.sampling_seed = Some(seed);
+                    }
+                    Err(_) => {
+                        *error = Some("Invalid seed number".to_string());
+                        return Ok(StepAction::Stay);
+                    }
+                }
+            }
+            Ok(StepAction::NextStep)
+        }
         _ => Ok(StepAction::Stay),
     }
 }

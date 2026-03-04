@@ -38,7 +38,10 @@ use ratatui::{
 
 use super::shared::{draw_too_small_overlay, render_logo, themed, MIN_COLS, MIN_ROWS};
 use super::theme;
-use crate::pipeline::progress::{PipelineStage, ProgressEvent, ProgressReceiver, SummaryData};
+use crate::pipeline::progress::{
+    ConversionSummaryData, PipelineStage, ProgressEvent, ProgressReceiver, SamplingSummaryData,
+    SummaryData,
+};
 
 /// Spinner frames (braille dot sequence)
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -72,6 +75,14 @@ pub struct ProgressOverlay {
     summary_lines: Vec<String>,
     /// Structured reduction summary from the pipeline.
     summary_data: Option<SummaryData>,
+    /// Structured sampling summary from the pipeline.
+    sampling_summary_data: Option<SamplingSummaryData>,
+    /// Structured conversion summary from the pipeline.
+    conversion_summary_data: Option<ConversionSummaryData>,
+    /// Whether this overlay is for a sampling pipeline (affects titles).
+    is_sampling: bool,
+    /// Whether this overlay is for a conversion pipeline (affects titles).
+    is_conversion: bool,
     /// Set to true when the user presses Q during the pipeline run.
     pub abort_requested: bool,
 }
@@ -134,6 +145,92 @@ impl ProgressOverlay {
             final_elapsed_secs: None,
             summary_lines: Vec::new(),
             summary_data: None,
+            sampling_summary_data: None,
+            conversion_summary_data: None,
+            is_sampling: false,
+            is_conversion: false,
+            abort_requested: false,
+        }
+    }
+
+    /// Create a progress overlay for a sampling pipeline.
+    pub fn new_sampling() -> Self {
+        let now = Instant::now();
+        Self {
+            rows: vec![
+                StageRow {
+                    label: "Loading dataset",
+                    stage: PipelineStage::Loading,
+                    status: StageStatus::Pending,
+                    elapsed_secs: 0.0,
+                },
+                StageRow {
+                    label: "Executing sampling",
+                    stage: PipelineStage::Sampling,
+                    status: StageStatus::Pending,
+                    elapsed_secs: 0.0,
+                },
+                StageRow {
+                    label: "Saving results",
+                    stage: PipelineStage::Saving,
+                    status: StageStatus::Pending,
+                    elapsed_secs: 0.0,
+                },
+            ],
+            current_idx: 0,
+            start_time: now,
+            stage_start: now,
+            spinner_frame: 0,
+            detail: None,
+            complete: false,
+            final_elapsed_secs: None,
+            summary_lines: Vec::new(),
+            summary_data: None,
+            sampling_summary_data: None,
+            conversion_summary_data: None,
+            is_sampling: true,
+            is_conversion: false,
+            abort_requested: false,
+        }
+    }
+
+    /// Create a progress overlay for a conversion pipeline.
+    pub fn new_conversion() -> Self {
+        let now = Instant::now();
+        Self {
+            rows: vec![
+                StageRow {
+                    label: "Loading dataset",
+                    stage: PipelineStage::Loading,
+                    status: StageStatus::Pending,
+                    elapsed_secs: 0.0,
+                },
+                StageRow {
+                    label: "Converting format",
+                    stage: PipelineStage::Converting,
+                    status: StageStatus::Pending,
+                    elapsed_secs: 0.0,
+                },
+                StageRow {
+                    label: "Saving output",
+                    stage: PipelineStage::Saving,
+                    status: StageStatus::Pending,
+                    elapsed_secs: 0.0,
+                },
+            ],
+            current_idx: 0,
+            start_time: now,
+            stage_start: now,
+            spinner_frame: 0,
+            detail: None,
+            complete: false,
+            final_elapsed_secs: None,
+            summary_lines: Vec::new(),
+            summary_data: None,
+            sampling_summary_data: None,
+            conversion_summary_data: None,
+            is_sampling: false,
+            is_conversion: true,
             abort_requested: false,
         }
     }
@@ -145,7 +242,13 @@ impl ProgressOverlay {
             // local wall-clock to avoid race conditions when start+complete events
             // are drained in the same render cycle.
             if event.stage == PipelineStage::Complete {
-                self.mark_complete(event.message, event.detail, event.summary);
+                self.mark_complete(
+                    event.message,
+                    event.detail,
+                    event.summary,
+                    event.sampling_summary,
+                    event.conversion_summary,
+                );
             } else if let Some(idx) = self.stage_index(&event.stage) {
                 self.rows[idx].status = StageStatus::Done;
                 self.rows[idx].elapsed_secs = event
@@ -169,7 +272,13 @@ impl ProgressOverlay {
                     }
                 }
             } else if event.stage == PipelineStage::Complete {
-                self.mark_complete(event.message, event.detail, event.summary);
+                self.mark_complete(
+                    event.message,
+                    event.detail,
+                    event.summary,
+                    event.sampling_summary,
+                    event.conversion_summary,
+                );
             }
         }
     }
@@ -179,6 +288,8 @@ impl ProgressOverlay {
         message: String,
         detail: Option<String>,
         summary: Option<SummaryData>,
+        sampling_summary: Option<SamplingSummaryData>,
+        conversion_summary: Option<ConversionSummaryData>,
     ) {
         // Freeze the total elapsed time so it stops ticking while
         // the user reads the summary and presses Enter.
@@ -193,6 +304,8 @@ impl ProgressOverlay {
         }
         self.complete = true;
         self.summary_data = summary;
+        self.sampling_summary_data = sampling_summary;
+        self.conversion_summary_data = conversion_summary;
         self.summary_lines.push(message);
         if let Some(d) = detail {
             self.summary_lines.push(d);
@@ -361,6 +474,77 @@ impl ProgressOverlay {
                         themed(Style::default().fg(theme::SUBTEXT)),
                     )]));
                 }
+            } else if let Some(ref ss) = self.sampling_summary_data {
+                // Sampling summary
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {} rows", ss.input_rows),
+                        themed(Style::default().fg(theme::TEXT).bold()),
+                    ),
+                    Span::styled(" -> ", themed(Style::default().fg(theme::MUTED))),
+                    Span::styled(
+                        format!("{} sampled", ss.sampled_rows),
+                        themed(Style::default().fg(theme::TEXT).bold()),
+                    ),
+                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  Method: {}", ss.method),
+                    themed(Style::default().fg(theme::SUBTEXT)),
+                )]));
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  Output: {}", ss.output_path),
+                    themed(Style::default().fg(theme::SUBTEXT)),
+                )]));
+            } else if let Some(ref cs) = self.conversion_summary_data {
+                // Conversion summary
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {}", cs.input_format),
+                        themed(Style::default().fg(theme::TEXT).bold()),
+                    ),
+                    Span::styled(" -> ", themed(Style::default().fg(theme::MUTED))),
+                    Span::styled(
+                        cs.output_format.as_str(),
+                        themed(Style::default().fg(theme::TEXT).bold()),
+                    ),
+                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  {} rows x {} columns", cs.row_count, cs.col_count),
+                    themed(Style::default().fg(theme::SUBTEXT)),
+                )]));
+
+                // Size comparison
+                let size_line = if cs.output_size_mb < cs.input_size_mb && cs.input_size_mb > 0.0 {
+                    let pct = ((cs.input_size_mb - cs.output_size_mb) / cs.input_size_mb) * 100.0;
+                    format!(
+                        "  {:.2} MB -> {:.2} MB  ({:.1}% smaller)",
+                        cs.input_size_mb, cs.output_size_mb, pct
+                    )
+                } else if cs.output_size_mb > cs.input_size_mb && cs.input_size_mb > 0.0 {
+                    let pct = ((cs.output_size_mb - cs.input_size_mb) / cs.input_size_mb) * 100.0;
+                    format!(
+                        "  {:.2} MB -> {:.2} MB  ({:.1}% larger)",
+                        cs.input_size_mb, cs.output_size_mb, pct
+                    )
+                } else {
+                    format!(
+                        "  {:.2} MB -> {:.2} MB",
+                        cs.input_size_mb, cs.output_size_mb
+                    )
+                };
+                lines.push(Line::from(vec![Span::styled(
+                    size_line,
+                    themed(Style::default().fg(theme::SUBTEXT)),
+                )]));
+
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  Output: {}", cs.output_path),
+                    themed(Style::default().fg(theme::SUBTEXT)),
+                )]));
             } else {
                 // Fallback: no structured summary (e.g. disconnected channel)
                 lines.push(Line::from(""));
@@ -379,7 +563,17 @@ impl ProgressOverlay {
         }
 
         let title = if self.complete {
-            " Pipeline Complete "
+            if self.is_sampling {
+                " Sampling Complete "
+            } else if self.is_conversion {
+                " Conversion Complete "
+            } else {
+                " Pipeline Complete "
+            }
+        } else if self.is_sampling {
+            " Running Sampling "
+        } else if self.is_conversion {
+            " Running Conversion "
         } else {
             " Running Pipeline "
         };
@@ -405,8 +599,9 @@ impl ProgressOverlay {
 pub fn run_progress_overlay(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     rx: ProgressReceiver,
+    overlay: ProgressOverlay,
 ) -> Result<()> {
-    let mut overlay = ProgressOverlay::new();
+    let mut overlay = overlay;
     let mut last_tick = Instant::now();
 
     loop {
